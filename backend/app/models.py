@@ -14,6 +14,17 @@ from sqlalchemy import (
 
 from .database import MasterBase, ProjectBase
 
+# Canonical phase sequence (matches document_templates.phase_code 10..90) —
+# used to sort phase-keyed results in business order rather than
+# alphabetically (alphabetical would put DN before DR before... UR last).
+PHASE_ORDER = ["UR", "DR", "DN", "PU", "ST", "UT", "TR", "IP", "MA"]
+
+
+def phase_sort_key(phase: str | None) -> int:
+    if phase in PHASE_ORDER:
+        return PHASE_ORDER.index(phase)
+    return len(PHASE_ORDER)  # unrecognized/"Unspecified" phases sort last
+
 
 class Project(MasterBase):
     __tablename__ = "projects"

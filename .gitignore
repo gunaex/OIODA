@@ -9,3 +9,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Vercel CLI project link (local machine-specific, not shared config)
+.vercel

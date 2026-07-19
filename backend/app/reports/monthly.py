@@ -58,7 +58,8 @@ def generate(slug: str, month: str, db: Session, master_db: Session) -> Workbook
     phases = sorted(
         {f.phase for f in functions if f.phase}
         | {t.phase for t in tasks if t.phase}
-        | {d.phase for d in documents if d.phase}
+        | {d.phase for d in documents if d.phase},
+        key=models.phase_sort_key,
     )
     phase_rows = []
     for phase in phases:

@@ -32,7 +32,7 @@ def _phase_completion(documents: list[models.Document]) -> list[dict]:
             "total": total,
             "percent": round(100 * confirmed.get(phase, 0) / total) if total else 0,
         }
-        for phase, total in sorted(totals.items())
+        for phase, total in sorted(totals.items(), key=lambda item: models.phase_sort_key(item[0]))
     ]
 
 
