@@ -1,21 +1,24 @@
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from ..database import get_project_db
+from ..database import get_project_db, get_master_db
 from ..excel_utils import make_excel_response
 from ..auth import require_internal
+from ..business_day import add_business_days
 
 router = APIRouter(prefix="/api/{slug}/board-items", tags=["board-items"], dependencies=[Depends(require_internal)])
 
 ITEM_CODE_PREFIX = {"issue": "ISS", "incident": "INC", "backlog": "BLG"}
 DEFAULT_STATUS = {"issue": "Open", "incident": "Open", "backlog": "Backlog"}
-# Calendar-day SLA (no business-day/holiday logic hooked up yet in this MVP,
-# per the spec's fallback instruction).
+# Business-day SLA (Thai Business-day Engine) — weekends and thai_holidays
+# are skipped. Per that spec's migration note: existing sla_due_date values
+# on items created before this change are NOT backfilled/recalculated, only
+# newly created/re-severity'd items use this.
 SLA_DAYS = {"Critical": 1, "High": 3, "Medium": 7, "Low": 14}
 
 # What each item_type is allowed to promote into.
@@ -52,11 +55,11 @@ def generate_item_code(db: Session, item_type: str) -> str:
     return f"{prefix}-{max_n + 1:03d}"
 
 
-def compute_sla_due_date(severity: Optional[str], from_dt: datetime) -> Optional[date]:
+def compute_sla_due_date(severity: Optional[str], from_dt: datetime, master_db: Session) -> Optional[date]:
     days = SLA_DAYS.get(severity)
     if days is None:
         return None
-    return (from_dt + timedelta(days=days)).date()
+    return add_business_days(from_dt.date(), days, master_db)
 
 
 @router.get("", response_model=list[schemas.BoardItemOut])
@@ -82,14 +85,19 @@ def list_board_items(
 
 
 @router.post("", response_model=schemas.BoardItemOut)
-def create_board_item(slug: str, payload: schemas.BoardItemCreate, db: Session = Depends(get_project_db)):
+def create_board_item(
+    slug: str,
+    payload: schemas.BoardItemCreate,
+    db: Session = Depends(get_project_db),
+    master_db: Session = Depends(get_master_db),
+):
     data = payload.model_dump()
     item_type = data["item_type"]
     obj = models.BoardItem(
         **data,
         item_code=generate_item_code(db, item_type),
         status=DEFAULT_STATUS[item_type],
-        sla_due_date=compute_sla_due_date(data.get("severity"), datetime.utcnow()),
+        sla_due_date=compute_sla_due_date(data.get("severity"), datetime.utcnow(), master_db),
     )
     db.add(obj)
     db.commit()
@@ -98,7 +106,13 @@ def create_board_item(slug: str, payload: schemas.BoardItemCreate, db: Session =
 
 
 @router.put("/{item_id}", response_model=schemas.BoardItemOut)
-def update_board_item(slug: str, item_id: int, payload: schemas.BoardItemUpdate, db: Session = Depends(get_project_db)):
+def update_board_item(
+    slug: str,
+    item_id: int,
+    payload: schemas.BoardItemUpdate,
+    db: Session = Depends(get_project_db),
+    master_db: Session = Depends(get_master_db),
+):
     obj = db.query(models.BoardItem).filter(models.BoardItem.id == item_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="Board item not found")
@@ -106,7 +120,7 @@ def update_board_item(slug: str, item_id: int, payload: schemas.BoardItemUpdate,
     for key, value in updates.items():
         setattr(obj, key, value)
     if "severity" in updates:
-        obj.sla_due_date = compute_sla_due_date(obj.severity, obj.created_at)
+        obj.sla_due_date = compute_sla_due_date(obj.severity, obj.created_at, master_db)
     db.commit()
     db.refresh(obj)
     return obj
@@ -130,7 +144,13 @@ def export_board_items(slug: str, type: str = Query(...), db: Session = Depends(
 
 
 @router.post("/{item_id}/promote", response_model=schemas.BoardItemOut)
-def promote_board_item(slug: str, item_id: int, payload: schemas.PromoteRequest, db: Session = Depends(get_project_db)):
+def promote_board_item(
+    slug: str,
+    item_id: int,
+    payload: schemas.PromoteRequest,
+    db: Session = Depends(get_project_db),
+    master_db: Session = Depends(get_master_db),
+):
     obj = db.query(models.BoardItem).filter(models.BoardItem.id == item_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="Board item not found")
@@ -163,7 +183,7 @@ def promote_board_item(slug: str, item_id: int, payload: schemas.PromoteRequest,
         phase=obj.phase,
         owner=obj.owner,
         promoted_from_id=obj.id,
-        sla_due_date=compute_sla_due_date(obj.severity, datetime.utcnow()),
+        sla_due_date=compute_sla_due_date(obj.severity, datetime.utcnow(), master_db),
     )
     obj.status = "Promoted"
     db.add(new_item)

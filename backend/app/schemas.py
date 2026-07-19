@@ -411,6 +411,34 @@ class WhiteboardOut(BaseModel):
     updated_at: datetime
 
 
+# ---------- Thai Holidays ----------
+
+
+class HolidayCreate(BaseModel):
+    holiday_date: date
+    name_th: str
+    name_en: Optional[str] = None
+    is_special: Optional[bool] = False
+
+
+class HolidayUpdate(BaseModel):
+    holiday_date: Optional[date] = None
+    name_th: Optional[str] = None
+    name_en: Optional[str] = None
+    is_special: Optional[bool] = None
+
+
+class HolidayOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    holiday_date: date
+    name_th: str
+    name_en: Optional[str] = None
+    year: int
+    is_special: bool
+
+
 # ---------- Resources / Allocations ----------
 
 RESOURCE_ROLES = ("SR.Arc", "DevSecOps", "SEC", "DBA", "Dev", "QA", "BA", "UX", "DevOps")

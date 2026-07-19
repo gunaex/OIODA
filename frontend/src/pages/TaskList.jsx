@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { listItems, createItem, updateItem, deleteItem, cloneItem } from '../api/client'
+import { listItems, createItem, updateItem, deleteItem, cloneItem, addBusinessDays } from '../api/client'
 import ImportExportBar from '../components/ImportExportBar.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import CommentsPanel from '../components/CommentsPanel.jsx'
@@ -10,6 +10,10 @@ const MY_NAME_KEY = 'pm-again:my-name'
 const STATUSES = ['Todo', 'InProgress', 'Done', 'Blocked']
 const PRIORITIES = ['Low', 'Med', 'High']
 const PHASES = ['UR', 'DR', 'DN', 'PU', 'ST', 'UT', 'TR', 'IP', 'MA']
+// Quick-pick due dates (Thai Business-day Engine) — lets someone set a
+// deadline as "N business days from today" instead of counting weekends/
+// holidays in their head.
+const DUE_IN_BUSINESS_DAYS_OPTIONS = [1, 3, 5, 10]
 
 const emptyForm = {
   task_code: '',
@@ -115,6 +119,14 @@ export default function TaskList() {
     setForm((f) => ({ ...f, [key]: value }))
   }
 
+  const setDueInBusinessDays = async (e) => {
+    const days = Number(e.target.value)
+    if (!days) return
+    const today = new Date().toISOString().slice(0, 10)
+    const dueDate = await addBusinessDays(today, days)
+    setForm((f) => ({ ...f, due_date: dueDate }))
+  }
+
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -216,7 +228,7 @@ export default function TaskList() {
             </tr>
           </thead>
           <tbody>
-            {adding && <EditRow form={form} set={set} onSave={save} onCancel={cancel} />}
+            {adding && <EditRow form={form} set={set} onSave={save} onCancel={cancel} onDueInBusinessDays={setDueInBusinessDays} />}
             {loading ? (
               <tr>
                 <td colSpan={9} className="px-3 py-4 text-center text-gray-400">
@@ -241,7 +253,7 @@ export default function TaskList() {
             ) : (
               filtered.map((item) =>
                 editingId === item.id ? (
-                  <EditRow key={item.id} form={form} set={set} onSave={save} onCancel={cancel} />
+                  <EditRow key={item.id} form={form} set={set} onSave={save} onCancel={cancel} onDueInBusinessDays={setDueInBusinessDays} />
                 ) : (
                   <Fragment key={item.id}>
                   <tr className="border-t border-gray-100 hover:bg-gray-50">
@@ -300,7 +312,7 @@ export default function TaskList() {
   )
 }
 
-function EditRow({ form, set, onSave, onCancel }) {
+function EditRow({ form, set, onSave, onCancel, onDueInBusinessDays }) {
   return (
     <tr className="border-t border-gray-100 bg-indigo-50/40">
       <td className="px-2 py-1.5">
@@ -338,12 +350,27 @@ function EditRow({ form, set, onSave, onCancel }) {
         />
       </td>
       <td className="px-2 py-1.5">
-        <input
-          type="date"
-          value={form.due_date || ''}
-          onChange={set('due_date')}
-          className="border border-gray-300 rounded px-2 py-1 text-sm"
-        />
+        <div className="flex items-center gap-1">
+          <input
+            type="date"
+            value={form.due_date || ''}
+            onChange={set('due_date')}
+            className="border border-gray-300 rounded px-2 py-1 text-sm"
+          />
+          <select
+            value=""
+            onChange={onDueInBusinessDays}
+            title="Set due date as N business days from today"
+            className="border border-gray-300 rounded px-1 py-1 text-xs text-gray-500"
+          >
+            <option value="">+N days…</option>
+            {DUE_IN_BUSINESS_DAYS_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {n} business day{n > 1 ? 's' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
       </td>
       <td className="px-2 py-1.5">
         <select

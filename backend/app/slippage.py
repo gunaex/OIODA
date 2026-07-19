@@ -5,26 +5,32 @@ from sqlalchemy.orm import Session
 from . import models
 from .dashboard import compute_phase_end_dates
 from .routers.projects import MANDATORY_COLUMN_BY_CATEGORY
+from .business_day import business_days_between
 
 GAP_THRESHOLD = 20  # percentage points — elapsed_pct - progress
 DOC_RATIO_THRESHOLD = 1.0  # docs remaining per day left
 MIN_HISTORY_SAMPLES = 3  # per spec: don't predict from too little data
 
 
-def _gantt_gap(g: models.GanttItem, today: date) -> float | None:
+def _gantt_gap(g: models.GanttItem, today: date, master_db: Session) -> float | None:
     """elapsed_pct - progress, per the spec's formula (uses start_date, not
     baseline_start — baseline_end is the only baseline field the formula
-    actually calls for). None if the item can't be assessed (still not
-    started, or a zero-length baseline window)."""
+    actually calls for), now counting business days per the Thai
+    Business-day Engine spec rather than calendar days. None if the item
+    can't be assessed (still not started, or a zero-length baseline window)."""
     if not g.baseline_end or g.start_date >= g.baseline_end:
         return None
     if today < g.start_date:
         return None
-    elapsed_pct = (today - g.start_date).days / (g.baseline_end - g.start_date).days * 100
+    total_business_days = business_days_between(g.start_date, g.baseline_end, master_db)
+    if total_business_days <= 0:
+        return None
+    elapsed_business_days = business_days_between(g.start_date, today, master_db)
+    elapsed_pct = elapsed_business_days / total_business_days * 100
     return elapsed_pct - (g.progress or 0)
 
 
-def compute_task_slippage(db: Session) -> list[dict]:
+def compute_task_slippage(db: Session, master_db: Session) -> list[dict]:
     """Gantt-based signal (spec 1.1). Milestones are excluded — zero-length
     by nature, "elapsed time vs progress" doesn't apply to them."""
     today = date.today()
@@ -38,7 +44,7 @@ def compute_task_slippage(db: Session) -> list[dict]:
 
     results = []
     for g in gantt_items:
-        gap = _gantt_gap(g, today)
+        gap = _gantt_gap(g, today, master_db)
 
         # Already past its own baseline deadline and still not done — worse
         # than merely "at risk", same escalation the doc-signal uses for
@@ -129,7 +135,9 @@ def compute_phase_slippage(project: models.Project | None, db: Session, master_d
         phase_due = phase_due_dates.get(phase)
         if not phase_due:
             continue  # can't assess without a phase deadline
-        days_left = (phase_due - today).days
+        # Business days per the Thai Business-day Engine spec (was calendar
+        # days) — weekends/holidays no longer count against the countdown.
+        days_left = business_days_between(today, phase_due, master_db)
 
         if days_left <= 0 and docs_remaining > 0:
             flag = "overdue"
@@ -154,6 +162,6 @@ def compute_phase_slippage(project: models.Project | None, db: Session, master_d
 
 def compute_slippage_summary(project: models.Project | None, db: Session, master_db: Session) -> dict:
     return {
-        "tasks": compute_task_slippage(db),
+        "tasks": compute_task_slippage(db, master_db),
         "phases": compute_phase_slippage(project, db, master_db),
     }

@@ -22,7 +22,7 @@ def _get_project_or_404(slug: str, master_db: Session) -> models.Project:
 @router.get("/tasks")
 def slippage_tasks(slug: str, db: Session = Depends(get_project_db), master_db: Session = Depends(get_master_db)):
     _get_project_or_404(slug, master_db)
-    return compute_task_slippage(db)
+    return compute_task_slippage(db, master_db)
 
 
 @router.get("/phases")

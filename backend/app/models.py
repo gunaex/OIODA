@@ -67,7 +67,21 @@ class RefreshToken(MasterBase):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-RESOURCE_ROLES = ("SR.Arc", "DevSecOps", "SEC", "DBA", "Dev", "QA", "BA", "UX", "DevOps")
+class ThaiHoliday(MasterBase):
+    """Global reference table (master.db) — company-wide, not per-project,
+    same reasoning as Resource. Feeds business_day.py's is_business_day."""
+
+    __tablename__ = "thai_holidays"
+
+    id = Column(Integer, primary_key=True, index=True)
+    holiday_date = Column(Date, nullable=False, unique=True, index=True)
+    name_th = Column(String, nullable=False)
+    name_en = Column(String, nullable=True)
+    year = Column(Integer, nullable=False, index=True)
+    is_special = Column(Boolean, default=False)  # ad-hoc cabinet-announced bridge day, not a fixed annual occasion
+
+
+RESOURCE_ROLES =("SR.Arc", "DevSecOps", "SEC", "DBA", "Dev", "QA", "BA", "UX", "DevOps")
 
 
 class Resource(MasterBase):

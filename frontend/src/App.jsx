@@ -15,6 +15,7 @@ import LoginPage from './pages/LoginPage.jsx'
 import ResourcePool from './pages/ResourcePool.jsx'
 import ProjectAllocations from './pages/ProjectAllocations.jsx'
 import ProjectDashboard from './pages/ProjectDashboard.jsx'
+import HolidaysAdmin from './pages/HolidaysAdmin.jsx'
 import RequireAuth from './auth/RequireAuth.jsx'
 
 function App() {
@@ -34,6 +35,14 @@ function App() {
         element={
           <RequireAuth>
             <ResourcePool />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/holidays"
+        element={
+          <RequireAuth>
+            <HolidaysAdmin />
           </RequireAuth>
         }
       />

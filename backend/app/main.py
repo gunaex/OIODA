@@ -32,8 +32,9 @@ from .routers import (
     resource_allocations,
     dashboard,
     slippage,
+    holidays,
 )
-from .seed import seed_document_templates, seed_bootstrap_admin
+from .seed import seed_document_templates, seed_bootstrap_admin, seed_thai_holidays
 from .rate_limit import limiter
 
 MasterBase.metadata.create_all(bind=master_engine)
@@ -42,6 +43,7 @@ ensure_columns(master_engine, MASTER_COLUMN_PATCHES)
 with MasterSessionLocal() as _db:
     seed_document_templates(_db)
     seed_bootstrap_admin(_db)
+    seed_thai_holidays(_db)
 
 app = FastAPI(title="PM-Again API")
 
@@ -96,6 +98,8 @@ app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(resources.router)
 app.include_router(dashboard.global_router)
+app.include_router(holidays.router)
+app.include_router(holidays.business_days_router)
 app.include_router(functions.router)
 app.include_router(tasks.router)
 app.include_router(gantt.router)

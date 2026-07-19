@@ -60,6 +60,11 @@ export default function ProjectList() {
                 Resources
               </NavLink>
             )}
+            {!isClientViewer && (
+              <NavLink to="/holidays" className="text-sm text-indigo-600 hover:underline">
+                Holidays
+              </NavLink>
+            )}
             <UserBadge />
           </div>
         </div>
