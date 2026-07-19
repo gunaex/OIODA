@@ -129,6 +129,8 @@ def seed_bootstrap_admin(db: Session):
             email,
             password,
         )
+    else:
+        logger.info("Bootstrapped admin account %s from ADMIN_EMAIL/ADMIN_PASSWORD.", email)
 
 
 def seed_thai_holidays(db: Session):
@@ -152,5 +154,3 @@ def seed_thai_holidays(db: Session):
         added += 1
     if added:
         db.commit()
-    else:
-        logger.info("Bootstrapped admin account %s from ADMIN_EMAIL/ADMIN_PASSWORD.", email)
