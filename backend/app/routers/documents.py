@@ -10,6 +10,7 @@ from ..excel_utils import make_excel_response
 from ..activity import log_changes
 from .projects import MANDATORY_COLUMN_BY_CATEGORY
 from ..auth import get_current_user, require_internal, require_signoff_role
+from ..workflow_definitions import DOCUMENT_TRANSITIONS, is_transition_allowed
 
 router = APIRouter(prefix="/api/{slug}/documents", tags=["documents"], dependencies=[Depends(get_current_user)])
 
@@ -247,7 +248,7 @@ def submit_review(
     obj = db.query(models.Document).filter(models.Document.id == item_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="Document not found")
-    if obj.status != "Draft":
+    if not is_transition_allowed(DOCUMENT_TRANSITIONS, obj.status, "InReview"):
         raise HTTPException(status_code=400, detail=f"Cannot submit for review from status '{obj.status}' (must be Draft)")
     obj.status = "InReview"
     db.commit()
@@ -266,7 +267,8 @@ def signoff_document(
     obj = db.query(models.Document).filter(models.Document.id == item_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="Document not found")
-    if obj.status != "InReview":
+    target_status = "Confirmed" if payload.status == "Approved" else "Rejected"
+    if not is_transition_allowed(DOCUMENT_TRANSITIONS, obj.status, target_status):
         raise HTTPException(status_code=400, detail=f"Cannot sign off from status '{obj.status}' (must be InReview)")
 
     record = models.DocumentSignoff(
@@ -281,7 +283,7 @@ def signoff_document(
 
     # This is the only path that can move a document to Confirmed — enforced
     # here, not just in the UI, per the spec's acceptance criteria.
-    obj.status = "Confirmed" if payload.status == "Approved" else "Rejected"
+    obj.status = target_status
 
     db.commit()
     db.refresh(obj)

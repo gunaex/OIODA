@@ -149,6 +149,22 @@ export const updateWhiteboard = (slug, id, payload) =>
   api.put(`/${slug}/whiteboards/${id}`, payload).then((r) => r.data)
 export const deleteWhiteboard = (slug, id) => api.delete(`/${slug}/whiteboards/${id}`).then((r) => r.data)
 
+// Auto-Diagram Generators
+export const generateErdDiagram = (slug) => api.get(`/${slug}/diagrams/erd`).then((r) => r.data)
+export const generateDocumentWorkflowDiagram = (slug) =>
+  api.get(`/${slug}/diagrams/workflow/document-status`).then((r) => r.data)
+export const generateBoardItemWorkflowDiagram = (slug) =>
+  api.get(`/${slug}/diagrams/workflow/board-item-promote`).then((r) => r.data)
+
+// Gantt Annotations
+export const listGanttAnnotations = (slug) => api.get(`/${slug}/gantt-annotations`).then((r) => r.data)
+export const createGanttAnnotation = (slug, payload) =>
+  api.post(`/${slug}/gantt-annotations`, payload).then((r) => r.data)
+export const updateGanttAnnotation = (slug, id, payload) =>
+  api.put(`/${slug}/gantt-annotations/${id}`, payload).then((r) => r.data)
+export const deleteGanttAnnotation = (slug, id) =>
+  api.delete(`/${slug}/gantt-annotations/${id}`).then((r) => r.data)
+
 // Resources (global — not tied to a project slug)
 export const listResources = () => api.get('/resources').then((r) => r.data)
 export const createResource = (payload) => api.post('/resources', payload).then((r) => r.data)

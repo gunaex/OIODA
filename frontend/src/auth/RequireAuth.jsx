@@ -1,6 +1,7 @@
 import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from './AuthContext.jsx'
 import ForcePasswordChangePage from '../pages/ForcePasswordChangePage.jsx'
+import CommandPalette from '../components/CommandPalette.jsx'
 
 export default function RequireAuth({ children }) {
   const { user, loading } = useAuth()
@@ -21,5 +22,10 @@ export default function RequireAuth({ children }) {
     return <ForcePasswordChangePage />
   }
 
-  return children
+  return (
+    <>
+      {children}
+      <CommandPalette />
+    </>
+  )
 }

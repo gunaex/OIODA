@@ -19,6 +19,7 @@ from .routers import (
     functions,
     tasks,
     gantt,
+    gantt_annotations,
     documents,
     comments,
     activity,
@@ -33,6 +34,8 @@ from .routers import (
     dashboard,
     slippage,
     holidays,
+    workflows,
+    diagrams,
 )
 from .seed import seed_document_templates, seed_bootstrap_admin, seed_thai_holidays
 from .rate_limit import limiter
@@ -100,9 +103,11 @@ app.include_router(resources.router)
 app.include_router(dashboard.global_router)
 app.include_router(holidays.router)
 app.include_router(holidays.business_days_router)
+app.include_router(workflows.router)
 app.include_router(functions.router)
 app.include_router(tasks.router)
 app.include_router(gantt.router)
+app.include_router(gantt_annotations.router)
 app.include_router(documents.router)
 app.include_router(comments.router)
 app.include_router(activity.router)
@@ -111,6 +116,7 @@ app.include_router(notes.router)
 app.include_router(reports.router)
 app.include_router(board_items.router)
 app.include_router(whiteboards.router)
+app.include_router(diagrams.router)
 app.include_router(resource_allocations.router)
 app.include_router(dashboard.project_router)
 app.include_router(slippage.router)

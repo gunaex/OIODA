@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { listWhiteboards, createWhiteboard, deleteWhiteboard } from '../api/client'
+import {
+  listWhiteboards,
+  createWhiteboard,
+  deleteWhiteboard,
+  generateErdDiagram,
+  generateDocumentWorkflowDiagram,
+  generateBoardItemWorkflowDiagram,
+} from '../api/client'
 
 const ENTITY_LABELS = {
   project: 'Project',
@@ -18,6 +25,7 @@ export default function WhiteboardList() {
   const [loadError, setLoadError] = useState(null)
   const [creating, setCreating] = useState(false)
   const [title, setTitle] = useState('')
+  const [generating, setGenerating] = useState(null)
 
   const load = () => {
     setLoading(true)
@@ -49,10 +57,44 @@ export default function WhiteboardList() {
     load()
   }
 
+  const generate = async (key, fn) => {
+    setGenerating(key)
+    try {
+      const board = await fn(slug)
+      navigate(`/${slug}/whiteboards/${board.id}`)
+    } finally {
+      setGenerating(null)
+    }
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-gray-900">Whiteboards</h2>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-4">
+        <button
+          onClick={() => generate('erd', generateErdDiagram)}
+          disabled={generating !== null}
+          className="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+        >
+          {generating === 'erd' ? 'Generating…' : 'Generate/Regenerate ERD'}
+        </button>
+        <button
+          onClick={() => generate('doc-workflow', generateDocumentWorkflowDiagram)}
+          disabled={generating !== null}
+          className="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+        >
+          {generating === 'doc-workflow' ? 'Generating…' : 'Generate Workflow: Document'}
+        </button>
+        <button
+          onClick={() => generate('board-workflow', generateBoardItemWorkflowDiagram)}
+          disabled={generating !== null}
+          className="px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+        >
+          {generating === 'board-workflow' ? 'Generating…' : 'Generate Workflow: Board Item'}
+        </button>
       </div>
 
       <form onSubmit={create} className="flex flex-col sm:flex-row gap-2 mb-6">

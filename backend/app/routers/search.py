@@ -18,7 +18,11 @@ def search(slug: str, q: str = Query(..., min_length=1), db: Session = Depends(g
 
     functions = (
         db.query(models.Function)
-        .filter((models.Function.name.like(like)) | (models.Function.function_code.like(like)))
+        .filter(
+            (models.Function.name.like(like))
+            | (models.Function.function_code.like(like))
+            | (models.Function.owner.like(like))
+        )
         .limit(20)
         .all()
     )
@@ -28,7 +32,9 @@ def search(slug: str, q: str = Query(..., min_length=1), db: Session = Depends(g
 
     tasks = (
         db.query(models.Task)
-        .filter((models.Task.title.like(like)) | (models.Task.task_code.like(like)))
+        .filter(
+            (models.Task.title.like(like)) | (models.Task.task_code.like(like)) | (models.Task.owner.like(like))
+        )
         .limit(20)
         .all()
     )
@@ -36,7 +42,11 @@ def search(slug: str, q: str = Query(..., min_length=1), db: Session = Depends(g
 
     documents = (
         db.query(models.Document)
-        .filter((models.Document.title.like(like)) | (models.Document.doc_code.like(like)))
+        .filter(
+            (models.Document.title.like(like))
+            | (models.Document.doc_code.like(like))
+            | (models.Document.owner.like(like))
+        )
         .limit(20)
         .all()
     )
@@ -51,7 +61,11 @@ def search(slug: str, q: str = Query(..., min_length=1), db: Session = Depends(g
 
     board_items = (
         db.query(models.BoardItem)
-        .filter((models.BoardItem.title.like(like)) | (models.BoardItem.item_code.like(like)))
+        .filter(
+            (models.BoardItem.title.like(like))
+            | (models.BoardItem.item_code.like(like))
+            | (models.BoardItem.owner.like(like))
+        )
         .limit(20)
         .all()
     )

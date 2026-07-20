@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import Gantt from 'frappe-gantt'
 import '../vendor/frappe-gantt.css'
-import { listItems, createItem, updateItem, deleteItem } from '../api/client'
+import { listItems, createItem, updateItem, deleteItem, listGanttAnnotations } from '../api/client'
 import ImportExportBar from '../components/ImportExportBar.jsx'
+import GanttAnnotationLayer from '../components/GanttAnnotationLayer.jsx'
 
 // frappe-gantt has no built-in "Quarter" scale (only Hour/Quarter Day/Half
 // Day/Day/Week/Month/Year) — define one so the fixed Day/Week/Month/Quarter
@@ -62,8 +63,18 @@ export default function GanttView() {
   const [editingId, setEditingId] = useState(null)
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState(emptyForm)
+  const [annotations, setAnnotations] = useState([])
+  const [renderTick, setRenderTick] = useState(0)
+  const [placingNote, setPlacingNote] = useState(false)
+  const [presentMode, setPresentMode] = useState(false)
   const containerRef = useRef(null)
   const ganttRef = useRef(null)
+
+  const loadAnnotations = () => {
+    listGanttAnnotations(slug).then(setAnnotations)
+  }
+
+  useEffect(loadAnnotations, [slug])
 
   // Always-current handlers for the Gantt instance's callbacks. The Gantt
   // instance itself is only ever constructed once (see the effect below),
@@ -129,6 +140,7 @@ export default function GanttView() {
     if (tasks.length === 0) {
       containerRef.current.innerHTML = ''
       ganttRef.current = null
+      setRenderTick((t) => t + 1)
       return
     }
 
@@ -137,6 +149,16 @@ export default function GanttView() {
         view_mode: viewMode,
         view_modes: VIEW_MODES,
         view_mode_select: false,
+        // frappe-gantt defaults this to 'today', which re-runs
+        // scroll_current() -> set_scroll_position() on every render() —
+        // including change_view_mode() and its own infinite_padding
+        // mousewheel-driven internal re-renders (see index.js in the
+        // package). That path has a library bug: it can call
+        // `$el.clientWidth` on an unmatched (undefined) header element and
+        // throw, crashing the whole app (confirmed via repeated scroll+zoom
+        // combinations). Disabling it removes only the cosmetic
+        // auto-recenter-on-today convenience, not any chart functionality.
+        scroll_to: null,
         bar_height: BAR_HEIGHT,
         padding: ROW_PADDING,
         upper_header_height: UPPER_HEADER_HEIGHT,
@@ -149,6 +171,11 @@ export default function GanttView() {
     } else {
       ganttRef.current.refresh(tasks)
     }
+    // Pin x/y positions depend on gantt_start/config/row layout, all of
+    // which this create-or-refresh call may have just changed — the
+    // annotation layer recomputes off this tick, not off `tasks` directly,
+    // since it also needs to react to view-mode changes below.
+    setRenderTick((t) => t + 1)
   }, [tasks])
 
   // Switch the existing instance's scale in place — `change_view_mode()`
@@ -156,6 +183,7 @@ export default function GanttView() {
   // flipping between Day/Week/Month/Quarter doesn't flash.
   useEffect(() => {
     ganttRef.current?.change_view_mode(viewMode)
+    setRenderTick((t) => t + 1)
   }, [viewMode])
 
   useEffect(() => {
@@ -230,17 +258,44 @@ export default function GanttView() {
               </button>
             ))}
           </div>
-          <ImportExportBar slug={slug} entity="gantt" onImported={load} />
+          {!presentMode && (
+            <>
+              <ImportExportBar slug={slug} entity="gantt" onImported={load} />
+              <button
+                onClick={startAdd}
+                className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+              >
+                + Add Item
+              </button>
+              <button
+                onClick={() => setPlacingNote((p) => !p)}
+                className={`px-3 py-1.5 text-sm rounded-md border ${
+                  placingNote
+                    ? 'bg-amber-500 text-white border-amber-500'
+                    : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                {placingNote ? 'Click timeline to place…' : '+ Add Note'}
+              </button>
+            </>
+          )}
           <button
-            onClick={startAdd}
-            className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+            onClick={() => {
+              setPresentMode((p) => !p)
+              setPlacingNote(false)
+            }}
+            className={`px-3 py-1.5 text-sm rounded-md border ${
+              presentMode
+                ? 'bg-indigo-600 text-white border-indigo-600'
+                : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+            }`}
           >
-            + Add Item
+            {presentMode ? 'Exit Present' : 'Present'}
           </button>
         </div>
       </div>
 
-      {(adding || editingId) && (
+      {!presentMode && (adding || editingId) && (
         <div className="mb-4 p-4 bg-white border border-gray-200 rounded-lg flex flex-wrap items-end gap-3">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Name</label>
@@ -349,6 +404,17 @@ export default function GanttView() {
             non-'auto' container_height above) handles both scroll axes
             itself — no need for an outer overflow wrapper. */}
         <div ref={containerRef} className={loading || items.length === 0 ? 'hidden' : ''} />
+        <GanttAnnotationLayer
+          slug={slug}
+          gantt={ganttRef.current}
+          renderTick={renderTick}
+          items={items}
+          annotations={annotations}
+          onChange={loadAnnotations}
+          presentMode={presentMode}
+          placing={placingNote}
+          onPlacingDone={() => setPlacingNote(false)}
+        />
       </div>
     </div>
   )

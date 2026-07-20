@@ -41,6 +41,7 @@ export default function QuickNoteBar() {
     >
       <span className="text-gray-400 text-sm shrink-0">📝</span>
       <input
+        id="quick-note-input"
         ref={inputRef}
         value={content}
         onChange={(e) => setContent(e.target.value)}

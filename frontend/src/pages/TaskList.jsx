@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { listItems, createItem, updateItem, deleteItem, cloneItem, addBusinessDays } from '../api/client'
 import ImportExportBar from '../components/ImportExportBar.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
@@ -29,6 +29,8 @@ const emptyForm = {
 
 export default function TaskList() {
   const { slug } = useParams()
+  const location = useLocation()
+  const navigate = useNavigate()
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
@@ -50,6 +52,16 @@ export default function TaskList() {
   }
 
   useEffect(load, [slug])
+
+  // Lets the Command Palette's "New Task" action drop the user straight into
+  // the add row instead of just landing on the list.
+  useEffect(() => {
+    if (location.state?.autoAdd) {
+      startAdd()
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state])
 
   const filtered = useMemo(
     () =>

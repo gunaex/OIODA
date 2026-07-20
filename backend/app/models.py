@@ -213,6 +213,18 @@ class GanttItem(ProjectBase):
     google_calendar_event_id = Column(String, nullable=True)  # reserved — no OAuth flow yet
 
 
+class GanttAnnotation(ProjectBase):
+    __tablename__ = "gantt_annotations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gantt_date = Column(Date, nullable=False)
+    content = Column(Text, nullable=False)
+    linked_gantt_item_id = Column(Integer, ForeignKey("gantt_items.id"), nullable=True)
+    color = Column(String, default="yellow")  # freeform category tag e.g. yellow/red/blue
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Document(ProjectBase):
     __tablename__ = "documents"
 

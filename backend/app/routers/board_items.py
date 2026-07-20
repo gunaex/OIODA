@@ -10,6 +10,7 @@ from ..database import get_project_db, get_master_db
 from ..excel_utils import make_excel_response
 from ..auth import require_internal
 from ..business_day import add_business_days
+from ..workflow_definitions import BOARD_ITEM_TRANSITIONS
 
 router = APIRouter(prefix="/api/{slug}/board-items", tags=["board-items"], dependencies=[Depends(require_internal)])
 
@@ -20,13 +21,6 @@ DEFAULT_STATUS = {"issue": "Open", "incident": "Open", "backlog": "Backlog"}
 # on items created before this change are NOT backfilled/recalculated, only
 # newly created/re-severity'd items use this.
 SLA_DAYS = {"Critical": 1, "High": 3, "Medium": 7, "Low": 14}
-
-# What each item_type is allowed to promote into.
-VALID_PROMOTIONS = {
-    "backlog": {"issue"},
-    "issue": {"incident", "task"},
-    "incident": {"task"},
-}
 
 EXPORT_COLUMNS = [
     "item_code",
@@ -155,7 +149,7 @@ def promote_board_item(
     if not obj:
         raise HTTPException(status_code=404, detail="Board item not found")
 
-    allowed = VALID_PROMOTIONS.get(obj.item_type, set())
+    allowed = BOARD_ITEM_TRANSITIONS.get(obj.item_type, [])
     if payload.target_type not in allowed:
         raise HTTPException(
             status_code=400,

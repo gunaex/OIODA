@@ -366,6 +366,36 @@ class PromoteRequest(BaseModel):
         return v
 
 
+# ---------- Gantt Annotations ----------
+
+
+class GanttAnnotationCreate(BaseModel):
+    gantt_date: date
+    content: str
+    linked_gantt_item_id: Optional[int] = None
+    color: Optional[str] = "yellow"
+    created_by: Optional[str] = None
+
+
+class GanttAnnotationUpdate(BaseModel):
+    gantt_date: Optional[date] = None
+    content: Optional[str] = None
+    linked_gantt_item_id: Optional[int] = None
+    color: Optional[str] = None
+
+
+class GanttAnnotationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    gantt_date: date
+    content: str
+    linked_gantt_item_id: Optional[int] = None
+    color: str
+    created_by: Optional[str] = None
+    created_at: datetime
+
+
 # ---------- Whiteboards ----------
 
 WHITEBOARD_ENTITY_TYPES = ("project", "phase", "function", "document", "task")
