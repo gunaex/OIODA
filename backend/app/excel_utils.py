@@ -46,7 +46,14 @@ def read_import_excel(file_bytes: bytes, expected_columns: list[str]) -> list[di
         )
 
     df = df[expected_columns]
-    df = df.where(pd.notnull(df), None)
+    # A column that's entirely blank in the source file (e.g. an optional
+    # FK left unset for every row) gets inferred by pandas as float64 NaN —
+    # and `.where(notnull, None)` on a float64 column silently coerces the
+    # replacement `None` right back into NaN (a well-known pandas dtype
+    # quirk), so raw NaN then reaches SQLAlchemy and crashes on any
+    # non-nullable-as-NaN column type (e.g. Integer). Casting to object
+    # first avoids the coercion, so None actually sticks.
+    df = df.astype(object).where(df.notnull(), None)
 
     records = df.to_dict(orient="records")
     for record in records:
