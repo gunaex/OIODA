@@ -38,7 +38,17 @@ class ProjectOut(BaseModel):
     slug: str
     project_type: str
     project_category: Optional[str] = None
+    archived: bool = False
     created_at: datetime
+
+
+class ProjectArchiveRequest(BaseModel):
+    archived: bool
+    password: str
+
+
+class ProjectDeleteRequest(BaseModel):
+    password: str
 
 
 # ---------- Document Templates ----------

@@ -34,6 +34,7 @@ MASTER_COLUMN_PATCHES = {
         "project_type": "TEXT DEFAULT 'simple'",
         "project_category": "TEXT",
         "notification_email": "TEXT",  # reserved — no email sending wired up yet
+        "archived": "BOOLEAN DEFAULT 0",
     },
     "users": {
         "must_change_password": "BOOLEAN DEFAULT 0",
@@ -142,6 +143,16 @@ def open_project_session(slug: str):
     Caller is responsible for closing it."""
     get_project_engine(slug)
     return _project_sessions[slug]()
+
+
+def dispose_project_engine(slug: str) -> None:
+    """Closes and drops the cached engine/sessionmaker for `slug` — required
+    before deleting its SQLite file, otherwise a stale cached connection
+    could still be used (or block the file delete on some platforms)."""
+    engine = _project_engines.pop(slug, None)
+    _project_sessions.pop(slug, None)
+    if engine:
+        engine.dispose()
 
 
 def get_master_db():

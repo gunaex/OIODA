@@ -35,6 +35,7 @@ class Project(MasterBase):
     project_type = Column(String, default="simple")  # simple | estimate
     project_category = Column(String, nullable=True)  # critical | non_critical | ma | rollout
     notification_email = Column(String, nullable=True)  # reserved for future email alerts
+    archived = Column(Boolean, default=False)  # hidden from the default project list, not deleted
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

@@ -1,11 +1,19 @@
+import os
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from ..database import get_master_db, get_project_engine, project_db_exists, open_project_session
-from ..auth import get_current_user, require_internal
+from ..database import (
+    get_master_db,
+    get_project_engine,
+    project_db_exists,
+    project_db_path,
+    open_project_session,
+    dispose_project_engine,
+)
+from ..auth import get_current_user, require_internal, require_roles, verify_password
 
 router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depends(get_current_user)])
 
@@ -97,8 +105,14 @@ def create_project(
 
 
 @router.get("", response_model=list[schemas.ProjectOut])
-def list_projects(db: Session = Depends(get_master_db)):
-    return db.query(models.Project).order_by(models.Project.created_at.desc()).all()
+def list_projects(
+    include_archived: bool = Query(False),
+    db: Session = Depends(get_master_db),
+):
+    q = db.query(models.Project)
+    if not include_archived:
+        q = q.filter(models.Project.archived == False)  # noqa: E712
+    return q.order_by(models.Project.created_at.desc()).all()
 
 
 @router.get("/{slug}", response_model=schemas.ProjectOut)
@@ -109,3 +123,55 @@ def get_project(slug: str, db: Session = Depends(get_master_db)):
     if not project_db_exists(slug):
         get_project_engine(slug)
     return project
+
+
+# Archive/delete are the most consequential actions in the app (hiding or
+# permanently destroying a whole project's data) — restricted to pmo_admin
+# specifically (not the broader require_internal), and both require the
+# requesting user to re-enter their own current password, same check as
+# changing your password (see auth.py's change_password), as a deliberate
+# extra confirmation step before something this hard to reverse.
+@router.put("/{slug}/archive", response_model=schemas.ProjectOut)
+def archive_project(
+    slug: str,
+    payload: schemas.ProjectArchiveRequest,
+    db: Session = Depends(get_master_db),
+    user: models.User = Depends(require_roles("pmo_admin")),
+):
+    if not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    project = db.query(models.Project).filter(models.Project.slug == slug).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project.archived = payload.archived
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+@router.delete("/{slug}")
+def delete_project(
+    slug: str,
+    payload: schemas.ProjectDeleteRequest,
+    db: Session = Depends(get_master_db),
+    user: models.User = Depends(require_roles("pmo_admin")),
+):
+    if not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    project = db.query(models.Project).filter(models.Project.slug == slug).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # resource_allocations.project_slug is a plain string, not a real FK
+    # (see the comment on that model) — clean these up explicitly or
+    # they'd silently dangle, pointing at a project that no longer exists.
+    db.query(models.ResourceAllocation).filter(models.ResourceAllocation.project_slug == slug).delete()
+    db.delete(project)
+    db.commit()
+
+    dispose_project_engine(slug)
+    db_path = project_db_path(slug)
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    return {"ok": True}

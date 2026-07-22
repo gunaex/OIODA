@@ -45,12 +45,17 @@ export const changePassword = (currentPassword, newPassword) =>
     .then((r) => r.data)
 
 // Projects
-export const listProjects = () => api.get('/projects').then((r) => r.data)
+export const listProjects = (includeArchived = false) =>
+  api.get('/projects', { params: { include_archived: includeArchived } }).then((r) => r.data)
 export const createProject = (name, projectType = 'simple', projectCategory = null) =>
   api
     .post('/projects', { name, project_type: projectType, project_category: projectCategory })
     .then((r) => r.data)
 export const getProject = (slug) => api.get(`/projects/${slug}`).then((r) => r.data)
+export const archiveProject = (slug, archived, password) =>
+  api.put(`/projects/${slug}/archive`, { archived, password }).then((r) => r.data)
+export const deleteProject = (slug, password) =>
+  api.delete(`/projects/${slug}`, { data: { password } }).then((r) => r.data)
 
 // Generic per-entity helpers, entity = 'functions' | 'tasks' | 'gantt'
 export const listItems = (slug, entity) => api.get(`/${slug}/${entity}`).then((r) => r.data)

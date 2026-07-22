@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, NavLink } from 'react-router-dom'
-import { listProjects, createProject, getGlobalDashboard } from '../api/client'
+import { listProjects, createProject, getGlobalDashboard, archiveProject, deleteProject } from '../api/client'
 import UserBadge from '../components/UserBadge.jsx'
 import UtilizationHeatmap from '../components/UtilizationHeatmap.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
+import PasswordConfirmModal from '../components/PasswordConfirmModal.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 
 export default function ProjectList() {
   const { user } = useAuth()
   const isClientViewer = user?.role === 'client_viewer'
+  const isPmoAdmin = user?.role === 'pmo_admin'
   const [projects, setProjects] = useState([])
   const [dashboardBySlug, setDashboardBySlug] = useState({})
   const [loading, setLoading] = useState(true)
@@ -17,12 +19,14 @@ export default function ProjectList() {
   const [name, setName] = useState('')
   const [projectType, setProjectType] = useState('simple')
   const [projectCategory, setProjectCategory] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
+  const [confirmAction, setConfirmAction] = useState(null) // { type: 'archive'|'unarchive'|'delete', slug, name }
   const navigate = useNavigate()
 
   const load = () => {
     setLoading(true)
     setLoadError(null)
-    Promise.all([listProjects(), getGlobalDashboard()])
+    Promise.all([listProjects(showArchived), getGlobalDashboard()])
       .then(([projectList, globalDashboard]) => {
         setProjects(projectList)
         setDashboardBySlug(Object.fromEntries(globalDashboard.projects.map((p) => [p.slug, p])))
@@ -31,7 +35,18 @@ export default function ProjectList() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(load, [])
+  useEffect(load, [showArchived])
+
+  const runConfirmedAction = async (password) => {
+    const { type, slug } = confirmAction
+    if (type === 'delete') {
+      await deleteProject(slug, password)
+    } else {
+      await archiveProject(slug, type === 'archive', password)
+    }
+    setConfirmAction(null)
+    load()
+  }
 
   const handleCreate = async (e) => {
     e.preventDefault()
@@ -55,6 +70,16 @@ export default function ProjectList() {
         <div className="flex items-center justify-between mb-6 gap-4">
           <h1 className="text-2xl font-semibold text-gray-900">Projects</h1>
           <div className="flex items-center gap-4">
+            {isPmoAdmin && (
+              <label className="flex items-center gap-1.5 text-sm text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
+                />
+                Show archived
+              </label>
+            )}
             {!isClientViewer && (
               <NavLink to="/resources" className="text-sm text-indigo-600 hover:underline">
                 Resources
@@ -125,7 +150,9 @@ export default function ProjectList() {
                 <button
                   key={p.id}
                   onClick={() => navigate(`/${p.slug}/dashboard`)}
-                  className="text-left p-5 bg-white border border-gray-200 rounded-lg hover:shadow-md hover:border-indigo-300 transition"
+                  className={`text-left p-5 bg-white border rounded-lg hover:shadow-md hover:border-indigo-300 transition ${
+                    p.archived ? 'border-gray-200 opacity-60' : 'border-gray-200'
+                  }`}
                 >
                   <div className="flex items-center gap-2 flex-wrap">
                     <h2 className="font-medium text-gray-900">{p.name}</h2>
@@ -138,6 +165,11 @@ export default function ProjectList() {
                         {p.project_category.replace('_', ' ')}
                       </span>
                     )}
+                    {p.archived && (
+                      <span className="px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded bg-amber-50 text-amber-600">
+                        Archived
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-gray-500 mt-1">{p.slug}</p>
                   {summary && (
@@ -148,6 +180,32 @@ export default function ProjectList() {
                   <p className="text-xs text-gray-400 mt-1">
                     Created {new Date(p.created_at).toLocaleDateString()}
                   </p>
+                  {isPmoAdmin && (
+                    <div className="flex gap-3 mt-3 pt-3 border-t border-gray-100">
+                      <span
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setConfirmAction({
+                            type: p.archived ? 'unarchive' : 'archive',
+                            slug: p.slug,
+                            name: p.name,
+                          })
+                        }}
+                        className="text-xs text-gray-500 hover:underline"
+                      >
+                        {p.archived ? 'Unarchive' : 'Archive'}
+                      </span>
+                      <span
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setConfirmAction({ type: 'delete', slug: p.slug, name: p.name })
+                        }}
+                        className="text-xs text-red-500 hover:underline"
+                      >
+                        Delete
+                      </span>
+                    </div>
+                  )}
                 </button>
               )
             })}
@@ -156,6 +214,29 @@ export default function ProjectList() {
 
         {!isClientViewer && <UtilizationHeatmap />}
       </div>
+
+      {confirmAction && (
+        <PasswordConfirmModal
+          title={
+            confirmAction.type === 'delete'
+              ? `Delete "${confirmAction.name}"?`
+              : confirmAction.type === 'archive'
+                ? `Archive "${confirmAction.name}"?`
+                : `Unarchive "${confirmAction.name}"?`
+          }
+          message={
+            confirmAction.type === 'delete'
+              ? 'This permanently deletes the project and all its data. This cannot be undone. Enter your password to confirm.'
+              : confirmAction.type === 'archive'
+                ? 'Archived projects are hidden from the project list but not deleted. Enter your password to confirm.'
+                : 'This project will reappear in the default project list. Enter your password to confirm.'
+          }
+          confirmLabel={confirmAction.type === 'delete' ? 'Delete' : confirmAction.type === 'archive' ? 'Archive' : 'Unarchive'}
+          danger={confirmAction.type === 'delete'}
+          onConfirm={runConfirmedAction}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
     </div>
   )
 }
