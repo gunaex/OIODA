@@ -3,23 +3,13 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_project_db
-from ..excel_utils import make_excel_response, make_template_response, read_import_excel
+from ..import_engine import ImportError_, export_response, raise_import_errors, read_rows, template_response
+from ..import_schemas import GANTT_ITEMS as SCHEMA
 from ..auth import get_current_user, require_internal
 
 router = APIRouter(prefix="/api/{slug}/gantt", tags=["gantt"], dependencies=[Depends(get_current_user)])
 
-COLUMNS = [
-    "name",
-    "phase",
-    "start_date",
-    "end_date",
-    "progress",
-    "dependencies",
-    "linked_task_id",
-    "is_milestone",
-    "baseline_start",
-    "baseline_end",
-]
+COLUMNS = SCHEMA.template_columns
 
 
 @router.get("", response_model=list[schemas.GanttItemOut])
@@ -77,13 +67,13 @@ def delete_gantt_item(
 @router.get("/export")
 def export_gantt(slug: str, db: Session = Depends(get_project_db)):
     items = db.query(models.GanttItem).order_by(models.GanttItem.start_date).all()
-    rows = [{col: getattr(item, col) for col in COLUMNS} for item in items]
-    return make_excel_response(rows, COLUMNS, f"{slug}-gantt.xlsx")
+    rows = [{col: getattr(item, col, None) for col in SCHEMA.export_columns} for item in items]
+    return export_response(rows, SCHEMA.export_columns, f"{slug}-gantt.xlsx")
 
 
 @router.get("/import-template")
 def import_template():
-    return make_template_response(COLUMNS, "gantt-import-template.xlsx")
+    return template_response(SCHEMA, "gantt-import-template.xlsx")
 
 
 @router.post("/import")
@@ -94,7 +84,10 @@ async def import_gantt(
     _user: models.User = Depends(require_internal),
 ):
     content = await file.read()
-    records = read_import_excel(content, COLUMNS)
+    try:
+        records, report = read_rows(content, SCHEMA)
+    except ImportError_ as exc:
+        raise_import_errors(exc)
     created = 0
     for record in records:
         if not record.get("name") or not record.get("start_date") or not record.get("end_date"):
@@ -114,4 +107,4 @@ async def import_gantt(
         db.add(models.GanttItem(**record))
         created += 1
     db.commit()
-    return {"imported": created}
+    return {"imported": created, **report}

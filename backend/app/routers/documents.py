@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_project_db, get_master_db, PROJECTS_DIR
-from ..excel_utils import make_excel_response
+from ..import_engine import ImportError_, export_response, raise_import_errors, read_rows, template_response
+from ..import_schemas import DOCUMENTS as SCHEMA
 from ..activity import log_changes
 from .projects import MANDATORY_COLUMN_BY_CATEGORY
 from ..auth import get_current_user, require_internal, require_signoff_role
@@ -23,18 +24,9 @@ def _restrict_to_confirmed_for_client_viewer(q, user: models.User):
         q = q.filter(models.Document.status == "Confirmed")
     return q
 
-EXPORT_COLUMNS = [
-    "doc_code",
-    "title",
-    "phase",
-    "doc_type",
-    "status",
-    "version",
-    "owner",
-    "last_signed_by",
-    "last_signed_at",
-    "last_signoff_status",
-]
+# From import_schemas. The last_signed_* columns are joined from the sign-off
+# history rather than being fields on the document, so they are export-only.
+EXPORT_COLUMNS = SCHEMA.export_columns
 
 
 def _latest_signoff(db: Session, document_id: int):
@@ -95,7 +87,44 @@ def export_documents(
                 "last_signoff_status": latest.status if latest else None,
             }
         )
-    return make_excel_response(rows, EXPORT_COLUMNS, f"{slug}-documents.xlsx")
+    return export_response(rows, EXPORT_COLUMNS, f"{slug}-documents.xlsx")
+
+
+@router.get("/import-template")
+def documents_import_template(slug: str):
+    return template_response(SCHEMA, "documents-import-template.xlsx")
+
+
+@router.post("/import")
+async def import_documents(
+    slug: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_project_db),
+    _user: models.User = Depends(require_internal),
+):
+    """Documents were export-only until now.
+
+    `status` is deliberately not importable: a document becomes Confirmed by
+    going through sign-off, and letting a spreadsheet write that value would
+    walk straight past the approval the status exists to evidence. Every
+    imported document starts at Draft and goes through the workflow.
+    """
+    content = await file.read()
+    try:
+        records, report = read_rows(content, SCHEMA)
+    except ImportError_ as exc:
+        raise_import_errors(exc)
+
+    created = 0
+    for record in records:
+        db.add(models.Document(**record, status="Draft", version=1))
+        created += 1
+    db.commit()
+    return {
+        "imported": created,
+        "note": "Imported documents start at Draft — status is set by the sign-off workflow, not by import.",
+        **report,
+    }
 
 
 @router.get("/suggested", response_model=list[schemas.DocumentTemplateOut])

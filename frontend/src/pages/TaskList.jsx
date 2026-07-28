@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { listItems, createItem, updateItem, deleteItem, cloneItem, addBusinessDays } from '../api/client'
+import { listItems, createItem, updateItem, deleteItem, cloneItem, addBusinessDays, previewNextCode } from '../api/client'
 import ImportExportBar from '../components/ImportExportBar.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import CommentsPanel from '../components/CommentsPanel.jsx'
@@ -94,6 +94,15 @@ export default function TaskList() {
     setAdding(true)
     setEditingId(null)
     setForm({ ...emptyForm, is_followup: tab === 'followup' })
+    regenerateCode()
+  }
+
+  // Non-committing preview — burns nothing until save(). Silent on failure
+  // (e.g. project has no Project Code yet): the field just stays blank/manual.
+  const regenerateCode = () => {
+    previewNextCode(slug, 'task')
+      .then((code) => setForm((f) => ({ ...f, task_code: code })))
+      .catch(() => {})
   }
 
   const cancel = () => {
@@ -244,7 +253,16 @@ export default function TaskList() {
             </tr>
           </thead>
           <tbody>
-            {adding && <EditRow form={form} set={set} onSave={save} onCancel={cancel} onDueInBusinessDays={setDueInBusinessDays} />}
+            {adding && (
+              <EditRow
+                form={form}
+                set={set}
+                onSave={save}
+                onCancel={cancel}
+                onDueInBusinessDays={setDueInBusinessDays}
+                onRegenerateCode={regenerateCode}
+              />
+            )}
             {loading ? (
               <tr>
                 <td colSpan={9} className="px-3 py-4 text-center text-gray-400">
@@ -354,15 +372,28 @@ export default function TaskList() {
   )
 }
 
-function EditRow({ form, set, onSave, onCancel, onDueInBusinessDays }) {
+function EditRow({ form, set, onSave, onCancel, onDueInBusinessDays, onRegenerateCode }) {
   return (
     <tr className="border-t border-gray-100 bg-indigo-50/40">
       <td className="px-2 py-1.5">
-        <input
-          value={form.task_code || ''}
-          onChange={set('task_code')}
-          className="w-20 border border-gray-300 rounded px-2 py-1 text-sm"
-        />
+        <div className="flex items-center gap-1">
+          <input
+            value={form.task_code || ''}
+            onChange={set('task_code')}
+            placeholder="auto"
+            className="w-20 border border-gray-300 rounded px-2 py-1 text-sm"
+          />
+          {onRegenerateCode && (
+            <button
+              type="button"
+              onClick={onRegenerateCode}
+              title="Regenerate the auto code"
+              className="text-xs text-gray-400 hover:text-indigo-600"
+            >
+              🔄
+            </button>
+          )}
+        </div>
       </td>
       <td className="px-2 py-1.5">
         <input

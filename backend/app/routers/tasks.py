@@ -1,11 +1,13 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
-from ..database import get_project_db
-from ..excel_utils import make_excel_response, make_template_response, read_import_excel
+from .. import code_generator, models, schemas
+from ..database import get_master_db, get_project_db
+from ..import_engine import ImportError_, export_response, raise_import_errors, read_rows, template_response
+from ..import_schemas import TASKS as SCHEMA
 from ..activity import log_changes
 from ..auth import require_internal
 
@@ -13,18 +15,23 @@ from ..auth import require_internal
 # must not see tasks at all, per the security spec ("ห้ามเห็น internal task").
 router = APIRouter(prefix="/api/{slug}/tasks", tags=["tasks"], dependencies=[Depends(require_internal)])
 
-COLUMNS = [
-    "task_code",
-    "title",
-    "description",
-    "phase",
-    "owner",
-    "due_date",
-    "status",
-    "priority",
-    "is_followup",
-    "linked_function_id",
-]
+# Column list now lives in import_schemas — one definition for the
+# template, the import validator and the export.
+COLUMNS = SCHEMA.template_columns
+
+
+def _unique_copy_code(db: Session, original_code: Optional[str]) -> Optional[str]:
+    """original-COPY, or original-COPY2, -COPY3, ... if that's taken too —
+    cloning the same task twice used to silently produce two rows sharing a
+    code; the unique index means it must not, so this finds a free one."""
+    if not original_code:
+        return None
+    candidate = f"{original_code}-COPY"
+    n = 2
+    while code_generator.code_exists(db, "task", candidate):
+        candidate = f"{original_code}-COPY{n}"
+        n += 1
+    return candidate
 
 
 def apply_filters(q, owner: Optional[str], status: Optional[str], phase: Optional[str], is_followup: Optional[bool]):
@@ -53,10 +60,24 @@ def list_tasks(
 
 
 @router.post("", response_model=schemas.TaskOut)
-def create_task(slug: str, payload: schemas.TaskCreate, db: Session = Depends(get_project_db)):
-    obj = models.Task(**payload.model_dump())
+def create_task(
+    slug: str,
+    payload: schemas.TaskCreate,
+    db: Session = Depends(get_project_db),
+    master_db: Session = Depends(get_master_db),
+):
+    data = payload.model_dump()
+    # Running Code Generator: a blank code auto-generates (when the project
+    # has a Project Code set); a code given by hand is used as typed, and
+    # advances the sequence if it matches this project's own pattern.
+    data["task_code"] = code_generator.resolve_code_for_create(db, master_db, slug, "task", data.get("task_code"))
+    obj = models.Task(**data)
     db.add(obj)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Task code '{data['task_code']}' is already used in this project.")
     db.refresh(obj)
     return obj
 
@@ -102,7 +123,7 @@ def clone_task(slug: str, item_id: int, db: Session = Depends(get_project_db)):
         for c in models.Task.__table__.columns
         if c.name not in ("id", "task_code", "created_at")
     }
-    data["task_code"] = f"{original.task_code}-COPY" if original.task_code else None
+    data["task_code"] = _unique_copy_code(db, original.task_code)
     data["title"] = f"{original.title} (Copy)"
     clone = models.Task(**data)
     db.add(clone)
@@ -121,19 +142,39 @@ def export_tasks(
     db: Session = Depends(get_project_db),
 ):
     items = apply_filters(db.query(models.Task), owner, status, phase, is_followup).order_by(models.Task.id).all()
-    rows = [{col: getattr(item, col) for col in COLUMNS} for item in items]
-    return make_excel_response(rows, COLUMNS, f"{slug}-tasks.xlsx")
+    rows = [{col: getattr(item, col, None) for col in SCHEMA.export_columns} for item in items]
+    return export_response(rows, SCHEMA.export_columns, f"{slug}-tasks.xlsx")
 
 
 @router.get("/import-template")
 def import_template():
-    return make_template_response(COLUMNS, "tasks-import-template.xlsx")
+    return template_response(SCHEMA, "tasks-import-template.xlsx")
 
 
 @router.post("/import")
-async def import_tasks(slug: str, file: UploadFile = File(...), db: Session = Depends(get_project_db)):
+async def import_tasks(
+    slug: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_project_db),
+    master_db: Session = Depends(get_master_db),
+):
     content = await file.read()
-    records = read_import_excel(content, COLUMNS)
+    try:
+        records, report = read_rows(content, SCHEMA)
+    except ImportError_ as exc:
+        raise_import_errors(exc)
+
+    code_errors = code_generator.validate_import_codes(db, "task", records, "task_code")
+    if code_errors:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"{len(code_errors)} cell(s) could not be imported. Nothing was saved.",
+                "errors": code_errors,
+                "error_count": len(code_errors),
+            },
+        )
+
     created = 0
     for record in records:
         if not record.get("title"):
@@ -145,7 +186,11 @@ async def import_tasks(slug: str, file: UploadFile = File(...), db: Session = De
                 record["linked_function_id"] = int(record["linked_function_id"])
             except (TypeError, ValueError):
                 record["linked_function_id"] = None
+        # Blank -> auto-generate; given -> used as-is, advancing the sequence
+        # if it matches this project's pattern. Uniqueness was already
+        # cleared above, so nothing here needs to raise.
+        record["task_code"] = code_generator.resolve_code_for_import_row(db, master_db, slug, "task", record.get("task_code"))
         db.add(models.Task(**record))
         created += 1
     db.commit()
-    return {"imported": created}
+    return {"imported": created, **report}

@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime
 from typing import Optional
 
@@ -9,11 +10,25 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 PROJECT_CATEGORIES = ("critical", "non_critical", "ma", "rollout")
 
+PROJECT_CODE_RE = re.compile(r"^[A-Z]{2,4}$")
+
+
+def _validate_project_code(v):
+    if v is None or v == "":
+        return None
+    v = v.strip().upper()
+    if not PROJECT_CODE_RE.match(v):
+        raise ValueError("project_code must be 2-4 letters, e.g. 'CB' or 'TBOS'")
+    return v
+
 
 class ProjectCreate(BaseModel):
     name: str
     project_type: Optional[str] = "simple"  # simple | estimate
     project_category: Optional[str] = None  # critical | non_critical | ma | rollout
+    # Running Code Generator's "PJ" prefix. Optional at creation — a project
+    # can always get one later from Project Settings.
+    project_code: Optional[str] = None
 
     @field_validator("project_type")
     @classmethod
@@ -29,6 +44,24 @@ class ProjectCreate(BaseModel):
             raise ValueError(f"project_category must be one of {PROJECT_CATEGORIES}")
         return v
 
+    @field_validator("project_code")
+    @classmethod
+    def validate_project_code(cls, v):
+        return _validate_project_code(v)
+
+
+class ProjectUpdate(BaseModel):
+    """Project Settings — currently just the running-code prefix. Kept as
+    its own schema (rather than reusing ProjectCreate) so this endpoint can
+    never accidentally accept a `name`/`slug` change it wasn't built for."""
+
+    project_code: Optional[str] = None
+
+    @field_validator("project_code")
+    @classmethod
+    def validate_project_code(cls, v):
+        return _validate_project_code(v)
+
 
 class ProjectOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -38,6 +71,7 @@ class ProjectOut(BaseModel):
     slug: str
     project_type: str
     project_category: Optional[str] = None
+    project_code: Optional[str] = None
     archived: bool = False
     created_at: datetime
 

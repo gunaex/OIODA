@@ -37,6 +37,10 @@ class Project(MasterBase):
     project_category = Column(String, nullable=True)  # critical | non_critical | ma | rollout
     notification_email = Column(String, nullable=True)  # reserved for future email alerts
     archived = Column(Boolean, default=False)  # hidden from the default project list, not deleted
+    # Running Code Generator's "PJ" prefix (e.g. "CB", "TB") — 2-4 uppercase
+    # letters. Nullable: a project created before this feature, or one that
+    # never sets it, just keeps typing task/function codes by hand.
+    project_code = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -362,6 +366,24 @@ class BoardItem(ProjectBase):
     promoted_from_id = Column(Integer, ForeignKey("board_items.id"), nullable=True)
     sla_due_date = Column(Date, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CodeSequence(ProjectBase):
+    """The running-code pointer for one entity type (task / function) in this
+    project. One row per entity_type — `next_code()` reads it, advances it,
+    and persists the advance in the same transaction as the entity it's
+    generating a code for, so the pointer and the entity it names can't drift
+    apart from a half-committed request.
+    """
+
+    __tablename__ = "code_sequences"
+    __table_args__ = (UniqueConstraint("entity_type", name="uq_code_sequence_entity_type"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_type = Column(String, nullable=False)  # task | function
+    current_alphabet = Column(String, nullable=False, default="A")
+    current_number = Column(Integer, nullable=False, default=0)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

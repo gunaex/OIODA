@@ -20,6 +20,8 @@ export default function ProjectList() {
   const [name, setName] = useState('')
   const [projectType, setProjectType] = useState('simple')
   const [projectCategory, setProjectCategory] = useState('')
+  const [projectCode, setProjectCode] = useState('')
+  const [createError, setCreateError] = useState(null)
   const [showArchived, setShowArchived] = useState(false)
   const [confirmAction, setConfirmAction] = useState(null) // { type: 'archive'|'unarchive'|'delete', slug, name }
   const navigate = useNavigate()
@@ -53,13 +55,17 @@ export default function ProjectList() {
     e.preventDefault()
     if (!name.trim()) return
     setCreating(true)
+    setCreateError(null)
     try {
-      const project = await createProject(name.trim(), projectType, projectCategory || null)
+      const project = await createProject(name.trim(), projectType, projectCategory || null, projectCode.trim() || null)
       setName('')
       setProjectType('simple')
       setProjectCategory('')
+      setProjectCode('')
       setProjects((prev) => [project, ...prev])
       navigate(`/${project.slug}/dashboard`)
+    } catch (err) {
+      setCreateError(err?.response?.data?.detail?.[0]?.msg || err?.response?.data?.detail || 'Could not create the project.')
     } finally {
       setCreating(false)
     }
@@ -123,6 +129,14 @@ export default function ProjectList() {
             <option value="ma">MA</option>
             <option value="rollout">Rollout</option>
           </select>
+          <input
+            value={projectCode}
+            onChange={(e) => setProjectCode(e.target.value.toUpperCase())}
+            placeholder="PJ code (optional)"
+            title="2-4 letters used to auto-generate Task/Function running codes, e.g. CB"
+            maxLength={4}
+            className="w-32 px-3 py-2 border border-gray-300 rounded-md text-sm uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
           <button
             type="submit"
             disabled={creating}
@@ -131,6 +145,7 @@ export default function ProjectList() {
             {creating ? 'Creating…' : 'New Project'}
           </button>
         </form>
+        {createError && <p className="text-sm text-red-600 -mt-6 mb-6">{createError}</p>}
 
         {loading ? (
           <p className="text-gray-500 text-sm">Loading…</p>

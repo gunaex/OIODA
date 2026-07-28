@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .. import effort_budget, models, schemas
+from ..activity import log_change, log_changes
 from ..auth import get_current_user, require_internal
 from ..database import get_master_db, get_project_db
 from ..reports import impact_analysis
@@ -95,8 +96,11 @@ def update_change_request(
     if new_status and new_status != cr.status:
         _apply_status_change(db, cr, new_status)
 
+    diffs = {k: (getattr(cr, k), v) for k, v in data.items() if getattr(cr, k) != v}
     for key, value in data.items():
         setattr(cr, key, value)
+    if diffs:
+        log_changes(db, "change_request", cr.id, diffs, cr.requested_by)
     db.commit()
     db.refresh(cr)
     return cr
@@ -134,6 +138,9 @@ def _apply_status_change(db: Session, cr: models.ChangeRequest, new_status: str)
                 ),
             )
 
+    # Change requests never wrote to activity_log either, so a CR moving
+    # through its lifecycle was invisible to every report.
+    log_change(db, "change_request", cr.id, "status", cr.status, new_status, cr.requested_by)
     cr.status = new_status
     if new_status == CHANGE_REQUEST_APPROVED_STATUS:
         _materialize_approved_impacts(db, cr)

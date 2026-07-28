@@ -47,6 +47,50 @@ def write_table(ws, start_row: int, headers: list[str], rows: list[dict]) -> int
     return r + 1
 
 
+NOTE_FONT = Font(name="Calibri", italic=True, color="6B7280")
+
+# A chart needs at least this many data points to say anything. Below it, the
+# chart is skipped and a note explains why — an axis with one bar on it looks
+# like a broken report, and an empty one looks like broken data.
+MIN_CHART_POINTS = 2
+
+
+def write_note(ws, row: int, text: str) -> int:
+    """An explanatory line, for the cases where there is nothing to show."""
+    cell = ws.cell(row=row, column=1, value=text)
+    cell.font = NOTE_FONT
+    return row + 2
+
+
+def write_empty_notice(ws, row: int, headers: list[str], reason: str) -> int:
+    """A sheet with no data still gets its header row, so the reader can see
+    what it *would* contain, plus a sentence saying why it is empty. A blank
+    sheet is indistinguishable from a broken one."""
+    row = write_table(ws, row, headers, [])
+    return write_note(ws, row, reason)
+
+
+def add_chart(ws, chart, anchor: str, data_ref, cats_ref, point_count: int, skip_note_cell: str = None, reason: str = None):
+    """Attaches a native Excel chart bound to cell ranges in this sheet, or
+    skips it and writes a note when there isn't enough data to plot.
+
+    Native charts (not images) so the reader can retune the range, restyle it,
+    or copy it into a deck — and so it updates if they edit the numbers.
+    """
+    if point_count < MIN_CHART_POINTS:
+        if skip_note_cell:
+            cell = ws[skip_note_cell]
+            cell.value = reason or (
+                f"Chart omitted — needs at least {MIN_CHART_POINTS} data points, found {point_count}."
+            )
+            cell.font = NOTE_FONT
+        return None
+    chart.add_data(data_ref, titles_from_data=True)
+    chart.set_categories(cats_ref)
+    ws.add_chart(chart, anchor)
+    return chart
+
+
 def workbook_response(wb: Workbook, filename: str) -> StreamingResponse:
     buf = io.BytesIO()
     wb.save(buf)

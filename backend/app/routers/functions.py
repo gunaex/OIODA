@@ -1,16 +1,21 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import code_generator, models, schemas
 from ..database import get_project_db, get_master_db
-from ..excel_utils import make_excel_response, make_template_response, read_import_excel
+from ..import_engine import ImportError_, export_response, raise_import_errors, read_rows, template_response
+from ..import_schemas import FUNCTIONS as SCHEMA
 from ..activity import log_changes
 from ..auth import get_current_user, require_internal
 
 router = APIRouter(prefix="/api/{slug}/functions", tags=["functions"], dependencies=[Depends(get_current_user)])
 
+# Column definitions live in import_schemas so template/import/export can't
+# drift. The estimate-only extension columns are still split out here, since
+# a "simple" project shouldn't be shown pricing fields it never uses.
 CORE_COLUMNS = ["function_code", "name", "description", "type", "phase", "owner", "status"]
 
 EXTENSION_COLUMNS = [
@@ -44,7 +49,11 @@ PD_FIELDS = ["pd_ba", "pd_ux", "pd_fe", "pd_be", "pd_int_data", "pd_qa", "pd_dev
 
 
 def columns_for_type(project_type: str) -> list[str]:
-    return ESTIMATE_COLUMNS if project_type == "estimate" else SIMPLE_COLUMNS
+    """Which columns a project of this type gets, filtered through the schema
+    so an export-only field (pd_total) can never leak into the template even
+    though the estimate column list historically mentioned it."""
+    columns = ESTIMATE_COLUMNS if project_type == "estimate" else SIMPLE_COLUMNS
+    return [c for c in columns if c in SCHEMA.importable]
 
 
 def resolve_project_type(slug: str, override: Optional[str], master_db: Session) -> str:
@@ -64,6 +73,20 @@ def apply_pd_total(data: dict) -> dict:
     else:
         data["pd_total"] = sum(v or 0 for v in values)
     return data
+
+
+def _unique_copy_code(db: Session, original_code: Optional[str]) -> Optional[str]:
+    """Same reasoning as tasks._unique_copy_code — cloning the same function
+    twice must not produce two rows sharing a code now that the code column
+    is unique."""
+    if not original_code:
+        return None
+    candidate = f"{original_code}-COPY"
+    n = 2
+    while code_generator.code_exists(db, "function", candidate):
+        candidate = f"{original_code}-COPY{n}"
+        n += 1
+    return candidate
 
 
 def apply_filters(q, phase: Optional[str], status: Optional[str], func_type: Optional[str]):
@@ -96,12 +119,22 @@ def create_function(
     slug: str,
     payload: schemas.FunctionCreate,
     db: Session = Depends(get_project_db),
+    master_db: Session = Depends(get_master_db),
     _user: models.User = Depends(require_internal),
 ):
     data = apply_pd_total(payload.model_dump())
+    data["function_code"] = code_generator.resolve_code_for_create(
+        db, master_db, slug, "function", data.get("function_code")
+    )
     obj = models.Function(**data)
     db.add(obj)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=400, detail=f"Function code '{data['function_code']}' is already used in this project."
+        )
     db.refresh(obj)
     return obj
 
@@ -161,7 +194,7 @@ def clone_function(
         for c in models.Function.__table__.columns
         if c.name not in ("id", "function_code", "created_at", "updated_at")
     }
-    data["function_code"] = f"{original.function_code}-COPY" if original.function_code else None
+    data["function_code"] = _unique_copy_code(db, original.function_code)
     data["name"] = f"{original.name} (Copy)"
     clone = models.Function(**data)
     db.add(clone)
@@ -183,8 +216,10 @@ def export_functions(
     resolved_type = resolve_project_type(slug, type, master_db)
     columns = columns_for_type(resolved_type)
     items = apply_filters(db.query(models.Function), phase, status, func_type).order_by(models.Function.id).all()
-    rows = [{col: getattr(item, col) for col in columns} for item in items]
-    return make_excel_response(rows, columns, f"{slug}-functions.xlsx")
+    # pd_total is export-only: shown here for reference, refused on import.
+    export_columns = columns + [c for c in SCHEMA.export_only if c not in columns]
+    rows = [{col: getattr(item, col, None) for col in export_columns} for item in items]
+    return export_response(rows, export_columns, f"{slug}-functions.xlsx")
 
 
 @router.get("/import-template")
@@ -195,7 +230,7 @@ def import_template(
 ):
     resolved_type = resolve_project_type(slug, type, master_db)
     columns = columns_for_type(resolved_type)
-    return make_template_response(columns, f"functions-import-template-{resolved_type}.xlsx")
+    return template_response(SCHEMA, f"functions-import-template-{resolved_type}.xlsx", columns)
 
 
 @router.post("/import")
@@ -210,12 +245,30 @@ async def import_functions(
     resolved_type = resolve_project_type(slug, type, master_db)
     columns = columns_for_type(resolved_type)
     content = await file.read()
-    records = read_import_excel(content, columns)
+    try:
+        records, report = read_rows(content, SCHEMA, columns)
+    except ImportError_ as exc:
+        raise_import_errors(exc)
+
+    code_errors = code_generator.validate_import_codes(db, "function", records, "function_code")
+    if code_errors:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"{len(code_errors)} cell(s) could not be imported. Nothing was saved.",
+                "errors": code_errors,
+                "error_count": len(code_errors),
+            },
+        )
+
     created = 0
     for record in records:
         if not record.get("name"):
             continue
+        record["function_code"] = code_generator.resolve_code_for_import_row(
+            db, master_db, slug, "function", record.get("function_code")
+        )
         db.add(models.Function(**apply_pd_total(record)))
         created += 1
     db.commit()
-    return {"imported": created}
+    return {"imported": created, **report}

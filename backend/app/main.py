@@ -29,6 +29,8 @@ from .routers import (
     progress_matrix,
     effort,
     change_requests,
+    bulk_import,
+    code_gen,
     reports,
     board_items,
     whiteboards,
@@ -127,6 +129,10 @@ app.include_router(slippage.router)
 app.include_router(progress_matrix.router)
 app.include_router(change_requests.router)
 app.include_router(effort.router)
+app.include_router(code_gen.router)
+# Registered before note_pages: its /note-pages/import-template route must
+# match before the /{entity_type}/{entity_id}/... catch-all there.
+app.include_router(bulk_import.router)
 # Registered last: its reverse-lookup routes are shaped
 # /api/{slug}/{entity_type}/{entity_id}/... , so anything with a literal
 # first segment (tasks/documents/...) gets first refusal on a match.

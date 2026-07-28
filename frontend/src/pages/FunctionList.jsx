@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
-import { listItems, createItem, updateItem, deleteItem, cloneItem, openOrCreateWhiteboard } from '../api/client'
+import { listItems, createItem, updateItem, deleteItem, cloneItem, openOrCreateWhiteboard, previewNextCode } from '../api/client'
 import ImportExportBar from '../components/ImportExportBar.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import LinkedNotesPanel from '../components/LinkedNotesPanel.jsx'
@@ -92,6 +92,15 @@ export default function FunctionList() {
     setAdding(true)
     setEditingId(null)
     setForm(emptyForm)
+    regenerateCode()
+  }
+
+  // Non-committing preview — burns nothing until save(). Silent on failure
+  // (e.g. project has no Project Code yet): the field just stays blank/manual.
+  const regenerateCode = () => {
+    previewNextCode(slug, 'function')
+      .then((code) => setForm((f) => ({ ...f, function_code: code })))
+      .catch(() => {})
   }
 
   const cancel = () => {
@@ -201,7 +210,7 @@ export default function FunctionList() {
           </thead>
           <tbody>
             {adding && (
-              <EditRow form={form} set={set} onSave={save} onCancel={cancel} isEstimate={isEstimate} />
+              <EditRow form={form} set={set} onSave={save} onCancel={cancel} isEstimate={isEstimate} onRegenerateCode={regenerateCode} />
             )}
             {loading ? (
               <tr>
@@ -306,7 +315,7 @@ export default function FunctionList() {
   )
 }
 
-function EditRow({ form, set, onSave, onCancel, isEstimate }) {
+function EditRow({ form, set, onSave, onCancel, isEstimate, onRegenerateCode }) {
   const colSpan = isEstimate ? 12 : 8
   const pdTotalPreview = PD_FIELDS.reduce((sum, k) => sum + (Number(form[k]) || 0), 0)
 
@@ -314,11 +323,24 @@ function EditRow({ form, set, onSave, onCancel, isEstimate }) {
     <>
       <tr className="border-t border-gray-100 bg-indigo-50/40">
         <td className="px-2 py-1.5">
-          <input
-            value={form.function_code || ''}
-            onChange={set('function_code')}
-            className="w-24 border border-gray-300 rounded px-2 py-1 text-sm"
-          />
+          <div className="flex items-center gap-1">
+            <input
+              value={form.function_code || ''}
+              onChange={set('function_code')}
+              placeholder="auto"
+              className="w-24 border border-gray-300 rounded px-2 py-1 text-sm"
+            />
+            {onRegenerateCode && (
+              <button
+                type="button"
+                onClick={onRegenerateCode}
+                title="Regenerate the auto code"
+                className="text-xs text-gray-400 hover:text-indigo-600"
+              >
+                🔄
+              </button>
+            )}
+          </div>
         </td>
         <td className="px-2 py-1.5">
           <input

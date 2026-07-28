@@ -28,6 +28,8 @@ export default function ReportsPage() {
   const [dailyDate, setDailyDate] = useState(todayISO())
   const [weekStart, setWeekStart] = useState(mondayOfThisWeekISO())
   const [month, setMonth] = useState(thisMonthYYYYMM())
+  // Internal by default — sending the client copy has to be a deliberate choice.
+  const [audience, setAudience] = useState('internal')
   const [phaseCode, setPhaseCode] = useState(PHASES[0].code)
 
   return (
@@ -68,19 +70,46 @@ export default function ReportsPage() {
           </a>
         </ReportCard>
 
-        <ReportCard title="Monthly Report" description="Executive summary, phase breakdown, overdue tasks & pending mandatory docs.">
+        <ReportCard
+          title="Monthly Report"
+          description="Executive summary, phase breakdown, effort & budget, change requests, schedule health and risk."
+        >
           <input
             type="month"
             value={month}
             onChange={(e) => setMonth(e.target.value)}
             className="border border-gray-300 rounded px-2 py-1.5 text-sm"
           />
+          <select
+            value={audience}
+            onChange={(e) => setAudience(e.target.value)}
+            className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="internal">Internal</option>
+            <option value="client">Client</option>
+          </select>
           <a
-            href={reportUrl(slug, 'monthly', { month })}
+            href={reportUrl(slug, 'monthly', { month, audience })}
             className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
           >
             Generate
           </a>
+          {/* Spelled out rather than left to the label, because the difference
+              is what does and doesn't leave the building. */}
+          <p className="w-full text-xs text-gray-500 mt-1">
+            {audience === 'client' ? (
+              <>
+                <span className="font-medium text-gray-700">Client copy:</span> no resource utilization, no rates
+                or margin, no individual names (roles only). Delivery mode appears only if this project has
+                opted in under Settings.
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-gray-700">Internal copy:</span> includes resource utilization,
+                day rate and cost, and real names. Not for sending to the client.
+              </>
+            )}
+          </p>
         </ReportCard>
 
         <ReportCard title="Phase Closure Report" description="Document checklist (M/O) + sign-off history for one phase.">

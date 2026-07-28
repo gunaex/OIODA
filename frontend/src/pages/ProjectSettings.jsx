@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { getEffortConfig, updateEffortConfig } from '../api/client'
+import { getEffortConfig, getProject, updateEffortConfig, updateProjectSettings } from '../api/client'
 import { useAuth } from '../auth/AuthContext.jsx'
+
+const PROJECT_CODE_RE = /^[A-Z]{2,4}$/
 
 // Project Settings → Effort & Budget. This is the page the Budget Gauge and
 // the CR impact panel link to when they say "needs
@@ -39,6 +41,11 @@ export default function ProjectSettings() {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState(null)
 
+  const [projectCode, setProjectCode] = useState('')
+  const [codeSaving, setCodeSaving] = useState(false)
+  const [codeSaved, setCodeSaved] = useState(false)
+  const [codeError, setCodeError] = useState(null)
+
   useEffect(() => {
     setLoading(true)
     getEffortConfig(slug)
@@ -51,7 +58,30 @@ export default function ProjectSettings() {
       )
       .catch(() => setError('Could not load the project settings.'))
       .finally(() => setLoading(false))
+    getProject(slug)
+      .then((p) => setProjectCode(p.project_code || ''))
+      .catch(() => {})
   }, [slug])
+
+  const saveProjectCode = async () => {
+    setCodeSaving(true)
+    setCodeError(null)
+    setCodeSaved(false)
+    try {
+      const trimmed = projectCode.trim().toUpperCase()
+      if (trimmed && !PROJECT_CODE_RE.test(trimmed)) {
+        setCodeError("Project code must be 2-4 letters, e.g. 'CB' or 'TBOS'.")
+        return
+      }
+      const updated = await updateProjectSettings(slug, { project_code: trimmed || null })
+      setProjectCode(updated.project_code || '')
+      setCodeSaved(true)
+    } catch (err) {
+      setCodeError(err?.response?.data?.detail?.[0]?.msg || err?.response?.data?.detail || 'Could not save the project code.')
+    } finally {
+      setCodeSaving(false)
+    }
+  }
 
   const set = (key) => (e) => {
     const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value
@@ -115,6 +145,34 @@ export default function ProjectSettings() {
       </p>
 
       {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+
+      <Card
+        title="Project Code"
+        subtitle="The 'PJ' prefix used to auto-generate Task/Function running codes (e.g. CBTA01). Leave blank to keep typing codes by hand."
+      >
+        <Field label="Project Code" hint="2-4 letters, e.g. CB or TBOS.">
+          <div className="flex items-center gap-2">
+            <input
+              value={projectCode}
+              onChange={(e) => {
+                setProjectCode(e.target.value.toUpperCase())
+                setCodeSaved(false)
+              }}
+              placeholder="e.g. CB"
+              maxLength={4}
+              className="w-24 border border-gray-300 rounded px-2 py-1 text-sm uppercase"
+            />
+            <button
+              onClick={saveProjectCode}
+              disabled={codeSaving}
+              className="px-3 py-1 text-xs bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {codeSaving ? 'Saving…' : codeSaved ? 'Saved' : 'Save'}
+            </button>
+          </div>
+        </Field>
+        {codeError && <p className="text-sm text-red-600">{codeError}</p>}
+      </Card>
 
       <Card
         title="Contract"

@@ -90,6 +90,7 @@ def create_project(
         slug=slug,
         project_type=payload.project_type,
         project_category=payload.project_category,
+        project_code=payload.project_code,
     )
     db.add(project)
     db.commit()
@@ -122,6 +123,26 @@ def get_project(slug: str, db: Session = Depends(get_master_db)):
         raise HTTPException(status_code=404, detail="Project not found")
     if not project_db_exists(slug):
         get_project_engine(slug)
+    return project
+
+
+@router.put("/{slug}/settings", response_model=schemas.ProjectOut)
+def update_project_settings(
+    slug: str,
+    payload: schemas.ProjectUpdate,
+    db: Session = Depends(get_master_db),
+    _user: models.User = Depends(require_internal),
+):
+    """Project Settings. Today this is just the running-code prefix — a
+    project created before the Running Code Generator existed, or one that
+    skipped setting it, gets it here rather than needing to be recreated."""
+    project = db.query(models.Project).filter(models.Project.slug == slug).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(project, key, value)
+    db.commit()
+    db.refresh(project)
     return project
 
 
