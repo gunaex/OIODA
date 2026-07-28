@@ -31,7 +31,7 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        <div className="page-shell py-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
           <div className="flex items-center gap-4 min-w-0">
             <NavLink to="/" className="text-sm text-gray-500 hover:text-gray-800 shrink-0">
               &larr; Projects
@@ -49,6 +49,11 @@ export default function Layout() {
             <NavLink to={`/${slug}/gantt`} className={tabClass}>
               Gantt
             </NavLink>
+            {/* Progress-reporting view, so readable by every role — same
+                treatment as the Gantt it sits next to. */}
+            <NavLink to={`/${slug}/progress-matrix`} className={tabClass}>
+              Matrix
+            </NavLink>
             {!isClientViewer && (
               <NavLink to={`/${slug}/tasks`} className={tabClass}>
                 Tasks
@@ -62,6 +67,11 @@ export default function Layout() {
                 Notes
               </NavLink>
             )}
+            {/* Notes Hub is readable by every role (writes are blocked
+                server-side), unlike the internal-only quick Notes tab. */}
+            <NavLink to={`/${slug}/notes-hub`} className={tabClass}>
+              Notes Hub
+            </NavLink>
             {!isClientViewer && (
               <NavLink to={`/${slug}/allocations`} className={tabClass}>
                 Resources
@@ -72,6 +82,11 @@ export default function Layout() {
                 Board
               </NavLink>
             )}
+            {/* Readable by every role — a client is meant to see what a
+                change costs before agreeing to it. */}
+            <NavLink to={`/${slug}/change-requests`} className={tabClass}>
+              Changes
+            </NavLink>
             {!isClientViewer && (
               <NavLink to={`/${slug}/whiteboards`} className={tabClass}>
                 Whiteboards
@@ -80,6 +95,12 @@ export default function Layout() {
             <NavLink to={`/${slug}/reports`} className={tabClass}>
               Reports
             </NavLink>
+            {/* Effort & Budget config — the contracted man-days live here. */}
+            {user?.role === 'pmo_admin' && (
+              <NavLink to={`/${slug}/settings`} className={tabClass}>
+                Settings
+              </NavLink>
+            )}
           </nav>
           <UserBadge />
         </div>
@@ -90,7 +111,7 @@ export default function Layout() {
           couldn't connect. Try refreshing.
         </div>
       )}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
+      <main className="page-shell py-6">
         <Outlet context={{ project }} />
       </main>
       <QuickNoteBar />

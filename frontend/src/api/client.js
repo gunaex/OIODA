@@ -122,6 +122,91 @@ export const deleteNote = (slug, id) => api.delete(`/${slug}/notes/${id}`).then(
 export const promoteNoteToTask = (slug, id) => api.post(`/${slug}/notes/${id}/promote-task`).then((r) => r.data)
 export const promoteNoteToIssue = (slug, id) => api.post(`/${slug}/notes/${id}/promote-issue`).then((r) => r.data)
 
+// Effort Calculator (Function Point model)
+export const getEffortConfig = (slug) => api.get(`/${slug}/effort-config`).then((r) => r.data)
+export const updateEffortConfig = (slug, payload) => api.put(`/${slug}/effort-config`, payload).then((r) => r.data)
+export const getEffortDrivers = (slug) => api.get(`/${slug}/effort-drivers`).then((r) => r.data)
+export const calculateEffort = (slug, payload) =>
+  api.post(`/${slug}/effort-estimates/calculate`, payload).then((r) => r.data)
+export const listEffortEstimates = (slug, entityType, entityId) =>
+  api
+    .get(`/${slug}/effort-estimates`, {
+      params: { linked_entity_type: entityType, linked_entity_id: entityId },
+    })
+    .then((r) => r.data)
+export const createEffortEstimate = (slug, payload) =>
+  api.post(`/${slug}/effort-estimates`, payload).then((r) => r.data)
+export const updateEffortEstimate = (slug, id, payload) =>
+  api.put(`/${slug}/effort-estimates/${id}`, payload).then((r) => r.data)
+export const deleteEffortEstimate = (slug, id) =>
+  api.delete(`/${slug}/effort-estimates/${id}`).then((r) => r.data)
+export const getEffortSummary = (slug) => api.get(`/${slug}/effort-estimates/summary`).then((r) => r.data)
+export const getEffortBudget = (slug) => api.get(`/${slug}/effort-budget`).then((r) => r.data)
+
+// Change Requests
+export const listChangeRequests = (slug, status) =>
+  api.get(`/${slug}/change-requests`, { params: { status } }).then((r) => r.data)
+export const getChangeRequest = (slug, id) => api.get(`/${slug}/change-requests/${id}`).then((r) => r.data)
+export const createChangeRequest = (slug, payload) =>
+  api.post(`/${slug}/change-requests`, payload).then((r) => r.data)
+export const updateChangeRequest = (slug, id, payload) =>
+  api.put(`/${slug}/change-requests/${id}`, payload).then((r) => r.data)
+export const deleteChangeRequest = (slug, id) => api.delete(`/${slug}/change-requests/${id}`).then((r) => r.data)
+export const listCrImpacts = (slug, id) => api.get(`/${slug}/change-requests/${id}/impacts`).then((r) => r.data)
+export const addCrImpact = (slug, id, payload) =>
+  api.post(`/${slug}/change-requests/${id}/impacts`, payload).then((r) => r.data)
+export const deleteCrImpact = (slug, id, impactId) =>
+  api.delete(`/${slug}/change-requests/${id}/impacts/${impactId}`).then((r) => r.data)
+export const getCrImpact = (slug, id) => api.get(`/${slug}/change-requests/${id}/impact`).then((r) => r.data)
+export const submitCrForApproval = (slug, id) =>
+  api.post(`/${slug}/change-requests/${id}/submit-for-approval`).then((r) => r.data)
+export const crImpactExportUrl = (slug, id) =>
+  `${API_BASE}/${slug}/change-requests/${id}/impact-analysis-export`
+
+// Progress Matrix (Yotei-Jisseki plan-vs-actual chart)
+export const getProgressMatrix = (slug, { entityTypes, phase, owner, from, to } = {}) =>
+  api
+    .get(`/${slug}/progress-matrix`, {
+      params: {
+        entity_type: entityTypes?.length ? entityTypes.join(',') : undefined,
+        phase: phase || undefined,
+        owner: owner || undefined,
+        from: from || undefined,
+        to: to || undefined,
+      },
+    })
+    .then((r) => r.data)
+export const getProgressMatrixLegend = (slug) => api.get(`/${slug}/progress-matrix/legend`).then((r) => r.data)
+export const getProgressMatrixCalendar = (slug, from, to) =>
+  api.get(`/${slug}/progress-matrix/calendar`, { params: { from, to } }).then((r) => r.data)
+export const getPlanDates = (slug, entityType, entityId) =>
+  api.get(`/${slug}/plan-dates/${entityType}/${entityId}`).then((r) => r.data)
+export const setPlanDates = (slug, payload) => api.put(`/${slug}/plan-dates`, payload).then((r) => r.data)
+export const getActualOverride = (slug, entityType, entityId) =>
+  api.get(`/${slug}/actual-overrides/${entityType}/${entityId}`).then((r) => r.data)
+export const setActualOverride = (slug, payload) =>
+  api.put(`/${slug}/actual-overrides`, payload).then((r) => r.data)
+export const clearActualOverride = (slug, entityType, entityId) =>
+  api.delete(`/${slug}/actual-overrides/${entityType}/${entityId}`).then((r) => r.data)
+
+// Note System (markdown wiki pages — distinct from the quick notes above)
+export const listNotePages = (slug, { tag, q } = {}) =>
+  api.get(`/${slug}/note-pages`, { params: { tag, q } }).then((r) => r.data)
+export const getNotePage = (slug, id) => api.get(`/${slug}/note-pages/${id}`).then((r) => r.data)
+export const createNotePage = (slug, payload) => api.post(`/${slug}/note-pages`, payload).then((r) => r.data)
+export const updateNotePage = (slug, id, payload) =>
+  api.put(`/${slug}/note-pages/${id}`, payload).then((r) => r.data)
+export const deleteNotePage = (slug, id) => api.delete(`/${slug}/note-pages/${id}`).then((r) => r.data)
+export const listNoteBacklinks = (slug, id) =>
+  api.get(`/${slug}/note-pages/${id}/backlinks`).then((r) => r.data)
+export const listTags = (slug) => api.get(`/${slug}/tags`).then((r) => r.data)
+export const moveNoteTag = (slug, id, fromTag, toTag) =>
+  api.put(`/${slug}/note-pages/${id}/tags/move`, { from_tag: fromTag, to_tag: toTag }).then((r) => r.data)
+export const listLinkedNotes = (slug, entityType, entityId) =>
+  api.get(`/${slug}/${entityType}/${entityId}/linked-notes`).then((r) => r.data)
+export const linkNoteToEntity = (slug, entityType, entityId, payload) =>
+  api.post(`/${slug}/${entityType}/${entityId}/link-note`, payload).then((r) => r.data)
+
 // Board Items (Issue / Incident / Backlog)
 export const listBoardItems = (slug, type, filters = {}) =>
   api.get(`/${slug}/board-items`, { params: { type, ...filters } }).then((r) => r.data)

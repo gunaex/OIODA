@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { getProjectDashboard, getSlippageSummary } from '../api/client'
 import StatusBadge from '../components/StatusBadge.jsx'
+import EffortBudgetGauge from '../components/EffortBudgetGauge.jsx'
 
 const RAG_LABEL = { red: 'Red', amber: 'Amber', green: 'Green' }
 
@@ -51,6 +52,8 @@ export default function ProjectDashboard() {
         <StatusBadge status={data.rag} />
         <span className="text-sm text-gray-400">{RAG_LABEL[data.rag]}</span>
       </div>
+
+      <EffortBudgetGauge slug={slug} />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white border border-gray-200 rounded-lg p-4">

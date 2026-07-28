@@ -68,9 +68,27 @@ PROJECT_COLUMN_PATCHES = {
     "gantt_items": {
         "phase": "TEXT",
         "google_calendar_event_id": "TEXT",  # reserved — no OAuth flow yet
+        # Progress Matrix (Yotei-Jisseki): generalises linked_task_id to any
+        # entity. Additive and nullable — linked_task_id is untouched, so the
+        # existing Gantt bar chart keeps querying exactly what it always did.
+        "linked_entity_type": "TEXT",
+        "linked_entity_id": "INTEGER",
     },
     "documents": {
         "google_drive_file_id": "TEXT",  # reserved — no OAuth flow yet
+    },
+    # Delivery Mode (HUMAN / HUMAN-in-LOOP). Additive and defaulted so every
+    # estimate created before this feature keeps its original numbers.
+    "effort_estimate_config": {
+        "hil_leverage_json": "TEXT",
+        "hil_price_discount_percent": "REAL DEFAULT 35",
+        "show_delivery_mode_in_client_docs": "BOOLEAN DEFAULT 0",
+        "hil_restricted": "BOOLEAN DEFAULT 0",
+    },
+    "effort_estimates": {
+        "delivery_mode": "TEXT DEFAULT 'human'",
+        "effort_multiplier_applied": "REAL DEFAULT 1.0",
+        "man_days_human": "REAL",
     },
 }
 
@@ -115,6 +133,58 @@ def migrate_phase_values(engine, tables: list[str]):
         conn.commit()
 
 
+def backfill_gantt_entity_links(engine):
+    """Progress Matrix migration: every pre-existing gantt_items row that had
+    a linked_task_id gets the equivalent generalised link, so the new
+    linked_entity_type/id columns describe the whole table from day one and
+    the Progress Matrix doesn't have to special-case "old rows".
+
+    Idempotent: the WHERE clause only matches rows not yet backfilled, so this
+    is a no-op on every run after the first. linked_task_id itself is never
+    read out of, changed, or cleared."""
+    with engine.connect() as conn:
+        existing_tables = {
+            row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        }
+        if "gantt_items" not in existing_tables:
+            return
+        conn.execute(
+            text(
+                "UPDATE gantt_items "
+                "SET linked_entity_type = 'task', linked_entity_id = linked_task_id "
+                "WHERE linked_task_id IS NOT NULL AND linked_entity_type IS NULL"
+            )
+        )
+        conn.commit()
+
+
+def backfill_delivery_mode(engine):
+    """Delivery Mode migration: an estimate saved before the feature existed
+    was, by definition, a HUMAN estimate. ALTER TABLE ... DEFAULT already
+    fills delivery_mode and effort_multiplier_applied for existing rows; this
+    fills man_days_human, which has no default because it isn't a constant —
+    for a HUMAN estimate it equals the man-days already stored.
+
+    Idempotent: only touches rows still holding NULL."""
+    with engine.connect() as conn:
+        existing_tables = {
+            row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        }
+        if "effort_estimates" not in existing_tables:
+            return
+        conn.execute(
+            text(
+                "UPDATE effort_estimates SET man_days_human = calculated_man_days "
+                "WHERE man_days_human IS NULL AND calculated_man_days IS NOT NULL"
+            )
+        )
+        conn.execute(text("UPDATE effort_estimates SET delivery_mode = 'human' WHERE delivery_mode IS NULL"))
+        conn.execute(
+            text("UPDATE effort_estimates SET effort_multiplier_applied = 1.0 WHERE effort_multiplier_applied IS NULL")
+        )
+        conn.commit()
+
+
 def project_db_path(slug: str) -> str:
     return os.path.join(PROJECTS_DIR, f"{slug}.db")
 
@@ -130,6 +200,8 @@ def get_project_engine(slug: str):
         ProjectBase.metadata.create_all(bind=engine)
         ensure_columns(engine, PROJECT_COLUMN_PATCHES)
         migrate_phase_values(engine, ["functions", "tasks", "gantt_items", "documents"])
+        backfill_gantt_entity_links(engine)
+        backfill_delivery_mode(engine)
         _project_engines[slug] = engine
         _project_sessions[slug] = sessionmaker(
             autocommit=False, autoflush=False, bind=engine

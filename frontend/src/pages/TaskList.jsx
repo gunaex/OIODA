@@ -4,6 +4,8 @@ import { listItems, createItem, updateItem, deleteItem, cloneItem, addBusinessDa
 import ImportExportBar from '../components/ImportExportBar.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import CommentsPanel from '../components/CommentsPanel.jsx'
+import LinkedNotesPanel from '../components/LinkedNotesPanel.jsx'
+import EffortCalculator from '../components/EffortCalculator.jsx'
 
 const MY_NAME_KEY = 'pm-again:my-name'
 
@@ -41,6 +43,8 @@ export default function TaskList() {
   const [filters, setFilters] = useState({ owner: '', status: '', phase: '' })
   const [myName, setMyName] = useState(() => localStorage.getItem(MY_NAME_KEY) || '')
   const [commentsOpenId, setCommentsOpenId] = useState(null)
+  const [notesOpenId, setNotesOpenId] = useState(null)
+  const [effortOpenId, setEffortOpenId] = useState(null)
 
   const load = () => {
     setLoading(true)
@@ -299,6 +303,18 @@ export default function TaskList() {
                         Comments
                       </button>
                       <button
+                        onClick={() => setNotesOpenId((cur) => (cur === item.id ? null : item.id))}
+                        className="text-gray-500 hover:underline mr-3"
+                      >
+                        Notes
+                      </button>
+                      <button
+                        onClick={() => setEffortOpenId((cur) => (cur === item.id ? null : item.id))}
+                        className="text-gray-500 hover:underline mr-3"
+                      >
+                        Effort
+                      </button>
+                      <button
                         onClick={() => remove(item.id)}
                         className="text-red-600 hover:underline"
                       >
@@ -310,6 +326,20 @@ export default function TaskList() {
                     <tr className="border-t border-gray-100 bg-gray-50/50">
                       <td colSpan={9} className="px-4 py-3">
                         <CommentsPanel slug={slug} entityType="task" entityId={item.id} />
+                      </td>
+                    </tr>
+                  )}
+                  {notesOpenId === item.id && (
+                    <tr className="border-t border-gray-100 bg-gray-50/50">
+                      <td colSpan={9} className="px-4 py-3">
+                        <LinkedNotesPanel slug={slug} entityType="task" entityId={item.id} title={item.title} />
+                      </td>
+                    </tr>
+                  )}
+                  {effortOpenId === item.id && (
+                    <tr className="border-t border-gray-100 bg-gray-50/50">
+                      <td colSpan={9} className="px-4 py-3">
+                        <EffortCalculator slug={slug} entityType="task" entityId={item.id} />
                       </td>
                     </tr>
                   )}

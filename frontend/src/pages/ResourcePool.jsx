@@ -65,7 +65,7 @@ export default function ResourcePool() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10">
+      <div className="page-shell py-10">
         <div className="flex items-center justify-between mb-6 gap-4">
           <div className="flex items-center gap-4">
             <NavLink to="/" className="text-sm text-gray-500 hover:text-gray-800">

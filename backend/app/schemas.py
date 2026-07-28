@@ -315,6 +315,317 @@ class NoteOut(BaseModel):
     created_at: datetime
 
 
+# ---------- Effort Calculator / Change Requests ----------
+
+WORK_TYPES = ("screen", "batch", "report")
+EFFORT_ENTITY_TYPES = ("function", "task", "change_request")
+IMPACT_TYPES = ("new", "modify", "delete")
+CR_STATUSES = ("Draft", "UnderAnalysis", "PendingApproval", "Approved", "Rejected", "Deferred")
+
+
+DELIVERY_MODES = ("human", "human_in_loop")
+
+
+class EffortConfigUpdate(BaseModel):
+    productivity_screen: Optional[float] = None
+    productivity_batch: Optional[float] = None
+    productivity_report: Optional[float] = None
+    working_days_per_month: Optional[float] = None
+    phase_ratio_dr: Optional[float] = None
+    phase_ratio_dnpu: Optional[float] = None
+    phase_ratio_iftbct: Optional[float] = None
+    contracted_total_md: Optional[float] = None
+    rate_thb_per_md: Optional[float] = None
+    hil_leverage: Optional[dict] = None  # stored as JSON in hil_leverage_json
+    hil_price_discount_percent: Optional[float] = None
+    show_delivery_mode_in_client_docs: Optional[bool] = None
+    hil_restricted: Optional[bool] = None
+
+
+class EffortConfigOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    productivity_screen: float
+    productivity_batch: float
+    productivity_report: float
+    working_days_per_month: float
+    phase_ratio_dr: float
+    phase_ratio_dnpu: float
+    phase_ratio_iftbct: float
+    contracted_total_md: Optional[float] = None
+    rate_thb_per_md: Optional[float] = None
+    hil_leverage: Optional[dict] = None
+    hil_price_discount_percent: Optional[float] = 35
+    show_delivery_mode_in_client_docs: bool = False
+    hil_restricted: bool = False
+
+
+class EffortCalculateRequest(BaseModel):
+    """Preview only — nothing is written. Drives the live preview on the form."""
+
+    work_type: str
+    driver_counts: dict = {}
+    complexity: Optional[float] = None
+    # Give non_similarity to set it by hand; give reusability to have it
+    # derived from the 16-activity model; give neither and it defaults to 1.
+    non_similarity: Optional[float] = None
+    reusability: Optional[dict] = None
+    priority: Optional[str] = "M"
+    # Omitted entirely by anything written before Delivery Mode existed —
+    # which is exactly why it defaults to "human" (multiplier 1.0).
+    delivery_mode: Optional[str] = "human"
+
+    @field_validator("work_type")
+    @classmethod
+    def validate_work_type(cls, v):
+        if v not in WORK_TYPES:
+            raise ValueError(f"work_type must be one of {WORK_TYPES}")
+        return v
+
+    @field_validator("delivery_mode")
+    @classmethod
+    def validate_delivery_mode(cls, v):
+        if v is not None and v not in DELIVERY_MODES:
+            raise ValueError(f"delivery_mode must be one of {DELIVERY_MODES}")
+        return v or "human"
+
+
+class EffortEstimateCreate(EffortCalculateRequest):
+    linked_entity_type: str
+    linked_entity_id: int
+
+    @field_validator("linked_entity_type")
+    @classmethod
+    def validate_entity_type(cls, v):
+        if v not in EFFORT_ENTITY_TYPES:
+            raise ValueError(f"linked_entity_type must be one of {EFFORT_ENTITY_TYPES}")
+        return v
+
+
+class EffortEstimateUpdate(BaseModel):
+    work_type: Optional[str] = None
+    driver_counts: Optional[dict] = None
+    complexity: Optional[float] = None
+    non_similarity: Optional[float] = None
+    reusability: Optional[dict] = None
+    priority: Optional[str] = None
+    delivery_mode: Optional[str] = None
+
+    @field_validator("work_type")
+    @classmethod
+    def validate_work_type(cls, v):
+        if v is not None and v not in WORK_TYPES:
+            raise ValueError(f"work_type must be one of {WORK_TYPES}")
+        return v
+
+    @field_validator("delivery_mode")
+    @classmethod
+    def validate_delivery_mode(cls, v):
+        if v is not None and v not in DELIVERY_MODES:
+            raise ValueError(f"delivery_mode must be one of {DELIVERY_MODES}")
+        return v
+
+
+class ChangeRequestCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    requested_by: Optional[str] = None
+    requested_date: Optional[date] = None
+    target_date: Optional[date] = None
+
+
+class ChangeRequestUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    requested_by: Optional[str] = None
+    requested_date: Optional[date] = None
+    target_date: Optional[date] = None
+    status: Optional[str] = None
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v):
+        if v is not None and v not in CR_STATUSES:
+            raise ValueError(f"status must be one of {CR_STATUSES}")
+        return v
+
+
+class ChangeRequestOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    cr_code: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    requested_by: Optional[str] = None
+    requested_date: Optional[date] = None
+    target_date: Optional[date] = None
+    status: str
+    linked_document_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChangeRequestImpactCreate(BaseModel):
+    impact_type: str
+    linked_function_id: Optional[int] = None
+    function_name: Optional[str] = None
+    note: Optional[str] = None
+
+    @field_validator("impact_type")
+    @classmethod
+    def validate_impact_type(cls, v):
+        if v not in IMPACT_TYPES:
+            raise ValueError(f"impact_type must be one of {IMPACT_TYPES}")
+        return v
+
+
+class ChangeRequestImpactOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    change_request_id: int
+    impact_type: str
+    linked_function_id: Optional[int] = None
+    function_name: Optional[str] = None
+    note: Optional[str] = None
+
+
+# ---------- Progress Matrix (Yotei-Jisseki) ----------
+
+PROGRESS_ENTITY_TYPES = ("task", "function", "board_item")
+
+
+class PlanDatesRequest(BaseModel):
+    entity_type: str  # task | function | board_item
+    entity_id: int
+    baseline_start: Optional[date] = None
+    baseline_end: Optional[date] = None
+
+    @field_validator("entity_type")
+    @classmethod
+    def validate_entity_type(cls, v):
+        if v not in PROGRESS_ENTITY_TYPES:
+            raise ValueError(f"entity_type must be one of {PROGRESS_ENTITY_TYPES}")
+        return v
+
+
+class ActualOverrideRequest(BaseModel):
+    entity_type: str  # task | function | board_item
+    entity_id: int
+    actual_start_override: Optional[date] = None
+    actual_end_override: Optional[date] = None
+    reason: Optional[str] = None
+    created_by: Optional[str] = None
+
+    @field_validator("entity_type")
+    @classmethod
+    def validate_entity_type(cls, v):
+        if v not in PROGRESS_ENTITY_TYPES:
+            raise ValueError(f"entity_type must be one of {PROGRESS_ENTITY_TYPES}")
+        return v
+
+
+class ActualOverrideOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    entity_type: str
+    entity_id: int
+    actual_start_override: Optional[date] = None
+    actual_end_override: Optional[date] = None
+    reason: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlanDatesOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    gantt_item_id: int
+    entity_type: str
+    entity_id: int
+    baseline_start: Optional[date] = None
+    baseline_end: Optional[date] = None
+
+
+# ---------- Note Pages (markdown wiki: hashtags, wiki-links, backlinks) ----------
+
+
+class NotePageCreate(BaseModel):
+    title: str
+    content_markdown: Optional[str] = ""
+    created_by: Optional[str] = None
+
+
+class NotePageUpdate(BaseModel):
+    title: Optional[str] = None
+    content_markdown: Optional[str] = None
+
+
+class NoteLinkOut(BaseModel):
+    """One `[[...]]` occurrence, with where it points. `resolved=False` means
+    the frontend must render it as plain text (a dead link is not an error)."""
+
+    raw: str
+    resolved: bool
+    target_type: str
+    target_id: Optional[int] = None
+    label: str
+
+
+class NotePageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    content_markdown: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    tags: list[str] = []
+    links: list[NoteLinkOut] = []
+
+
+class NotePageSummary(BaseModel):
+    """List/board payload — no markdown body, so the sidebar and Tag Board
+    stay light even with long notes."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    tags: list[str] = []
+    excerpt: Optional[str] = None
+
+
+class TagCountOut(BaseModel):
+    tag: str
+    count: int
+
+
+class LinkNoteRequest(BaseModel):
+    """"Link to Note" from an entity detail page: attach an existing note by
+    id, or create a new one titled `title`. Either way the backend appends
+    the `[[entity_type:CODE]]` wiki-link to the note's markdown."""
+
+    note_id: Optional[int] = None
+    title: Optional[str] = None
+    created_by: Optional[str] = None
+
+
+class TagRenameRequest(BaseModel):
+    """Tag Board drag-and-drop: move a note from one tag column to another."""
+
+    from_tag: Optional[str] = None  # None = card dragged in from "untagged"
+    to_tag: str
+
+
 # ---------- Board Items (Issue / Incident / Backlog) ----------
 
 BOARD_ITEM_TYPES = ("issue", "incident", "backlog")

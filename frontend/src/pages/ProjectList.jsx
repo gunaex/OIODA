@@ -4,6 +4,7 @@ import { listProjects, createProject, getGlobalDashboard, archiveProject, delete
 import UserBadge from '../components/UserBadge.jsx'
 import UtilizationHeatmap from '../components/UtilizationHeatmap.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
+import EffortBudgetGauge from '../components/EffortBudgetGauge.jsx'
 import PasswordConfirmModal from '../components/PasswordConfirmModal.jsx'
 import { useAuth } from '../auth/AuthContext.jsx'
 
@@ -66,7 +67,7 @@ export default function ProjectList() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10">
+      <div className="page-shell py-10">
         <div className="flex items-center justify-between mb-6 gap-4">
           <h1 className="text-2xl font-semibold text-gray-900">Projects</h1>
           <div className="flex items-center gap-4">
@@ -177,6 +178,10 @@ export default function ProjectList() {
                       {summary.overdue_task_count} overdue task(s) · {summary.open_issue_count} open issue(s)
                     </p>
                   )}
+                  {/* Mini budget gauge so PMO can spot an over-budget project
+                      from the list. Renders nothing for a project with no
+                      contracted man-days on record. */}
+                  {!p.archived && <EffortBudgetGauge slug={p.slug} compact />}
                   <p className="text-xs text-gray-400 mt-1">
                     Created {new Date(p.created_at).toLocaleDateString()}
                   </p>

@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import { listItems, createItem, updateItem, deleteItem, cloneItem, openOrCreateWhiteboard } from '../api/client'
 import ImportExportBar from '../components/ImportExportBar.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
+import LinkedNotesPanel from '../components/LinkedNotesPanel.jsx'
+import SetPlanDatesControl from '../components/SetPlanDatesControl.jsx'
+import EffortCalculator from '../components/EffortCalculator.jsx'
 
 const TYPES = ['Functional', 'Non-Functional']
 const PHASES = ['UR', 'DR', 'DN', 'PU', 'ST', 'UT', 'TR', 'IP', 'MA']
@@ -55,6 +58,7 @@ export default function FunctionList() {
   const [form, setForm] = useState(emptyForm)
   const [adding, setAdding] = useState(false)
   const [filters, setFilters] = useState({ type: '', phase: '', status: '' })
+  const [detailOpenId, setDetailOpenId] = useState(null)
 
   const load = () => {
     setLoading(true)
@@ -232,7 +236,8 @@ export default function FunctionList() {
                     isEstimate={isEstimate}
                   />
                 ) : (
-                  <tr key={item.id} className="border-t border-gray-100 hover:bg-gray-50">
+                  <Fragment key={item.id}>
+                  <tr className="border-t border-gray-100 hover:bg-gray-50">
                     <td className="px-3 py-2">{item.function_code}</td>
                     <td className="px-3 py-2 font-medium text-gray-900">{item.name}</td>
                     <td className="px-3 py-2">{item.module}</td>
@@ -266,6 +271,12 @@ export default function FunctionList() {
                         Whiteboard
                       </button>
                       <button
+                        onClick={() => setDetailOpenId((cur) => (cur === item.id ? null : item.id))}
+                        className="text-gray-500 hover:underline mr-3"
+                      >
+                        Details
+                      </button>
+                      <button
                         onClick={() => remove(item.id)}
                         className="text-red-600 hover:underline"
                       >
@@ -273,6 +284,18 @@ export default function FunctionList() {
                       </button>
                     </td>
                   </tr>
+                  {detailOpenId === item.id && (
+                    <tr className="border-t border-gray-100 bg-gray-50/50">
+                      <td colSpan={isEstimate ? 12 : 8} className="px-4 py-3">
+                        <div className="space-y-4">
+                          <SetPlanDatesControl slug={slug} entityType="function" entityId={item.id} />
+                          <EffortCalculator slug={slug} entityType="function" entityId={item.id} />
+                          <LinkedNotesPanel slug={slug} entityType="function" entityId={item.id} title={item.name} />
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ),
               )
             )}

@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Float,
+    UniqueConstraint,
 )
 
 from .database import MasterBase, ProjectBase
@@ -207,7 +208,16 @@ class GanttItem(ProjectBase):
     end_date = Column(Date, nullable=False)
     progress = Column(Integer, default=0)
     dependencies = Column(String)  # comma-separated gantt_item ids
+    # The original Task-only link. Still the column the Gantt bar chart reads
+    # and writes — deliberately left untouched by the Progress Matrix work so
+    # that view keeps behaving exactly as before.
     linked_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
+    # Generalised link, added for the Progress Matrix (Yotei-Jisseki): lets a
+    # Function / Board Item own a gantt_items row purely to carry its
+    # baseline_start/baseline_end, without needing a Task. Backfilled from
+    # linked_task_id for every pre-existing row (see backfill_gantt_entity_links).
+    linked_entity_type = Column(String, nullable=True)  # task | function | board_item
+    linked_entity_id = Column(Integer, nullable=True)
     is_milestone = Column(Boolean, default=False)
     baseline_start = Column(Date, nullable=True)
     baseline_end = Column(Date, nullable=True)
@@ -290,6 +300,47 @@ class Note(ProjectBase):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class NotePage(ProjectBase):
+    """A full markdown note (Obsidian-style), distinct from `Note` above —
+    `Note` is the one-line quick-capture jotting that gets promoted to a
+    task/issue, whereas this is a long-lived wiki page with hashtags and
+    wiki-links."""
+
+    __tablename__ = "note_pages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    content_markdown = Column(Text, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NoteTag(ProjectBase):
+    """Derived index, not user-managed: fully rebuilt from
+    note_pages.content_markdown on every save (see note_parser.resync_note)."""
+
+    __tablename__ = "note_tags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    note_page_id = Column(Integer, ForeignKey("note_pages.id"), nullable=False, index=True)
+    tag = Column(String, nullable=False, index=True)  # normalized: lowercase, no leading '#'
+
+
+class NoteLink(ProjectBase):
+    """Derived index, same rebuild-on-save rule as NoteTag. Only *resolved*
+    wiki-links get a row — an unresolved `[[...]]` is left as plain text
+    rather than being an error."""
+
+    __tablename__ = "note_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_note_id = Column(Integer, ForeignKey("note_pages.id"), nullable=False, index=True)
+    target_type = Column(String, nullable=False)  # note | task | function | document | board_item
+    target_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class BoardItem(ProjectBase):
     """Shared table for Issue / Incident / Backlog boards, distinguished by
     item_type. Lifecycle: Backlog -(promote)-> Issue -(promote)-> Incident,
@@ -312,6 +363,145 @@ class BoardItem(ProjectBase):
     sla_due_date = Column(Date, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProgressActualOverride(ProjectBase):
+    """A hand-entered RS/R for the Progress Matrix.
+
+    Deliberately a SEPARATE table rather than columns on the entity: the
+    dates derived from activity_log are evidence — they can be pointed at a
+    timestamped status change and defended in front of a client. The moment a
+    person can quietly edit them, they stop being evidence and become a
+    negotiable figure, which is exactly the Excel behaviour this app exists to
+    replace.
+
+    So the derived value is never written to. An override sits alongside it,
+    the effective value is `override ?? derived`, and where the two disagree
+    the matrix says so out loud.
+    """
+
+    __tablename__ = "progress_actual_overrides"
+    __table_args__ = (
+        # One override row per entity — the write path upserts rather than
+        # accumulating a pile of contradictory rows.
+        UniqueConstraint("entity_type", "entity_id", name="uq_progress_override_entity"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_type = Column(String, nullable=False)  # task | function | board_item
+    entity_id = Column(Integer, nullable=False, index=True)
+    actual_start_override = Column(Date, nullable=True)
+    actual_end_override = Column(Date, nullable=True)
+    reason = Column(Text, nullable=True)  # why this was typed in rather than logged
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class EffortEstimateConfig(ProjectBase):
+    """Per-project knobs for the Function Point model. Defaults are the values
+    on the customer's own spreadsheets (see effort_calculator.py); a project
+    that negotiated different productivity or a different phase split changes
+    them here rather than in code."""
+
+    __tablename__ = "effort_estimate_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    productivity_screen = Column(Float, default=4.2)
+    productivity_batch = Column(Float, default=4.6)
+    productivity_report = Column(Float, default=4.6)
+    working_days_per_month = Column(Float, default=20)
+    phase_ratio_dr = Column(Float, default=0.30)
+    phase_ratio_dnpu = Column(Float, default=0.40)
+    phase_ratio_iftbct = Column(Float, default=0.30)
+    contracted_total_md = Column(Float, nullable=True)  # man-days sold, for the Budget Gauge
+    rate_thb_per_md = Column(Float, nullable=True)  # fallback when a function carries no price_thb
+
+    # Delivery mode (HUMAN / HUMAN-in-LOOP)
+    hil_leverage_json = Column(Text, nullable=True)  # per-project override of the 16-activity leverage table
+    # Deliberately NOT derived from the effort reduction: how much of a saving
+    # is passed on is a commercial decision, not an arithmetic consequence.
+    hil_price_discount_percent = Column(Float, default=35)
+    # Off by default — a client document shows the final man-days and price,
+    # not how the work is produced. Turned on only for clients who have asked.
+    show_delivery_mode_in_client_docs = Column(Boolean, default=False)
+    # Compliance guard for contracts with data-handling clauses.
+    hil_restricted = Column(Boolean, default=False)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class EffortEstimate(ProjectBase):
+    """Both the inputs and the outputs are stored deliberately: the driver
+    counts so an estimate can be audited long after the fact, the calculated_*
+    values so a historical number never silently changes when config does."""
+
+    __tablename__ = "effort_estimates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    linked_entity_type = Column(String, nullable=False)  # function | task | change_request
+    linked_entity_id = Column(Integer, nullable=False, index=True)
+    work_type = Column(String, nullable=False)  # screen | batch | report
+    driver_counts_json = Column(Text, nullable=True)  # JSON blob — new drivers need no migration
+    reusability_json = Column(Text, nullable=True)  # JSON blob of per-activity reuse ratios
+    non_similarity_source = Column(String, default="default")  # manual | derived | default
+    priority = Column(String, default="M")  # the workbook's Priority gate: non-"M" contributes 0
+    complexity = Column(Float, default=1)
+    non_similarity = Column(Float, default=1)
+
+    # Delivery mode. Defaults to "human" so an estimate saved before this
+    # existed keeps calculating exactly as it did (multiplier 1.0).
+    delivery_mode = Column(String, default="human")  # human | human_in_loop
+    # Stored rather than recomputed: if the leverage config is edited later,
+    # a historical estimate can still explain the number it actually used.
+    effort_multiplier_applied = Column(Float, default=1.0)
+    # The HUMAN baseline, always kept whichever mode is selected, so the two
+    # can be compared and the choice reversed without re-entering drivers.
+    man_days_human = Column(Float, nullable=True)
+
+    calculated_fp = Column(Float, nullable=True)
+    calculated_final_fp = Column(Float, nullable=True)
+    calculated_mm = Column(Float, nullable=True)
+    calculated_man_days = Column(Float, nullable=True)
+    md_dr = Column(Float, nullable=True)
+    md_dnpu = Column(Float, nullable=True)
+    md_iftbct = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChangeRequest(ProjectBase):
+    __tablename__ = "change_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cr_code = Column(String)  # CR-001
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    requested_by = Column(String, nullable=True)
+    requested_date = Column(Date, nullable=True)
+    target_date = Column(Date, nullable=True)
+    status = Column(String, default="Draft")  # Draft/UnderAnalysis/PendingApproval/Approved/Rejected/Deferred
+    # The Impact Analysis document generated for sign-off. Approval is gated
+    # on this document reaching Confirmed — see workflow_definitions.
+    linked_document_id = Column(Integer, ForeignKey("documents.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChangeRequestImpact(ProjectBase):
+    """One CR touches many functions. linked_function_id is null for a
+    function that doesn't exist yet — those are the rows that get created for
+    real when the CR is approved."""
+
+    __tablename__ = "change_request_impacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    change_request_id = Column(Integer, ForeignKey("change_requests.id"), nullable=False, index=True)
+    impact_type = Column(String, nullable=False)  # new | modify | delete
+    linked_function_id = Column(Integer, ForeignKey("functions.id"), nullable=True)
+    function_name = Column(String, nullable=True)
+    note = Column(Text, nullable=True)
 
 
 class ReportGenerationLog(ProjectBase):

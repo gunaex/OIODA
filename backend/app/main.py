@@ -25,6 +25,10 @@ from .routers import (
     activity,
     search,
     notes,
+    note_pages,
+    progress_matrix,
+    effort,
+    change_requests,
     reports,
     board_items,
     whiteboards,
@@ -120,6 +124,13 @@ app.include_router(diagrams.router)
 app.include_router(resource_allocations.router)
 app.include_router(dashboard.project_router)
 app.include_router(slippage.router)
+app.include_router(progress_matrix.router)
+app.include_router(change_requests.router)
+app.include_router(effort.router)
+# Registered last: its reverse-lookup routes are shaped
+# /api/{slug}/{entity_type}/{entity_id}/... , so anything with a literal
+# first segment (tasks/documents/...) gets first refusal on a match.
+app.include_router(note_pages.router)
 
 
 @app.get("/api/health")

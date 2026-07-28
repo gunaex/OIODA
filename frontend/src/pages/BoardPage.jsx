@@ -8,6 +8,8 @@ import {
   promoteBoardItem,
   boardExportUrl,
 } from '../api/client'
+import LinkedNotesPanel from '../components/LinkedNotesPanel.jsx'
+import SetPlanDatesControl from '../components/SetPlanDatesControl.jsx'
 
 const TABS = ['issue', 'incident', 'backlog']
 const TAB_LABELS = { issue: 'Issue', incident: 'Incident', backlog: 'Backlog' }
@@ -45,6 +47,7 @@ export default function BoardPage() {
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState(emptyForm)
   const [promotingItem, setPromotingItem] = useState(null)
+  const [detailItem, setDetailItem] = useState(null)
 
   const load = () => {
     setLoading(true)
@@ -253,9 +256,20 @@ export default function BoardPage() {
           onChangeStatus={changeStatus}
           onPromote={setPromotingItem}
           onDelete={remove}
+          onOpenDetail={setDetailItem}
         />
       ) : (
-        <ListView items={items} onChangeStatus={changeStatus} onPromote={setPromotingItem} onDelete={remove} />
+        <ListView
+          items={items}
+          onChangeStatus={changeStatus}
+          onPromote={setPromotingItem}
+          onDelete={remove}
+          onOpenDetail={setDetailItem}
+        />
+      )}
+
+      {detailItem && (
+        <BoardItemDetailModal slug={slug} item={detailItem} onClose={() => setDetailItem(null)} />
       )}
 
       {promotingItem && (
@@ -270,7 +284,7 @@ export default function BoardPage() {
   )
 }
 
-function Card({ item, onPromote, onDelete }) {
+function Card({ item, onPromote, onDelete, onOpenDetail }) {
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-3">
       <div className="flex items-start justify-between gap-2">
@@ -290,6 +304,9 @@ function Card({ item, onPromote, onDelete }) {
         <div className="text-xs text-indigo-600 mt-1">→ Task #{item.linked_task_id}</div>
       )}
       <div className="flex items-center gap-3 mt-2">
+        <button onClick={() => onOpenDetail(item)} className="text-xs text-gray-500 hover:underline">
+          Details
+        </button>
         {item.status !== 'Promoted' && (
           <button onClick={() => onPromote(item)} className="text-xs text-indigo-600 hover:underline">
             Promote →
@@ -303,7 +320,7 @@ function Card({ item, onPromote, onDelete }) {
   )
 }
 
-function KanbanView({ items, statuses, onChangeStatus, onPromote, onDelete }) {
+function KanbanView({ items, statuses, onChangeStatus, onPromote, onDelete, onOpenDetail }) {
   return (
     <div className="flex gap-4 overflow-x-auto pb-2">
       {statuses.map((status) => {
@@ -316,7 +333,7 @@ function KanbanView({ items, statuses, onChangeStatus, onPromote, onDelete }) {
             <div className="space-y-2">
               {columnItems.map((item) => (
                 <div key={item.id}>
-                  <Card item={item} onPromote={onPromote} onDelete={onDelete} />
+                  <Card item={item} onPromote={onPromote} onDelete={onDelete} onOpenDetail={onOpenDetail} />
                   {status !== 'Promoted' && (
                     <MoveSelect item={item} statuses={statuses} onChangeStatus={onChangeStatus} />
                   )}
@@ -347,7 +364,7 @@ function MoveSelect({ item, statuses, onChangeStatus }) {
   )
 }
 
-function ListView({ items, onChangeStatus, onPromote, onDelete }) {
+function ListView({ items, onChangeStatus, onPromote, onDelete, onOpenDetail }) {
   if (items.length === 0) {
     return <p className="text-gray-400 text-sm">No items.</p>
   }
@@ -383,6 +400,9 @@ function ListView({ items, onChangeStatus, onPromote, onDelete }) {
               <td className="px-3 py-2">{item.owner}</td>
               <td className="px-3 py-2">{item.sla_due_date}</td>
               <td className="px-3 py-2 text-right whitespace-nowrap">
+                <button onClick={() => onOpenDetail(item)} className="text-gray-500 hover:underline mr-3">
+                  Details
+                </button>
                 {item.status !== 'Promoted' && (
                   <button onClick={() => onPromote(item)} className="text-indigo-600 hover:underline mr-3">
                     Promote →
@@ -396,6 +416,42 @@ function ListView({ items, onChangeStatus, onPromote, onDelete }) {
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+// Board items have no dedicated detail route (they live on this board), so
+// the "detail view" the Note System / Progress Matrix specs hang their
+// panels off is this modal.
+function BoardItemDetailModal({ slug, item, onClose }) {
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-start justify-center z-50 p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-lg p-6 w-full max-w-2xl my-8" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <div className="text-xs text-gray-500">{item.item_code}</div>
+            <h3 className="text-lg font-semibold text-gray-900">{item.title}</h3>
+            <div className="text-sm text-gray-500 mt-1">
+              {item.status}
+              {item.severity && <> · {item.severity}</>}
+              {item.phase && <> · {item.phase}</>} · Owner: {item.owner || '-'}
+              {item.sla_due_date && <> · SLA {item.sla_due_date}</>}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-sm">
+            ✕
+          </button>
+        </div>
+        {item.description && <p className="text-sm text-gray-700 mb-4 whitespace-pre-wrap">{item.description}</p>}
+
+        <div className="space-y-4">
+          {/* Board items have no Gantt bar, so this is the only place their
+              Progress Matrix baseline can be set. entity_type is board_item
+              here — the API's flavour aliases are for filtering, not writing. */}
+          <SetPlanDatesControl slug={slug} entityType="board_item" entityId={item.id} />
+          <LinkedNotesPanel slug={slug} entityType={item.item_type} entityId={item.id} title={item.title} />
+        </div>
+      </div>
     </div>
   )
 }

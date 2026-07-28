@@ -11,6 +11,7 @@ import {
 } from '../api/client'
 import StatusBadge from '../components/StatusBadge.jsx'
 import CommentsPanel from '../components/CommentsPanel.jsx'
+import LinkedNotesPanel from '../components/LinkedNotesPanel.jsx'
 
 const PHASES = ['UR', 'DR', 'DN', 'PU', 'ST', 'UT', 'TR', 'IP', 'MA']
 
@@ -110,7 +111,7 @@ export default function DocumentDetail() {
   }
 
   return (
-    <div>
+    <div className="reading-col">
       <button
         onClick={() => navigate(`/${slug}/documents`)}
         className="text-sm text-gray-500 hover:text-gray-800 mb-4"
@@ -315,6 +316,10 @@ export default function DocumentDetail() {
 
       <div className="mt-4">
         <CommentsPanel slug={slug} entityType="document" entityId={Number(id)} />
+      </div>
+
+      <div className="mt-4">
+        <LinkedNotesPanel slug={slug} entityType="document" entityId={Number(id)} title={doc.title} />
       </div>
     </div>
   )
