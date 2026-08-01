@@ -1,12 +1,13 @@
 import { Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout.jsx'
 import ProjectList from './pages/ProjectList.jsx'
-import ProjectDashboard from './pages/ProjectDashboard.jsx'
+import Dashboard from './pages/Dashboard.jsx'
 import SuiteList from './pages/SuiteList.jsx'
 import SuiteDetail from './pages/SuiteDetail.jsx'
 import RevisionDetail from './pages/RevisionDetail.jsx'
 import CycleList from './pages/CycleList.jsx'
 import CycleExecution from './pages/CycleExecution.jsx'
+import ReportsPage from './pages/ReportsPage.jsx'
 import LoginPage from './pages/LoginPage.jsx'
 import RequireAuth from './auth/RequireAuth.jsx'
 
@@ -30,13 +31,14 @@ function App() {
           </RequireAuth>
         }
       >
-        <Route index element={<ProjectDashboard />} />
-        <Route path="dashboard" element={<ProjectDashboard />} />
+        <Route index element={<Dashboard />} />
+        <Route path="dashboard" element={<Dashboard />} />
         <Route path="suites" element={<SuiteList />} />
         <Route path="suites/:suiteId" element={<SuiteDetail />} />
         <Route path="suites/:suiteId/revisions/:revisionId" element={<RevisionDetail />} />
         <Route path="cycles" element={<CycleList />} />
         <Route path="cycles/:cycleId" element={<CycleExecution />} />
+        <Route path="reports" element={<ReportsPage />} />
       </Route>
     </Routes>
   )

@@ -68,7 +68,32 @@ required, matching every other local-dev default in this app. Point it
 at a real (or moto-mocked, for testing) R2 bucket only when you
 specifically need to exercise the R2 path locally.
 
-## Verifying the R2 path after deploy
+## R2 staging smoke test — required before first production release
+
+`tests/test_r2_storage.py` (moto-mocked) proves `R2EvidenceStorage`'s
+boto3 calls are wired up correctly against *an* S3-compatible API. It
+does not prove the real endpoint, real credentials, or real bucket
+permissions work — only a live run against real R2 can. Run this once
+against the staging bucket before the first production release, and
+again after any credential/bucket change:
+
+```bash
+cd backend
+R2_ACCOUNT_ID=... R2_BUCKET_NAME=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... \
+  ./.venv/Scripts/python scripts/r2_staging_smoke_test.py
+```
+
+It exercises, against the real bucket: `put` → `head`(exists) → `get`
+(byte-for-byte + checksum roundtrip) → an actual HTTP fetch of a
+presigned URL (proving real endpoint/signing, not just that a URL
+string was generated, and that the `Content-Disposition` filename
+override applies) → `delete` (cleanup). Exits non-zero naming the
+specific failed step. **This script has not been run in this
+environment** — no real Cloudflare credentials are available here; it
+must be run by whoever holds the staging R2 credentials before relying
+on this in production.
+
+## Verifying the R2 path after deploy (quick manual check)
 
 ```bash
 curl -b cookies.txt -X POST https://api.qaagain.<yourdomain>/api/<slug>/cycles/<id>/results/<id>/evidence \

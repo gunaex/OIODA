@@ -57,9 +57,30 @@ class R2EvidenceStorage(EvidenceStorage):
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket_name, Key=key)
 
-    def presigned_get_url(self, key: str, expires_in: int = 300) -> str | None:
-        return self.client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": self.bucket_name, "Key": key},
-            ExpiresIn=expires_in,
-        )
+    def presigned_get_url(
+        self,
+        key: str,
+        expires_in: int = 300,
+        response_filename: str | None = None,
+        response_content_type: str | None = None,
+    ) -> str | None:
+        params = {"Bucket": self.bucket_name, "Key": key}
+        # ResponseContentDisposition/-Type are S3/R2 GetObject response
+        # overrides scoped to this one presigned URL — they don't rename
+        # the stored object, they just make a browser's save-as (or an
+        # <img>/<a> tag) show the evidence's real filename instead of its
+        # opaque, non-guessable object key (requirement 7).
+        if response_filename:
+            safe = response_filename.replace('"', "")
+            params["ResponseContentDisposition"] = f'inline; filename="{safe}"'
+        if response_content_type:
+            params["ResponseContentType"] = response_content_type
+        return self.client.generate_presigned_url("get_object", Params=params, ExpiresIn=expires_in)
+
+    def list_keys(self, prefix: str) -> list[str]:
+        keys: list[str] = []
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                keys.append(obj["Key"])
+        return keys

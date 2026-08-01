@@ -33,5 +33,22 @@ class FilesystemEvidenceStorage(EvidenceStorage):
         if os.path.exists(path):
             os.remove(path)
 
-    def presigned_get_url(self, key: str, expires_in: int = 300) -> str | None:
+    def presigned_get_url(
+        self,
+        key: str,
+        expires_in: int = 300,
+        response_filename: str | None = None,
+        response_content_type: str | None = None,
+    ) -> str | None:
         return None  # no presigned-URL concept for local files — caller streams bytes instead
+
+    def list_keys(self, prefix: str) -> list[str]:
+        base = self._path(prefix)
+        if not os.path.isdir(base):
+            return []
+        keys = []
+        for dirpath, _dirnames, filenames in os.walk(base):
+            for name in filenames:
+                full = os.path.join(dirpath, name)
+                keys.append(os.path.relpath(full, self.root_dir).replace(os.sep, "/"))
+        return keys

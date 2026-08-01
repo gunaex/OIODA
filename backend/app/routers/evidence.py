@@ -156,24 +156,50 @@ async def upload_evidence(
         db.refresh(item)
     except Exception as exc:
         db.rollback()
-        try:
-            storage.delete(object_key)
-        except Exception as cleanup_exc:
-            # This is the one genuinely-orphaned-object case (ADR-0002) —
-            # log loudly so it's found by reconciliation, don't swallow it.
-            logger.error(
-                "ORPHANED EVIDENCE OBJECT: key=%s could not be cleaned up after a failed DB write (%s). "
-                "See docs/EVIDENCE_STORAGE_LIFECYCLE.md.",
-                object_key,
-                cleanup_exc,
-            )
+        _compensate_delete(storage, object_key, reason="failed DB insert")
         raise HTTPException(
             status_code=500,
             detail="The evidence file could not be recorded (its storage write may or may not have been rolled back) — "
             "do not assume it exists; retry the upload.",
         ) from exc
 
+    # 6. Post-commit quota re-check — closes the race window between step
+    # 2's pre-check and this commit. SQLite serializes commits (one
+    # writer at a time), so by the time *this* request's commit has
+    # landed, a fresh SUM() reflects every concurrently-committed upload
+    # too. If we're now over quota, treat this request's own row as the
+    # one that pushed it over and self-evict — every prior successful
+    # upload already passed this exact check when *it* committed, so
+    # that invariant ("total usage never exceeds quota after a
+    # successful upload response") holds for whichever request commits
+    # last, deterministically, without needing a separate lock.
+    status_after = quota_status(project, db)
+    if status_after["used_bytes"] > status_after["quota_bytes"]:
+        db.delete(item)
+        db.commit()
+        _compensate_delete(storage, object_key, reason="post-commit quota race")
+        raise HTTPException(
+            status_code=409,
+            detail="A concurrent upload pushed this project over its storage quota at the same moment — "
+            "this upload was rolled back and not saved. Please retry.",
+        )
+
     return item
+
+
+def _compensate_delete(storage: EvidenceStorage, object_key: str, reason: str) -> None:
+    try:
+        storage.delete(object_key)
+    except Exception as cleanup_exc:
+        # The one genuinely-orphaned-object case (ADR-0002) — log loudly
+        # so it's found by reconciliation, don't swallow it.
+        logger.error(
+            "ORPHANED EVIDENCE OBJECT: key=%s could not be cleaned up after %s (%s). "
+            "See docs/EVIDENCE_STORAGE_LIFECYCLE.md.",
+            object_key,
+            reason,
+            cleanup_exc,
+        )
 
 
 @router.get("/{evidence_id}", response_model=schemas.EvidenceItemOut)
@@ -200,7 +226,12 @@ def download_evidence_original(
     _get_cycle_and_result(db, cycle_id, result_id)
     item = _get_evidence(db, evidence_id, result_id)
 
-    presigned = storage.presigned_get_url(item.object_key, expires_in=300)
+    presigned = storage.presigned_get_url(
+        item.object_key,
+        expires_in=300,
+        response_filename=item.original_filename,
+        response_content_type=item.original_content_type,
+    )
     if presigned:
         return RedirectResponse(presigned, status_code=307)
 

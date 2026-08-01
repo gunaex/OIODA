@@ -465,3 +465,61 @@ class StorageQuotaOut(BaseModel):
 class StorageQuotaUpdate(BaseModel):
     storage_quota_bytes: Optional[int] = None
     storage_warning_thresholds: Optional[list[int]] = None
+
+
+# ---------- Defects and sign-offs (Phase 6) ----------
+
+
+class DefectCreate(BaseModel):
+    title: str
+    cycle_id: Optional[int] = None
+    cycle_test_result_id: Optional[int] = None
+    description_md: Optional[str] = None
+    severity: str = "UNSPECIFIED"
+    external_url: Optional[str] = None
+
+
+class DefectUpdate(BaseModel):
+    title: Optional[str] = None
+    description_md: Optional[str] = None
+    severity: Optional[str] = None
+    status: Optional[str] = None
+    external_url: Optional[str] = None
+
+
+class DefectOut(BaseModel):
+    id: int
+    cycle_id: Optional[int] = None
+    cycle_test_result_id: Optional[int] = None
+    defect_key: str
+    title: str
+    description_md: Optional[str] = None
+    severity: str
+    status: str
+    external_url: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SignOffCreate(BaseModel):
+    cycle_id: int
+    signoff_type: str
+    decision: str
+    comment_md: Optional[str] = None
+
+
+class SignOffOut(BaseModel):
+    id: int
+    cycle_id: int
+    signoff_type: str
+    decision: str
+    comment_md: Optional[str] = None
+    actor: str
+    acted_at: datetime
+
+    class Config:
+        from_attributes = True

@@ -400,3 +400,50 @@ class HybridRunEvidence(ProjectBase):
     original_size_bytes = Column(Integer, nullable=False)
     original_sha256 = Column(String, nullable=False)
     captured_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- Defects and sign-offs (Phase 6 prerequisite) ----------
+# Both are in the original domain model (rebuild prompt/master spec §10)
+# but were never built in an earlier phase — Phase 6's dashboard
+# ("open defects by severity") and Excel export (03_NG_Defects,
+# 06_Sign_Off sheets) need real data to source, so they're added here
+# rather than faked. Deliberately minimal: no defect workflow engine,
+# no notification system — just the fields the spec actually lists.
+
+DEFECT_SEVERITIES = ("P0", "P1", "P2", "P3", "UNSPECIFIED")
+DEFECT_STATUSES = ("OPEN", "IN_PROGRESS", "FIXED", "RETEST", "CLOSED", "REJECTED")
+DEFECT_OPEN_STATUSES = ("OPEN", "IN_PROGRESS", "RETEST")
+SIGNOFF_TYPES = ("QA_REVIEW", "BUSINESS_ACCEPTANCE", "GO_LIVE")
+SIGNOFF_DECISIONS = ("APPROVED", "REJECTED", "PENDING")
+
+
+class Defect(ProjectBase):
+    __tablename__ = "defects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_id = Column(Integer, ForeignKey("test_cycles.id"), nullable=True)
+    cycle_test_result_id = Column(Integer, ForeignKey("cycle_test_results.id"), nullable=True)
+    defect_key = Column(String, nullable=False)  # sequential per-project, e.g. DEF-1
+    title = Column(String, nullable=False)
+    description_md = Column(Text, nullable=True)
+    severity = Column(String, default="UNSPECIFIED")  # see DEFECT_SEVERITIES
+    status = Column(String, default="OPEN")  # see DEFECT_STATUSES
+    external_url = Column(String, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SignOff(ProjectBase):
+    """One row per decision — never edited in place, matching the same
+    immutability discipline as HybridCheckpointDecision/CycleResultHistory."""
+
+    __tablename__ = "sign_offs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_id = Column(Integer, ForeignKey("test_cycles.id"), nullable=False)
+    signoff_type = Column(String, nullable=False)  # see SIGNOFF_TYPES
+    decision = Column(String, nullable=False)  # see SIGNOFF_DECISIONS
+    comment_md = Column(Text, nullable=True)
+    actor = Column(String, nullable=False)
+    acted_at = Column(DateTime, default=datetime.utcnow)

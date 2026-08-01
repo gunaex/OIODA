@@ -29,7 +29,25 @@ class EvidenceStorage(ABC):
         write fails after a successful put()."""
 
     @abstractmethod
-    def presigned_get_url(self, key: str, expires_in: int = 300) -> str | None:
+    def presigned_get_url(
+        self,
+        key: str,
+        expires_in: int = 300,
+        response_filename: str | None = None,
+        response_content_type: str | None = None,
+    ) -> str | None:
         """A short-lived, credential-free download URL, or None if this
         backend doesn't support one (filesystem) — callers fall back to
-        streaming bytes through the backend in that case."""
+        streaming bytes through the backend in that case.
+
+        `response_filename`/`response_content_type`, when given, override
+        the *response's* Content-Disposition/Content-Type for this one
+        download (a presigned-URL feature — the stored object itself is
+        untouched) so a browser save-as shows the evidence's real
+        filename instead of its opaque non-guessable object key."""
+
+    @abstractmethod
+    def list_keys(self, prefix: str) -> list[str]:
+        """Lists every key under `prefix` — used only by reconciliation
+        tooling (backend/app/reconciliation.py), never by request-serving
+        code. Not expected to be fast/paginated-for-scale in the MVP."""

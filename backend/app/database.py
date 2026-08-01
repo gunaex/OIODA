@@ -81,7 +81,12 @@ def project_db_exists(slug: str) -> bool:
 def get_project_engine(slug: str):
     if slug not in _project_engines:
         url = f"sqlite:///{project_db_path(slug)}"
-        engine = create_engine(url, connect_args={"check_same_thread": False})
+        # timeout=30: SQLite serializes writers — a concurrent evidence
+        # upload's commit (see routers/evidence.py's quota race handling)
+        # should wait for the other writer's commit rather than raising
+        # "database is locked" under ordinary concurrency (Python's
+        # sqlite3 default timeout is 5s, too tight for that).
+        engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
         ProjectBase.metadata.create_all(bind=engine)
         ensure_columns(engine, PROJECT_COLUMN_PATCHES)
         _project_engines[slug] = engine

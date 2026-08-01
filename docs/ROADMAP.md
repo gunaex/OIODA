@@ -124,7 +124,70 @@ This roadmap now has two tracks, per
    - No thumbnails or stored image width/height — deliberately no
      Pillow/image-processing dependency added for Phase 5; the original
      master spec listed these as optional MVP fields.
-6. Dashboard, reports, Excel/ZIP export.
+6. Dashboard, reports, Excel/ZIP export — **done**, 2026-08-01. Before
+   this phase, four retrofits to Phase 5's R2 evidence storage were
+   carried forward per explicit user requirement (all pytest-verified):
+   presigned downloads now override Content-Disposition/Content-Type so
+   a browser save-as shows the evidence's real filename, not its opaque
+   object key; a concurrent-upload quota race is closed (post-commit
+   re-check + deterministic self-evict — SQLite serializes commits, so
+   whichever request commits last detects and undoes an over-quota
+   race, never both); `EvidenceStorage.list_keys()` + a safe, idempotent
+   `app/reconciliation.py` (re-verifies "not referenced by a committed
+   row" immediately before every delete, dry-run by default) plus an ops
+   CLI (`scripts/reconcile_evidence.py`); and a real (uncommitted-secrets)
+   R2 staging smoke test (`scripts/r2_staging_smoke_test.py`) — **written
+   but not run in this environment**, no real Cloudflare credentials are
+   available here; must be run by whoever holds the staging R2
+   credentials before production release (see `docs/DEPLOYMENT.md`).
+
+   Added `Defect` and `SignOff` (minimal — original domain model
+   entities the spec required but no earlier phase built) so dashboard's
+   "open defects by severity" and Excel's `03_NG_Defects`/`06_Sign_Off`
+   sheets have real data instead of being faked or left empty.
+
+   Dashboard: total/PASS/FAIL/BLOCKED/NOT_RUN/N-A counts, pass rate,
+   evidence completeness, go-live readiness (with a blocker list),
+   open defects by severity, pending N/A reviews, storage usage, recent
+   activity — for the project's "active cycle" (most recently created
+   non-CANCELLED cycle; spec doesn't define "active", documented choice).
+   **Formulas the spec left genuinely undefined, resolved and
+   documented** (surfaced explicitly, not silently chosen):
+   pass rate = `PASS / (total − approved NOT_APPLICABLE)`, NOT_RUN stays
+   in the denominator so an incomplete cycle can't show a misleadingly
+   high rate; evidence completeness = `executed results with >=1 ACTIVE
+   evidence / executed results`; go-live readiness = no P0 case
+   FAIL/BLOCKED/NOT_RUN, no P0 N/A case unapproved, no open P0/P1 defect
+   linked to the cycle.
+
+   All 10 named reports (§16) exist as real backend endpoints
+   (`/api/{slug}/reports/*`); the frontend consolidates them into **one**
+   Reports page with a report-type selector rather than 10 near-duplicate
+   screens — a deliberate scope call (the Excel export already surfaces
+   the same data structurally), not a silent cut.
+
+   Excel export: exact 7 sheets/columns from §17 (`00_Cover` …
+   `06_Sign_Off`), no embedded thumbnails (same no-Pillow decision as
+   Phase 5 — evidence referenced by ID/hash/caption, full images live in
+   the ZIP). ZIP export: server-side, in-memory (`io.BytesIO`, no temp
+   files to clean up), every evidence file read via
+   `EvidenceStorage.get()` — **never** a presigned URL substituted into
+   the archive, per explicit requirement. A missing storage object is
+   recorded in `manifest.json` as `"missing": true` and skipped, not a
+   hard failure of the whole export. Archived evidence is **included**
+   in exports (marked `"status": "ARCHIVED"`) and still counts toward
+   storage quota — exports are historical records, archiving only hides
+   from the live execution UI, it doesn't delete.
+
+   Verified: 20 automated pytest tests (dashboard formulas, Excel sheet
+   names/columns/rows via openpyxl, ZIP extraction with manifest-to-file
+   sha256 consistency, archived-evidence inclusion, missing-object
+   graceful handling, concurrent-upload quota race, reconciliation
+   safety) plus a full Playwright run through the real UI — dashboard
+   tiles, the Reports page across multiple report types, and **actual
+   file downloads** (not just HTTP 200s) of both the Excel workbook and
+   ZIP package, both opened/inspected afterward to confirm they're real,
+   non-corrupt files.
 7. Hardening, threat model, capacity doc, user guides, handover.
 
 ## Track B — Hybrid manual+automation expansion (approved, not started)
