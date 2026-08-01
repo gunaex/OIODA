@@ -10,6 +10,7 @@ import json
 from datetime import datetime, timezone
 
 import openpyxl
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.utils import get_column_letter
 
 from . import models
@@ -18,6 +19,20 @@ from .metrics import result_counts, pass_rate, evidence_completeness
 
 def evidence_code(evidence_id: int) -> str:
     return f"EVID-{evidence_id}"
+
+
+def _clean_cell(value):
+    """openpyxl raises IllegalCharacterError and aborts the whole export
+    if any cell contains an XML-illegal control character (e.g. a literal
+    NUL byte someone pasted into an actual-result field) — strip those
+    rather than let one bad field crash every export."""
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
+    return value
+
+
+def _append(ws, row):
+    ws.append([_clean_cell(v) for v in row])
 
 
 def _autosize(ws):
@@ -66,7 +81,7 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
         ("Generated Timestamp (UTC)", now.strftime("%Y-%m-%d %H:%M:%S UTC")),
         ("Report Version", "1.0"),
     ]:
-        ws.append(row)
+        _append(ws, row)
     _autosize(ws)
 
     # ---------- 01_Execution_Summary ----------
@@ -74,7 +89,7 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
     counts = result_counts(db, cycle.id)
     pr = pass_rate(db, cycle.id)
     ec = evidence_completeness(db, cycle.id)
-    ws.append(["Status", "Count", "Definition"])
+    _append(ws, ["Status", "Count", "Definition"])
     definitions = {
         "PASS": "Case executed and met its expected result.",
         "FAIL": "Case executed and did not meet its expected result (shown as NG in the UI).",
@@ -83,15 +98,15 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
         "NOT_APPLICABLE": "Case does not apply this cycle; na_reason required, admin approval required.",
     }
     for status in models.RESULT_STATUSES:
-        ws.append([status, counts[status], definitions[status]])
-    ws.append([])
-    ws.append(["Pass Rate", f"{pr['percent']}%", pr["formula"]])
-    ws.append(["Evidence Completeness", f"{ec['percent']}%", ec["formula"]])
+        _append(ws, [status, counts[status], definitions[status]])
+    _append(ws, [])
+    _append(ws, ["Pass Rate", f"{pr['percent']}%", pr["formula"]])
+    _append(ws, ["Evidence Completeness", f"{ec['percent']}%", ec["formula"]])
     _autosize(ws)
 
     # ---------- 02_Test_Results ----------
     ws = wb.create_sheet("02_Test_Results")
-    ws.append(
+    _append(ws, 
         [
             "Sequence",
             "Test ID",
@@ -124,7 +139,7 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
             .filter(models.EvidenceItem.cycle_test_result_id == result.id, models.EvidenceItem.status == "ACTIVE")
             .all()
         )
-        ws.append(
+        _append(ws, 
             [
                 case.sequence_no,
                 case.checkpoint_code,
@@ -152,7 +167,7 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
 
     # ---------- 03_NG_Defects ----------
     ws = wb.create_sheet("03_NG_Defects")
-    ws.append(["Test ID", "Title", "Severity", "Defect Status", "Actual Result", "Callout Summary", "Evidence Reference"])
+    _append(ws, ["Test ID", "Title", "Severity", "Defect Status", "Actual Result", "Callout Summary", "Evidence Reference"])
     defects_by_result = {}
     for d in db.query(models.Defect).filter(models.Defect.cycle_id == cycle.id).all():
         if d.cycle_test_result_id:
@@ -170,7 +185,7 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
             .all()
         )
         callout_summary = _callout_summary(db, evidence_items)
-        ws.append(
+        _append(ws, 
             [
                 case.checkpoint_code,
                 case.title,
@@ -185,14 +200,14 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
 
     # ---------- 04_Evidence_Index ----------
     ws = wb.create_sheet("04_Evidence_Index")
-    ws.append(
+    _append(ws, 
         ["Evidence ID", "Test ID", "Caption", "Captured By", "Captured Date", "Original SHA-256", "Annotation Revision", "Callout Summary", "Package Reference"]
     )
     all_evidence = db.query(models.EvidenceItem).filter(models.EvidenceItem.cycle_id == cycle.id).all()
     for e in all_evidence:
         case = cases_by_result.get(e.cycle_test_result_id)
         callout_summary = _callout_summary(db, [e])
-        ws.append(
+        _append(ws, 
             [
                 evidence_code(e.id),
                 case.checkpoint_code if case else None,
@@ -209,7 +224,7 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
 
     # ---------- 05_Revision_History ----------
     ws = wb.create_sheet("05_Revision_History")
-    ws.append(["Revision Label", "Status", "Source Filename", "Source SHA-256", "Change Summary", "Published By", "Published At", "Comparison Summary"])
+    _append(ws, ["Revision Label", "Status", "Source Filename", "Source SHA-256", "Change Summary", "Published By", "Published At", "Comparison Summary"])
     if suite:
         revisions = (
             db.query(models.ScriptRevision)
@@ -219,7 +234,7 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
         )
         for i, rev in enumerate(revisions):
             comparison = "Initial revision" if i == 0 else f"Supersedes revision {revisions[i - 1].revision_label}" if rev.supersedes_revision_id else "—"
-            ws.append(
+            _append(ws, 
                 [
                     rev.revision_label,
                     rev.status,
@@ -235,9 +250,9 @@ def build_workbook(db, project: models.Project, cycle: models.TestCycle, generat
 
     # ---------- 06_Sign_Off ----------
     ws = wb.create_sheet("06_Sign_Off")
-    ws.append(["Sign-off Type", "Decision", "Actor", "Timestamp", "Comments"])
+    _append(ws, ["Sign-off Type", "Decision", "Actor", "Timestamp", "Comments"])
     for s in db.query(models.SignOff).filter(models.SignOff.cycle_id == cycle.id).order_by(models.SignOff.acted_at).all():
-        ws.append([s.signoff_type, s.decision, s.actor, s.acted_at.strftime("%Y-%m-%d %H:%M:%S"), s.comment_md])
+        _append(ws, [s.signoff_type, s.decision, s.actor, s.acted_at.strftime("%Y-%m-%d %H:%M:%S"), s.comment_md])
     _autosize(ws)
 
     return wb

@@ -42,7 +42,14 @@ PNG_BYTES = _make_png()
 
 @pytest.fixture(scope="session")
 def client():
-    return TestClient(app)
+    c = TestClient(app)
+    # A real browser always sends Origin on state-changing requests — the
+    # CSRF Origin check (main.py::csrf_origin_check) requires it for
+    # cookie-authenticated writes. httpx's TestClient doesn't add this
+    # automatically the way a browser does, so tests must set it
+    # explicitly, matching ALLOWED_ORIGINS' local-dev default.
+    c.headers.update({"Origin": "http://localhost:5173"})
+    return c
 
 
 @pytest.fixture(scope="session")

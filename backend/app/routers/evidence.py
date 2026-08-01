@@ -23,6 +23,20 @@ router = APIRouter(
 )
 
 
+def _sanitize_filename(filename: str) -> str:
+    """Metadata-only (never used to construct a storage/disk path — the
+    object_key is always {uuid}.{ext}, see the upload handler below), but
+    still sanitized defensively: path separators become "_", and any run
+    of 2+ dots collapses to a single "_" so "../../etc/passwd.png" can't
+    even cosmetically resemble a traversal in the UI, a Content-
+    Disposition header, or a future feature that might (mis)use this
+    field as a path component."""
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
+    name = re.sub(r"\.{2,}", "_", name)
+    name = name.lstrip("._")
+    return (name or "evidence")[:255]
+
+
 def _get_cycle_and_result(db: Session, cycle_id: int, result_id: int) -> tuple[models.TestCycle, models.CycleTestResult]:
     cycle = db.query(models.TestCycle).filter(models.TestCycle.id == cycle_id).first()
     if not cycle:
@@ -136,7 +150,7 @@ async def upload_evidence(
     # orphaned — compensate by deleting it, and say so distinctly rather
     # than returning a generic error a client might mistake for "nothing
     # happened, retry is free."
-    safe_original_filename = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "evidence")[:255]
+    safe_original_filename = _sanitize_filename(file.filename or "evidence")
     item = models.EvidenceItem(
         cycle_id=cycle_id,
         cycle_test_result_id=result_id,

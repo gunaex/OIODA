@@ -188,7 +188,47 @@ This roadmap now has two tracks, per
    file downloads** (not just HTTP 200s) of both the Excel workbook and
    ZIP package, both opened/inspected afterward to confirm they're real,
    non-corrupt files.
-7. Hardening, threat model, capacity doc, user guides, handover.
+7. Hardening, threat model, capacity doc, user guides, handover —
+   **code and documentation complete, 2026-08-01; production-readiness
+   is NOT yet declared** — see `docs/RELEASE_CHECKLIST.md` for the three
+   explicit release blockers (real R2 staging smoke test, Screen Capture
+   API real-browser evidence, clipboard-paste real-browser evidence, all
+   unexecuted in this development environment).
+
+   Two real bugs found and fixed while writing this phase's security
+   tests, not just theoretical review: (1) a CSRF gap — cookies are
+   `SameSite=None` in production, and the evidence-upload endpoint's
+   `multipart/form-data` content type doesn't require a CORS preflight,
+   so a forged cross-site upload could ride a victim's session; closed
+   with `main.py::csrf_origin_check`, an Origin-header check on every
+   cookie-authenticated write (Bearer-authenticated requests are exempt —
+   a browser never auto-attaches those to a forged request). (2) openpyxl
+   throws `IllegalCharacterError` and aborts an **entire** export if any
+   field contains an XML-illegal control character (e.g. a stray NUL
+   byte pasted into an actual-result field) — one bad row could crash
+   every export for a cycle; fixed with `report_excel.py::_clean_cell`
+   stripping illegal characters before every cell write. Also hardened:
+   filename sanitization left `..` sequences intact (dots were in the
+   allowed charset) — cosmetic today (never used to build a storage
+   path), tightened anyway since it's user-visible metadata.
+
+   New docs: `THREAT_MODEL.md` (fresh, grounded in the actual FastAPI/
+   SQLite/Pages/Fly/R2 architecture), `BACKUP_RESTORE.md` (+ a real,
+   tested `scripts/backup_databases.py` using SQLite's online backup API
+   for consistency), `CAPACITY.md`, `RELEASE_CHECKLIST.md`,
+   `RELEASE_REHEARSAL.md`, `HANDOVER.md`, `guides/{ADMIN,TESTER,
+   VIEWER}_GUIDE.md`. Extended: `DEPLOYMENT.md` (environments table,
+   rollback procedure, secrets rotation), `EVIDENCE_STORAGE_LIFECYCLE.md`
+   (R2 credential rotation, quota recovery, inaccessible-object recovery).
+
+   Verified: 41 automated pytest tests (20 carried from Phases 5–6 + 21
+   new — role/auth/CSRF/CORS/rate-limit boundaries, evidence abuse cases,
+   export security), all passing cold in a freshly created venv. A full
+   clean-environment release rehearsal (fresh venv, fresh
+   node_modules, fresh data dir, real headed-browser Playwright run
+   through login → suite → publish → cycle → execute → evidence → PASS →
+   dashboard → real Excel/ZIP downloads, both files opened and verified
+   afterward) — recorded in `docs/RELEASE_REHEARSAL.md`.
 
 ## Track B — Hybrid manual+automation expansion (approved, not started)
 

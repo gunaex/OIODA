@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -64,6 +65,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _origin_is_allowed(origin_or_referer: str) -> bool:
+    # Referer (fallback when Origin is absent) includes a path — reduce
+    # both sides to scheme+host before comparing.
+    parsed = urlsplit(origin_or_referer)
+    candidate = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return any(candidate == o.rstrip("/") for o in _allowed_origins)
+
+
+@app.middleware("http")
+async def csrf_origin_check(request: Request, call_next):
+    """Cookie-based sessions are SameSite=None in production (required —
+    frontend and backend are different origins), which means the cookie
+    IS sent on cross-site requests. CORS's allow_origins stops a
+    malicious page's JS from *reading* our responses, but does not by
+    itself stop a CORS-"simple" cross-site request (e.g. a forged
+    multipart/form-data POST, which needs no preflight) from being sent
+    with the victim's cookie attached and executing server-side. JSON
+    endpoints are already safe (a custom Content-Type forces a preflight
+    that allow_origins blocks) — this closes the gap for the ones that
+    aren't, e.g. evidence upload.
+
+    Only applies to cookie-authenticated requests: a request bearing an
+    `Authorization: Bearer` token instead isn't exposed the same way — a
+    browser never auto-attaches a bearer token to a forged request the
+    way it does a cookie.
+    """
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        has_session_cookie = "access_token" in request.cookies
+        has_bearer = request.headers.get("Authorization", "").startswith("Bearer ")
+        if has_session_cookie and not has_bearer:
+            origin = request.headers.get("origin") or request.headers.get("referer")
+            if not origin or not _origin_is_allowed(origin):
+                return JSONResponse(status_code=403, content={"detail": "Cross-origin request rejected"})
+    return await call_next(request)
 
 
 @app.middleware("http")

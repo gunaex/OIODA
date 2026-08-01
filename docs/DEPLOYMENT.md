@@ -5,6 +5,19 @@ dependency (ADR-0002). Frontend deploy (Cloudflare Pages) is unchanged
 from the rebuild prompt's section 2 "Deploy" subsection — not repeated
 here.
 
+## Environments
+
+| Environment | Frontend | Backend | Storage | Purpose |
+|---|---|---|---|---|
+| **Local** | `npm run dev` (Vite, `localhost:5173`) | `uvicorn` on `127.0.0.1:8000` | `STORAGE_BACKEND=filesystem` (zero-config) | Day-to-day development. No real secrets needed. |
+| **Staging** | A Cloudflare Pages preview deployment (or a dedicated `staging.qaagain.*` domain) | A separate Fly app (e.g. `qa-again-backend-staging`) with its own volume | `STORAGE_BACKEND=r2` against a **separate** staging R2 bucket — never share a bucket between staging and production | Rehearse deploys, run the R2 staging smoke test (below), validate a release before it reaches real users. |
+| **Production** | `qaagain.kanphong.com` on Cloudflare Pages | `qa-again-backend` on Fly.io | `STORAGE_BACKEND=r2` against the production bucket | Real usage. |
+
+Staging and production are **separate Fly apps and separate R2
+buckets** — never point staging's `STORAGE_BACKEND=r2` config at the
+production bucket, and never share a `JWT_SECRET_KEY` between them
+(a staging session token must not be valid against production).
+
 ## Backend environment variables
 
 None of these are committed anywhere — set them via `fly secrets set`
@@ -106,3 +119,47 @@ connectivity, credentials, and bucket permissions are all correct. If
 the backend returns a `500` naming the specific missing variable
 (`app/storage/__init__.py::_required_env`) rather than a generic boto3
 connection error — check that first.
+
+## Rollback
+
+**Backend (Fly.io)**:
+
+```bash
+fly releases --app qa-again-backend        # find the last known-good release
+fly deploy --image <previous-release-image> --app qa-again-backend
+```
+
+or, simpler for a recent bad deploy: `fly releases rollback` (rolls back
+to the immediately prior release). Fly keeps the persistent volume
+(SQLite files) untouched across a rollback — a code rollback does not by
+itself undo a schema/data change. If the bad release included a DB
+schema patch (`MASTER_COLUMN_PATCHES`/`PROJECT_COLUMN_PATCHES` in
+`database.py`), rolling back the *code* does not remove the
+already-applied *column* — this app's additive-only column-patch
+discipline (never remove/rename existing columns) means an old code
+version reading a DB with a newer column is safe (it just ignores the
+extra column), so this is not usually a blocker. If a rollback is needed
+because of *data* corruption, use `docs/BACKUP_RESTORE.md`'s restore
+procedure instead — a code rollback and a data restore are separate
+concerns, don't conflate them.
+
+**Frontend (Cloudflare Pages)**: Pages keeps every prior deployment —
+use the dashboard's **Deployments** tab, find the last known-good build,
+and **Rollback to this deployment**. No data implications (the frontend
+is stateless static assets).
+
+**Before rolling back either side**, check whether the bad deploy wrote
+any data in a new shape that the *old* code can't read — this app's
+additive-only schema discipline is specifically designed to make that
+not happen, but any deviation from that discipline (a column
+rename/removal) would need a manual data-compatibility check before
+rollback, not just an automatic assumption that rollback is safe.
+
+## Secrets summary (never committed)
+
+| Secret | Where it's set | Rotation procedure |
+|---|---|---|
+| `JWT_SECRET_KEY` | `fly secrets set` | Rotating invalidates every existing session (all users logged out) — acceptable for a planned rotation, not to be done casually. |
+| `ADMIN_PASSWORD` | `fly secrets set` (first boot only — only read if the `users` table is empty) | Change via the app's own change-password flow after first login, not by re-setting this secret (it has no effect after the bootstrap admin already exists). |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | `fly secrets set` | See `docs/EVIDENCE_STORAGE_LIFECYCLE.md`'s "R2 credential rotation" procedure — verify-then-revoke, never revoke-then-verify. |
+| Runner tokens (HYB-0) | Minted via `POST /api/runner-tokens`, not an env var | Revoke by setting `RunnerToken.revoked = True` directly (no revoke endpoint built yet — HYB-0 is a spike, not a production feature). |
