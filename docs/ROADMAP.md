@@ -288,6 +288,15 @@ starting HYB-1 merely because Track A's code is complete; Release
 Closure, the production-readiness decision, the baseline tag, and the
 refreshed gap analysis all come first.
 
+**Progress against this sequence, 2026-08-02**: the `track-a-baseline`
+git tag has been created (code-complete marker, not a readiness claim)
+and the hybrid gap analysis has been refreshed —
+[HYB-1-GAP-ANALYSIS-REFRESH.md](hybrid/HYB-1-GAP-ANALYSIS-REFRESH.md).
+**Release Closure and the production-readiness decision are still
+outstanding** — the three human-operated checks in
+[RELEASE_CLOSURE.md](RELEASE_CLOSURE.md) have not been run. HYB-1 still
+does not start until those are done.
+
 ## Track B — Hybrid manual+automation expansion (HYB-0 complete; HYB-1–HYB-5 pending)
 
 Full detail lives in `QA_AGAIN_HYBRID_AI_QA_MVP_EXPANSION.md`; this is
