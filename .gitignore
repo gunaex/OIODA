@@ -1,0 +1,18 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Logs
+*.log
+
+# Cloudflare Pages / Wrangler local link
+.wrangler
+
+# PM-Again reference clone — pulled locally for reading conventions,
+# never committed to this repo (see rebuild prompt section 0)
+.pm-again-reference/
