@@ -84,9 +84,17 @@ def update_result(
         raise HTTPException(status_code=400, detail="BLOCKED requires a blocked_reason")
     if payload.status == "NOT_APPLICABLE" and not (payload.na_reason or "").strip():
         raise HTTPException(status_code=400, detail="NOT_APPLICABLE requires a na_reason")
-    # PASS-requires-evidence (rebuild prompt §12) is NOT enforced here —
-    # there is no evidence model yet (Track A Phase 5). Tracked in
-    # docs/ROADMAP.md as a Phase 5 follow-up gate, not silently dropped.
+    if payload.status == "PASS" and cycle.require_evidence_for_pass:
+        has_evidence = (
+            db.query(models.EvidenceItem)
+            .filter(models.EvidenceItem.cycle_test_result_id == result_id, models.EvidenceItem.status == "ACTIVE")
+            .first()
+        )
+        if not has_evidence:
+            raise HTTPException(
+                status_code=400,
+                detail="PASS requires at least one evidence item (this cycle's require_evidence_for_pass is enabled)",
+            )
 
     changed = (
         result.status != payload.status

@@ -290,6 +290,7 @@ class TestCycleCreate(BaseModel):
     cycle_code: Optional[str] = None
     release_version: Optional[str] = None
     target_base_url: Optional[str] = None
+    require_evidence_for_pass: bool = True
 
 
 class TestCycleUpdate(BaseModel):
@@ -299,6 +300,7 @@ class TestCycleUpdate(BaseModel):
     release_version: Optional[str] = None
     target_base_url: Optional[str] = None
     status: Optional[str] = None  # any status except LOCKED — use /lock and /reopen for that
+    require_evidence_for_pass: Optional[bool] = None
 
 
 class CycleReopenRequest(BaseModel):
@@ -323,6 +325,7 @@ class TestCycleOut(BaseModel):
     release_version: Optional[str] = None
     target_base_url: Optional[str] = None
     status: str
+    require_evidence_for_pass: bool
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     created_by: Optional[str] = None
@@ -397,6 +400,54 @@ class CycleResultHistoryOut(BaseModel):
     changed_by: Optional[str] = None
     change_source: str
     changed_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Evidence and annotation (Phase 5) ----------
+
+
+class EvidenceItemOut(BaseModel):
+    id: int
+    cycle_id: int
+    cycle_test_result_id: int
+    evidence_type: str
+    original_filename: str
+    original_content_type: str
+    original_size_bytes: int
+    original_sha256: str
+    current_revision_no: int
+    caption: Optional[str] = None
+    target_url: Optional[str] = None
+    captured_by: Optional[str] = None
+    captured_at: datetime
+    status: str
+    evidence_source: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class EvidenceCaptionUpdate(BaseModel):
+    caption: Optional[str] = None
+    target_url: Optional[str] = None
+
+
+class AnnotationRevisionCreate(BaseModel):
+    annotation_json: str
+    change_summary: Optional[str] = None
+
+
+class AnnotationRevisionOut(BaseModel):
+    id: int
+    evidence_id: int
+    revision_no: int
+    annotation_json: str
+    change_summary: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: datetime
 
     class Config:
         from_attributes = True

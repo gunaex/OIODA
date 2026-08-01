@@ -162,6 +162,10 @@ class TestCycle(ProjectBase):
     release_version = Column(String, nullable=True)
     target_base_url = Column(String, nullable=True)
     status = Column(String, default="READY")  # see CYCLE_STATUSES
+    # PASS-evidence enforcement (rebuild prompt §12) — see routers/
+    # cycle_results.py::update_result. Default True: evidence-first is
+    # this app's whole premise, so require it unless a project opts out.
+    require_evidence_for_pass = Column(Boolean, default=True)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     created_by = Column(String, nullable=True)
@@ -216,6 +220,60 @@ class CycleResultHistory(ProjectBase):
     changed_by = Column(String, nullable=True)
     change_source = Column(String, default="HUMAN")  # see RESULT_SOURCES — hybrid extension point
     changed_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- Evidence and annotation (Track A Phase 5) ----------
+
+EVIDENCE_TYPES = ("SCREENSHOT", "UPLOADED_IMAGE", "PASTED_IMAGE")
+EVIDENCE_STATUSES = ("ACTIVE", "ARCHIVED")
+
+
+class EvidenceItem(ProjectBase):
+    """The original file is immutable once written — never overwritten,
+    never re-uploaded in place (rebuild prompt §14 evidence integrity).
+    Corrections are new EvidenceRevision rows (annotations), or a brand
+    new EvidenceItem; this row's original_* fields never change after
+    creation."""
+
+    __tablename__ = "evidence_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_id = Column(Integer, ForeignKey("test_cycles.id"), nullable=False)
+    cycle_test_result_id = Column(Integer, ForeignKey("cycle_test_results.id"), nullable=False)
+    evidence_type = Column(String, nullable=False)  # see EVIDENCE_TYPES
+    original_path = Column(String, nullable=False)
+    original_filename = Column(String, nullable=False)  # user-supplied, metadata only — never used as the stored path
+    original_content_type = Column(String, nullable=False)  # sniffed, not the client's claimed type
+    original_size_bytes = Column(Integer, nullable=False)
+    original_sha256 = Column(String, nullable=False)
+    current_revision_no = Column(Integer, default=0)
+    caption = Column(Text, nullable=True)
+    target_url = Column(String, nullable=True)
+    captured_by = Column(String, nullable=True)
+    captured_at = Column(DateTime, default=datetime.utcnow)
+    status = Column(String, default="ACTIVE")  # see EVIDENCE_STATUSES — archive, never delete
+    evidence_source = Column(String, default="HUMAN")  # see RESULT_SOURCES — hybrid extension point, unused
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EvidenceRevision(ProjectBase):
+    """Append-only annotation history. Stores design-state JSON (a shapes
+    list), not a rendered image per revision — rebuild prompt §14: "do
+    not permanently store a full rendered image for every annotation
+    revision unless proven necessary." Rendering happens client-side from
+    this JSON."""
+
+    __tablename__ = "evidence_revisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evidence_id = Column(Integer, ForeignKey("evidence_items.id"), nullable=False)
+    revision_no = Column(Integer, nullable=False)
+    annotation_json = Column(Text, nullable=False)
+    change_summary = Column(Text, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("evidence_id", "revision_no", name="uq_evidence_revision_no"),)
 
 
 class ActivityLog(ProjectBase):

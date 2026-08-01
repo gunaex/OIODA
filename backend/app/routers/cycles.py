@@ -63,6 +63,7 @@ def create_cycle(
         release_version=payload.release_version,
         target_base_url=payload.target_base_url,
         status="READY",
+        require_evidence_for_pass=payload.require_evidence_for_pass,
         created_by=user.email,
     )
     db.add(cycle)

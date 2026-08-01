@@ -11,6 +11,7 @@ import {
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
+import EvidenceGallery from '../components/EvidenceGallery.jsx'
 
 const STATUS_FILTERS = ['ALL', 'NOT_RUN', 'PASS', 'FAIL', 'BLOCKED', 'NOT_APPLICABLE']
 
@@ -229,6 +230,16 @@ export default function CycleExecution() {
               <p className="text-xs font-medium text-gray-500 uppercase">Expected Result</p>
               <p className="text-sm text-gray-800 whitespace-pre-wrap">{selected.case_expected_result_md}</p>
             </div>
+
+            <EvidenceGallery
+              key={selected.id}
+              slug={slug}
+              cycleId={cycleId}
+              resultId={selected.id}
+              canEdit={canEdit}
+              isAdmin={isAdmin}
+              isLocked={isLocked}
+            />
 
             <div>
               <p className="text-xs font-medium text-gray-500 uppercase mb-1">Actual Result</p>

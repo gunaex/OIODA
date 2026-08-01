@@ -122,4 +122,31 @@ export const reviewCycleResult = (slug, cycleId, resultId, payload) =>
 export const getCycleResultHistory = (slug, cycleId, resultId) =>
   api.get(`/${slug}/cycles/${cycleId}/results/${resultId}/history`).then((r) => r.data)
 
+// Evidence
+export const listEvidence = (slug, cycleId, resultId) =>
+  api.get(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence`).then((r) => r.data)
+export const uploadEvidence = (slug, cycleId, resultId, blob, { evidenceType, caption, filename }) => {
+  const form = new FormData()
+  form.append('file', blob, filename || 'evidence.png')
+  form.append('evidence_type', evidenceType)
+  if (caption) form.append('caption', caption)
+  return api
+    .post(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data)
+}
+export const evidenceOriginalUrl = (slug, cycleId, resultId, evidenceId) =>
+  `${API_BASE}/${slug}/cycles/${cycleId}/results/${resultId}/evidence/${evidenceId}/original`
+export const archiveEvidence = (slug, cycleId, resultId, evidenceId) =>
+  api.put(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence/${evidenceId}/archive`).then((r) => r.data)
+
+// Annotations
+export const listAnnotations = (slug, cycleId, resultId, evidenceId) =>
+  api.get(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence/${evidenceId}/annotations`).then((r) => r.data)
+export const createAnnotation = (slug, cycleId, resultId, evidenceId, payload) =>
+  api
+    .post(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence/${evidenceId}/annotations`, payload)
+    .then((r) => r.data)
+
 export default api

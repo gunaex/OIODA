@@ -56,15 +56,50 @@ This roadmap now has two tracks, per
    blocking PASS when the project/cycle evidence policy requires evidence
    and none exists. Not enforced yet — there is no evidence model until
    Phase 5. Tracked as a Phase 5 follow-up gate below.
-5. Evidence capture/annotation/storage. Fold in HYB-0's
-   `hybrid_run_evidence` spike table's field shape (`original_path`,
-   `original_filename`, `original_content_type`, `original_size_bytes`,
-   `original_sha256`, `captured_at`) so hybrid evidence can migrate into
-   the real `evidence_items` model instead of staying a separate table
-   forever. **Also close the Phase 4 gap**: once evidence exists, wire up
-   the "PASS blocked without required evidence" rule in
-   `routers/cycle_results.py::update_result` (currently an explicit
-   no-op with a comment pointing here).
+5. Evidence capture/annotation/storage — **done**. `EvidenceItem`
+   (immutable original — filesystem storage on the Fly volume per
+   ADR-0001, `{sha256}.{ext}` on-disk naming so the client-supplied
+   filename never touches a path, MIME-signature sniffing that rejects a
+   mismatched/spoofed content-type, 8MB size cap) + `EvidenceRevision`
+   (append-only annotation history, design-state JSON not a rendered
+   image per revision, matching the spec's own "unless proven necessary"
+   guidance). Three capture paths funnel into the same authenticated
+   upload endpoint: file upload, clipboard paste, and the Screen Capture
+   API. A custom lightweight HTML5 Canvas annotator (arrow, rectangle,
+   highlight, freehand, text, numbered callout, blur/redaction, orange
+   default, undo/redo) — **decision**: built instead of react-konva/
+   Filerobot (the rebuild doc asked to re-run that compatibility spike;
+   a dependency-free canvas tool sidesteps the React-19-compatibility
+   question entirely). **Closes the Phase 4 gap**: `TestCycle.
+   require_evidence_for_pass` (default true) now actually blocks PASS
+   with no active evidence attached, enforced in
+   `cycle_results.py::update_result`. Upload/annotate/archive all reuse
+   the same LOCKED-cycle guard as results; reopening re-enables them.
+   Every evidence/annotation row carries a real `captured_by`/
+   `created_by` and server timestamp. `EvidenceItem.evidence_source`
+   (`HUMAN|RUNNER|SYSTEM`, default `HUMAN`) is the hybrid extension
+   point, unused. Verified via a full curl lifecycle (sniff rejects a
+   spoofed non-image file, PASS blocked then allowed, lock/reopen,
+   archive) and a Playwright run through the real UI including drawing
+   and saving real arrow/rectangle annotation shapes (confirmed via the
+   stored `annotation_json`, not just a UI screenshot).
+
+   **Documented gaps, not silently dropped**:
+   - Per-project storage-quota accounting (70/85/95/100% warnings) —
+     not built. Revisit if the Fly volume approaches its size ceiling
+     (same trigger ADR-0001 named for reconsidering filesystem storage
+     at all).
+   - Screen Capture API and clipboard-paste upload paths are
+     implemented for real use but not exercised by the Playwright
+     verification — `getDisplayMedia` needs a user gesture + OS picker
+     that isn't automatable headless, and paste requires a synthetic
+     `ClipboardEvent` with real image bytes. Both share the exact same
+     upload code path as the file-input flow, which *was* verified, so
+     the marginal risk is in the two browser-API call sites themselves,
+     not the upload/storage logic.
+   - No thumbnails or stored image width/height — deliberately no
+     Pillow/image-processing dependency added for Phase 5; the original
+     master spec listed these as optional MVP fields.
 6. Dashboard, reports, Excel/ZIP export.
 7. Hardening, threat model, capacity doc, user guides, handover.
 
