@@ -1,9 +1,16 @@
 # Roadmap
 
-Phases 0–7 below are the current rebuild scope, per
-`QA_AGAIN_REBUILD_PROMPT_FASTAPI_REACT.md` section 9. Phase 8 is
-deliberately **out of scope for this rebuild** but is a confirmed future
-requirement (user decision, 2026-08-01) — recorded here so it isn't lost.
+This roadmap now has two tracks, per
+`QA_AGAIN_HYBRID_AI_QA_MVP_EXPANSION.md` section 15:
+
+- **Track A** (Phases 0–7 below): the manual, evidence-first QA rebuild
+  per `QA_AGAIN_REBUILD_PROMPT_FASTAPI_REACT.md` section 9. This remains
+  the baseline — Track B is additive, not a replacement.
+- **Track B** (HYB-0…HYB-5, formerly "Phase 8"): the approved hybrid
+  manual+automation expansion. See
+  [ADR-HYB-001](adr/ADR-HYB-001-playwright-hybrid-execution.md) for the
+  one specification change this required (superseding the "no Playwright
+  automation platform" non-goal — nothing else about Track A changed).
 
 0. Repository audit + ADR-0001 (evidence storage, roles, export — done).
 1. Backend/frontend scaffold matching PM-Again's shape, health check +
@@ -25,37 +32,57 @@ requirement (user decision, 2026-08-01) — recorded here so it isn't lost.
 6. Dashboard, reports, Excel/ZIP export.
 7. Hardening, threat model, capacity doc, user guides, handover.
 
-## Phase 8 (future, not started): automated / "hybrid" test execution
+## Track B — Hybrid manual+automation expansion (approved, not started)
 
-Today a test case's result (PASS/NG/BLOCKED/NOT RUN/N/A) is entered by a
-human tester. The user wants a path to also let a case's result be
-produced by an automated script, alongside — not instead of — manual
-execution ("hybrid").
+Full detail lives in `QA_AGAIN_HYBRID_AI_QA_MVP_EXPANSION.md`; this is
+the index. QA-Again gains a separate **QA Runner** (Node.js + Playwright,
+outbound-only communication to the FastAPI control plane — never
+Playwright embedded in the public API process) that can execute
+repeatable browser steps and pause at manual checkpoints for a human
+tester to verify, capture evidence, and decide PASS/FAIL/BLOCKED/N/A.
+Machine assertions and human decisions are always recorded with distinct
+provenance; AI may draft content but never finalizes a result.
 
-Not designed yet. Open questions to resolve before starting this phase:
+Per the hybrid doc's section 20 ("first instruction for the
+implementation team"), before any feature build:
 
-- **Trigger model**: does QA-Again run the automation itself (spawning a
-  Playwright/other runner as a job), or does an external CI pipeline run
-  it and push a result back into QA-Again via an API/webhook? The latter
-  keeps QA-Again's own deploy (single small Fly.io machine, scale-to-zero)
-  simple and avoids it needing a browser-automation runtime; the former is
-  more "one app does everything" but is a much bigger infrastructure
-  lift (headless browser, job queue, log/artifact storage) on a
-  low-traffic internal tool's hosting budget.
-- **Result provenance**: a cycle result needs a `source` field
-  (`manual` | `automated`) so reports/dashboards can distinguish them, and
-  an automated result likely needs its own evidence shape (log output,
-  a CI run URL) rather than a manually-captured/annotated screenshot.
-- **Which cases are eligible**: not every manual case maps to a scriptable
-  check — this needs a per-case flag or a separate "automated case" type
-  linked to the manual one it corresponds to, not a blanket assumption
-  that all cases become automatable.
-- **Auth for the callback**: if external CI pushes results in, that's a
-  new unauthenticated-by-a-human API surface — needs its own
-  service-token auth distinct from the cookie-based user auth in
-  `auth.py`, scoped narrowly (can only post a result to one project/cycle
-  it holds a token for).
+1. Gap analysis against the hybrid doc's sections 4–13, against what
+   Track A actually has at the time (currently: suites/revisions/cases
+   done; cycles/execution/evidence/annotation/reports/export not yet
+   built).
+2. Smallest possible **HYB-0 spike** — not the full feature set. Exit
+   gate (hybrid doc section 15, HYB-0): a local runner opens a visible
+   browser, executes 3 recorded steps, pauses for a human decision,
+   resumes, uploads one screenshot, stores an auditable run record. No
+   mocked runner output accepted as satisfying this gate.
 
-Revisit this phase once 0–7 are stable and deployed; write a proper spec
-document at that point rather than deciding architecture from this note
-alone.
+Delivery sequence after the spike:
+
+- **HYB-0** — architecture spike (runner comms design, runner-token
+  security design, Playwright recording spike, semantic locator
+  evaluation, pause/resume browser-context spike, evidence-upload spike,
+  Windows/macOS feasibility check).
+- **HYB-1** — workflow model and editor (`workflow_definitions`,
+  `workflow_revisions`, `workflow_steps`, draft/publish/clone, test-case
+  links, manual checkpoint editor).
+- **HYB-2** — runner registration and execution (registration/revocation,
+  heartbeat, job claim protocol, execution state machine, Chromium
+  execution, structured step results, failure categories).
+- **HYB-3** — recorder (record session, semantic locator capture,
+  sensitive-input handling, draft workflow generation, locator warnings,
+  tester review before publish).
+- **HYB-4** — hybrid checkpoint and evidence (pause/resume UI, manual
+  decisions, screenshot capture/upload, annotation linkage, defect
+  linkage, lost-runner handling).
+- **HYB-5** — timing, reports, hardening (per-step timing history,
+  hybrid execution report, machine-vs-human provenance, export updates,
+  `docs/HYBRID_RUNNER_THREAT_MODEL.md`, recovery/retry rules, operator
+  and tester guides).
+
+Explicit non-goals for the hybrid MVP (hybrid doc section 13): full
+load/stress/soak testing, mobile/desktop app automation, continuous
+video, AI autonomous sign-off or final pass/fail decisions, automatic
+Git-diff impact analysis, IDE integration, autonomous locator repair,
+pixel-diff as final authority, arbitrary scripting, branching/loops,
+cloud-scale parallel browser farms, shared auth or two-way sync with
+PM-Again, and replacing manual execution as a mode.

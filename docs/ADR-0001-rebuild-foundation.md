@@ -51,14 +51,21 @@ CPU" guardrail was Cloudflare Workers-specific (CPU-time billing); Fly.io
 has no equivalent constraint, so the constraint that motivated
 client-side ExcelJS no longer applies.
 
-### 4. Automated/robot ("hybrid") test execution — deferred, not rejected
+### 4. Automated/robot ("hybrid") test execution — superseded by ADR-HYB-001
 
-The original spec (section 25, carried forward in section 7) lists "no
-Playwright E2E automation platform" as an explicit non-goal — QA-Again is
-scoped as evidence-first **manual** QA tooling. The user confirmed
-(2026-08-01) this stays out of scope for the current rebuild (Phases
-0–7), but must be planned for, not dropped — see
-`docs/ROADMAP.md` for the deferred Phase 8 sketch.
+Originally recorded here (2026-08-01) as deferred-not-rejected: the
+rebuild prompt's "no Playwright E2E automation platform" non-goal stayed
+in force for Phases 0–7, with automation only planned for later.
+
+That has since changed. The user approved
+`QA_AGAIN_HYBRID_AI_QA_MVP_EXPANSION.md` as the product direction, and
+**[[ADR-HYB-001]](adr/ADR-HYB-001-playwright-hybrid-execution.md)**
+formally supersedes — precisely and only — that one non-goal. Every other
+decision in this ADR (evidence storage, roles, export) and every other
+non-goal from the rebuild prompt remain unchanged; see ADR-HYB-001 for
+the exact scope of what changed and what didn't. `docs/ROADMAP.md`'s
+Phase 8 now tracks the approved Track B (HYB-0…HYB-5) delivery plan
+instead of a deferred placeholder.
 
 ## Consequences
 
