@@ -19,6 +19,12 @@ class Project(MasterBase):
     # prompt section 8. No shared DB/auth/sync, just a "back to PM-Again" URL.
     external_project_url = Column(String, nullable=True)
     archived = Column(Boolean, default=False)
+    # Evidence storage quota (ADR-0002) — 5 GiB default, admin-adjustable
+    # per project. Thresholds stored as a JSON array string, e.g.
+    # "[70, 85, 95, 100]"; kept configurable per project rather than a
+    # global constant per requirement 9.
+    storage_quota_bytes = Column(Integer, default=5 * 1024 * 1024 * 1024)
+    storage_warning_thresholds = Column(String, default="[70, 85, 95, 100]")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -241,8 +247,12 @@ class EvidenceItem(ProjectBase):
     cycle_id = Column(Integer, ForeignKey("test_cycles.id"), nullable=False)
     cycle_test_result_id = Column(Integer, ForeignKey("cycle_test_results.id"), nullable=False)
     evidence_type = Column(String, nullable=False)  # see EVIDENCE_TYPES
-    original_path = Column(String, nullable=False)
-    original_filename = Column(String, nullable=False)  # user-supplied, metadata only — never used as the stored path
+    # A storage-backend-agnostic key (ADR-0002) — a relative filesystem
+    # path under FilesystemEvidenceStorage, or an R2 object key under
+    # R2EvidenceStorage. Never a filesystem path literal once R2 is in
+    # use, hence "object_key" rather than "original_path".
+    object_key = Column(String, nullable=False)
+    original_filename = Column(String, nullable=False)  # user-supplied, metadata only — never used as the stored key
     original_content_type = Column(String, nullable=False)  # sniffed, not the client's claimed type
     original_size_bytes = Column(Integer, nullable=False)
     original_sha256 = Column(String, nullable=False)

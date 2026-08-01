@@ -56,11 +56,39 @@ This roadmap now has two tracks, per
    blocking PASS when the project/cycle evidence policy requires evidence
    and none exists. Not enforced yet — there is no evidence model until
    Phase 5. Tracked as a Phase 5 follow-up gate below.
-5. Evidence capture/annotation/storage — **done**. `EvidenceItem`
-   (immutable original — filesystem storage on the Fly volume per
-   ADR-0001, `{sha256}.{ext}` on-disk naming so the client-supplied
-   filename never touches a path, MIME-signature sniffing that rejects a
-   mismatched/spoofed content-type, 8MB size cap) + `EvidenceRevision`
+5. Evidence capture/annotation/storage — **done**, storage backend
+   **updated 2026-08-01 per [ADR-0002](ADR-0002-evidence-storage-r2.md)**:
+   evidence binaries now live in a private Cloudflare R2 bucket (Standard
+   storage class) behind a swappable `EvidenceStorage` abstraction
+   (`backend/app/storage/`) — filesystem remains the zero-config local
+   dev default, R2 is what production uses. All metadata (checksums,
+   sizes, MIME types, actor provenance, archive state) stays in the
+   project SQLite DB regardless of which storage backend is active; only
+   binary payloads move. Non-guessable UUID-based object keys, upload is
+   content-addressed/idempotent (a retried identical upload returns the
+   existing row instead of duplicating it), and a DB-write failure after
+   a successful storage write triggers a compensating delete (logged
+   loudly if that itself fails — see
+   [EVIDENCE_STORAGE_LIFECYCLE.md](EVIDENCE_STORAGE_LIFECYCLE.md) for
+   reconciliation). Per-project storage quota
+   (`GET`/`PUT /api/projects/{slug}/storage-quota`, configurable
+   70/85/95/100% thresholds, blocks upload past 100%) is now built —
+   this closes the gap this section used to list as "not built." Deploy
+   details and required env vars in
+   [DEPLOYMENT.md](DEPLOYMENT.md). Verified via 11 automated pytest
+   tests (idempotency, quota enforcement, archive/quota interaction,
+   compensating cleanup on a simulated DB failure, and the R2 backend
+   itself against a local mock S3 server) plus a full curl re-verification
+   of the upload/download/PASS-gate flow after the refactor — a real bug
+   (a doubled `evidence/evidence/...` path segment) was caught and fixed
+   before the automated tests even ran, during test-fixture setup.
+   `EvidenceItem.object_key` replaced the earlier `original_path` field
+   name once it stopped being literally a filesystem path.
+
+   `EvidenceItem` (immutable original, `{sha256}.{ext}`-independent
+   UUID-based key naming so the client-supplied filename never touches a
+   storage key, MIME-signature sniffing that rejects a mismatched/spoofed
+   content-type, 8MB size cap) + `EvidenceRevision`
    (append-only annotation history, design-state JSON not a rendered
    image per revision, matching the spec's own "unless proven necessary"
    guidance). Three capture paths funnel into the same authenticated
@@ -85,10 +113,6 @@ This roadmap now has two tracks, per
    stored `annotation_json`, not just a UI screenshot).
 
    **Documented gaps, not silently dropped**:
-   - Per-project storage-quota accounting (70/85/95/100% warnings) —
-     not built. Revisit if the Fly volume approaches its size ceiling
-     (same trigger ADR-0001 named for reconsidering filesystem storage
-     at all).
    - Screen Capture API and clipboard-paste upload paths are
      implemented for real use but not exercised by the Playwright
      verification — `getDisplayMedia` needs a user gesture + OS picker

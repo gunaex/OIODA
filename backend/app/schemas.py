@@ -451,3 +451,17 @@ class AnnotationRevisionOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class StorageQuotaOut(BaseModel):
+    used_bytes: int
+    quota_bytes: int
+    percent_used: float
+    threshold_level: int
+    thresholds: list[int]
+    over_quota: bool
+
+
+class StorageQuotaUpdate(BaseModel):
+    storage_quota_bytes: Optional[int] = None
+    storage_warning_thresholds: Optional[list[int]] = None

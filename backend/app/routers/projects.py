@@ -1,3 +1,4 @@
+import json
 import os
 import re
 
@@ -8,11 +9,13 @@ from .. import models, schemas
 from ..database import (
     get_master_db,
     get_project_engine,
+    get_project_db,
     project_db_exists,
     project_db_path,
     dispose_project_engine,
 )
 from ..auth import get_current_user, require_tester, require_admin, verify_password
+from ..quota import quota_status
 
 router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depends(get_current_user)])
 
@@ -123,3 +126,42 @@ def delete_project(
         os.remove(db_path)
 
     return {"ok": True}
+
+
+# ---------- Evidence storage quota (ADR-0002, requirement 9) ----------
+
+
+@router.get("/{slug}/storage-quota", response_model=schemas.StorageQuotaOut)
+def get_storage_quota(
+    slug: str,
+    master_db: Session = Depends(get_master_db),
+    project_db: Session = Depends(get_project_db),
+):
+    project = master_db.query(models.Project).filter(models.Project.slug == slug).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return quota_status(project, project_db)
+
+
+@router.put("/{slug}/storage-quota", response_model=schemas.StorageQuotaOut)
+def update_storage_quota(
+    slug: str,
+    payload: schemas.StorageQuotaUpdate,
+    master_db: Session = Depends(get_master_db),
+    project_db: Session = Depends(get_project_db),
+    _admin: models.User = Depends(require_admin),
+):
+    project = master_db.query(models.Project).filter(models.Project.slug == slug).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if payload.storage_quota_bytes is not None:
+        if payload.storage_quota_bytes <= 0:
+            raise HTTPException(status_code=400, detail="storage_quota_bytes must be positive")
+        project.storage_quota_bytes = payload.storage_quota_bytes
+    if payload.storage_warning_thresholds is not None:
+        if not all(0 < t <= 100 for t in payload.storage_warning_thresholds):
+            raise HTTPException(status_code=400, detail="storage_warning_thresholds must all be between 1 and 100")
+        project.storage_warning_thresholds = json.dumps(sorted(payload.storage_warning_thresholds))
+    master_db.commit()
+    master_db.refresh(project)
+    return quota_status(project, project_db)

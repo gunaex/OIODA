@@ -7,3 +7,5 @@ data/projects/*.db
 data/projects/*/
 .env
 backups/
+tests/_tmp_data/
+.pytest_cache/

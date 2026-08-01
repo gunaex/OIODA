@@ -14,23 +14,25 @@ than assumptions; this ADR records them.
 
 ## Decisions
 
-### 1. Evidence file storage: filesystem on the Fly.io volume (Option A)
+### 1. Evidence file storage: filesystem on the Fly.io volume (Option A) — superseded by ADR-0002
 
-Screenshot/evidence originals and annotation-revision JSON are stored
-under the same persistent volume as the per-project SQLite files:
-
-```
-data/projects/{slug}/evidence/{evidenceId}/original.{ext}
-data/projects/{slug}/evidence/{evidenceId}/annotations/rev-000N.json
-```
-
-Served through an authenticated FastAPI route (`StreamingResponse`/
+Originally: screenshot/evidence originals and annotation-revision JSON
+stored under the same persistent volume as the per-project SQLite files,
+served through an authenticated FastAPI route (`StreamingResponse`/
 `FileResponse`) that checks project membership before reading — never a
 static file mount, so authorization can't be bypassed by guessing a path.
+Option B (R2/S3-compatible object storage) was explicitly rejected at
+the time: "no known volume-size or CDN-delivery constraint exists yet to
+justify a second cloud dependency."
 
-Rejected: Option B (R2/S3-compatible object storage) — no known volume-size
-or CDN-delivery constraint exists yet to justify a second cloud dependency.
-Revisit if the Fly volume approaches its size ceiling.
+**Superseded, 2026-08-01**: the user made a deliberate, proactive
+decision to adopt Cloudflare R2 (Standard storage class) for evidence
+binaries, not triggered by hitting the volume's size ceiling — see
+**[ADR-0002](ADR-0002-evidence-storage-r2.md)** for the full decision,
+the storage abstraction that keeps both backends replaceable, and the
+failure-handling model. Filesystem storage remains the zero-config local
+development default; R2 is what production actually uses. Every other
+decision in this ADR (roles, export) is unaffected.
 
 ### 2. Roles: global role per user, not per-project membership
 

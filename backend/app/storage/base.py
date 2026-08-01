@@ -1,0 +1,35 @@
+from abc import ABC, abstractmethod
+
+
+class EvidenceStorage(ABC):
+    """Evidence binary storage, independent of where metadata lives (the
+    project SQLite DB, always — see ADR-0002). Two implementations:
+    FilesystemEvidenceStorage (local dev default) and R2EvidenceStorage
+    (production). Routers depend only on this interface."""
+
+    @abstractmethod
+    def put(self, key: str, content: bytes, content_type: str) -> None:
+        """Writes `content` under `key`. Raises on failure — callers are
+        responsible for not having created a DB row yet when this is
+        called, so a raised exception here never orphans a DB record."""
+
+    @abstractmethod
+    def get(self, key: str) -> bytes:
+        """Reads the full object back. Raises FileNotFoundError-style if
+        missing — used by the filesystem-backend download path and by
+        reconciliation tooling."""
+
+    @abstractmethod
+    def exists(self, key: str) -> bool: ...
+
+    @abstractmethod
+    def delete(self, key: str) -> None:
+        """Best-effort delete — used both for the (out-of-scope-for-API)
+        future purge feature and as the compensating action when a DB
+        write fails after a successful put()."""
+
+    @abstractmethod
+    def presigned_get_url(self, key: str, expires_in: int = 300) -> str | None:
+        """A short-lived, credential-free download URL, or None if this
+        backend doesn't support one (filesystem) — callers fall back to
+        streaming bytes through the backend in that case."""

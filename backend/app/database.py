@@ -32,7 +32,12 @@ _project_sessions = {}
 # without a full migration tool. Never used to change/remove existing columns
 # — see ADR-0001 and the rebuild prompt section 2 for why this mirrors
 # PM-Again's pattern exactly.
-MASTER_COLUMN_PATCHES: dict[str, dict[str, str]] = {}
+MASTER_COLUMN_PATCHES: dict[str, dict[str, str]] = {
+    "projects": {
+        "storage_quota_bytes": "INTEGER DEFAULT 5368709120",
+        "storage_warning_thresholds": "TEXT DEFAULT '[70, 85, 95, 100]'",
+    },
+}
 PROJECT_COLUMN_PATCHES: dict[str, dict[str, str]] = {}
 
 
@@ -54,6 +59,19 @@ def project_evidence_dir(slug: str) -> str:
     path = os.path.join(PROJECTS_DIR, slug, "evidence")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def evidence_storage_root_dir() -> str:
+    """Root for FilesystemEvidenceStorage (ADR-0002) — plain DATA_DIR, not
+    DATA_DIR/evidence: object keys already start with `evidence/...`
+    (`evidence/{slug}/{result_id}/...`) so the same key scheme works
+    unchanged against R2 (see backend/app/storage/). Returning DATA_DIR
+    here (rather than DATA_DIR/evidence) avoids a doubled `evidence/
+    evidence/...` path on disk. Distinct from project_evidence_dir(),
+    which is HYB-0's own spike-scoped evidence storage and is left
+    untouched by this ADR."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    return DATA_DIR
 
 
 def project_db_exists(slug: str) -> bool:

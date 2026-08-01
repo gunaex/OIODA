@@ -1,15 +1,20 @@
 import hashlib
-import os
+import logging
 import re
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from ..database import get_project_db, project_evidence_dir
+from ..database import get_project_db, get_master_db
 from ..evidence_utils import sniff_image, MAX_EVIDENCE_SIZE_BYTES
 from ..auth import get_current_user, require_tester, require_admin
+from ..quota import quota_status
+from ..storage import EvidenceStorage, get_evidence_storage
+
+logger = logging.getLogger("evidence")
 
 router = APIRouter(
     prefix="/api/{slug}/cycles/{cycle_id}/results/{result_id}/evidence",
@@ -69,40 +74,74 @@ async def upload_evidence(
     target_url: str | None = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_project_db),
+    master_db: Session = Depends(get_master_db),
+    storage: EvidenceStorage = Depends(get_evidence_storage),
     user: models.User = Depends(require_tester),
 ):
+    """Upload order is deliberate — see ADR-0002's failure-handling
+    table: validate -> quota check -> idempotency check -> write to
+    storage -> insert DB row, with a compensating delete if the DB
+    insert fails after a successful storage write."""
     cycle, result = _get_cycle_and_result(db, cycle_id, result_id)
     _require_unlocked(cycle)
 
     if evidence_type not in models.EVIDENCE_TYPES:
         raise HTTPException(status_code=400, detail=f"evidence_type must be one of {models.EVIDENCE_TYPES}")
 
+    # 1. Validate — nothing written anywhere yet, always safe to retry.
     content = await file.read()
     if len(content) > MAX_EVIDENCE_SIZE_BYTES:
         raise HTTPException(status_code=400, detail=f"Evidence file exceeds the {MAX_EVIDENCE_SIZE_BYTES // (1024*1024)}MB limit")
-
     sniffed = sniff_image(content)
     if not sniffed:
         raise HTTPException(status_code=400, detail="File is not a recognized image (PNG/JPEG/GIF/WEBP signature check failed)")
     content_type, ext = sniffed
-
     sha256 = hashlib.sha256(content).hexdigest()
-    result_dir = os.path.join(project_evidence_dir(slug), str(result_id))
-    os.makedirs(result_dir, exist_ok=True)
-    # Stored filename is never the client-supplied name — sha256-derived,
-    # so a malicious/garbage filename can't reach the filesystem path.
-    stored_path = os.path.join(result_dir, f"{sha256}.{ext}")
-    if not os.path.exists(stored_path):
-        with open(stored_path, "wb") as f:
-            f.write(content)
 
+    # 2. Quota — reject before writing any bytes if this upload would
+    # exceed the project's storage_quota_bytes.
+    project = master_db.query(models.Project).filter(models.Project.slug == slug).first()
+    status_before = quota_status(project, db)
+    if status_before["used_bytes"] + len(content) > status_before["quota_bytes"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Uploading this file would exceed the project's storage quota "
+            f"({status_before['used_bytes']} + {len(content)} > {status_before['quota_bytes']} bytes)",
+        )
+
+    # 3. Idempotency — a retried upload of identical content for the same
+    # result converges on the existing row instead of duplicating it.
+    existing = (
+        db.query(models.EvidenceItem)
+        .filter(
+            models.EvidenceItem.cycle_test_result_id == result_id,
+            models.EvidenceItem.original_sha256 == sha256,
+            models.EvidenceItem.status == "ACTIVE",
+        )
+        .first()
+    )
+    if existing:
+        return existing
+
+    # 4. Write to storage. Non-guessable key: a random UUID, not derived
+    # solely from content hash (ADR-0002 requirement 5).
+    object_key = f"evidence/{slug}/{result_id}/{uuid.uuid4().hex}.{ext}"
+    try:
+        storage.put(object_key, content, content_type)
+    except Exception as exc:
+        logger.error("Evidence storage write failed for key %s: %s", object_key, exc)
+        raise HTTPException(status_code=502, detail="Could not store the evidence file — nothing was saved, safe to retry") from exc
+
+    # 5. Insert DB row. If this fails, the object we just wrote would be
+    # orphaned — compensate by deleting it, and say so distinctly rather
+    # than returning a generic error a client might mistake for "nothing
+    # happened, retry is free."
     safe_original_filename = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "evidence")[:255]
-
     item = models.EvidenceItem(
         cycle_id=cycle_id,
         cycle_test_result_id=result_id,
         evidence_type=evidence_type,
-        original_path=stored_path,
+        object_key=object_key,
         original_filename=safe_original_filename,
         original_content_type=content_type,
         original_size_bytes=len(content),
@@ -111,9 +150,29 @@ async def upload_evidence(
         target_url=target_url,
         captured_by=user.email,
     )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
+    try:
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+    except Exception as exc:
+        db.rollback()
+        try:
+            storage.delete(object_key)
+        except Exception as cleanup_exc:
+            # This is the one genuinely-orphaned-object case (ADR-0002) —
+            # log loudly so it's found by reconciliation, don't swallow it.
+            logger.error(
+                "ORPHANED EVIDENCE OBJECT: key=%s could not be cleaned up after a failed DB write (%s). "
+                "See docs/EVIDENCE_STORAGE_LIFECYCLE.md.",
+                object_key,
+                cleanup_exc,
+            )
+        raise HTTPException(
+            status_code=500,
+            detail="The evidence file could not be recorded (its storage write may or may not have been rolled back) — "
+            "do not assume it exists; retry the upload.",
+        ) from exc
+
     return item
 
 
@@ -125,13 +184,35 @@ def get_evidence(slug: str, cycle_id: int, result_id: int, evidence_id: int, db:
 
 @router.get("/{evidence_id}/original")
 def download_evidence_original(
-    slug: str, cycle_id: int, result_id: int, evidence_id: int, db: Session = Depends(get_project_db)
+    slug: str,
+    cycle_id: int,
+    result_id: int,
+    evidence_id: int,
+    db: Session = Depends(get_project_db),
+    storage: EvidenceStorage = Depends(get_evidence_storage),
+    _user: models.User = Depends(get_current_user),
 ):
+    """Authorization happens here, in the backend, before anything about
+    the object is revealed (ADR-0002 requirement 3). Only after that do
+    we either redirect to a short-lived presigned URL (R2) or stream the
+    bytes directly (filesystem) — the R2 credentials themselves never
+    reach the client either way."""
     _get_cycle_and_result(db, cycle_id, result_id)
     item = _get_evidence(db, evidence_id, result_id)
-    if not os.path.exists(item.original_path):
-        raise HTTPException(status_code=404, detail="Original file missing from storage")
-    return FileResponse(item.original_path, media_type=item.original_content_type, filename=item.original_filename)
+
+    presigned = storage.presigned_get_url(item.object_key, expires_in=300)
+    if presigned:
+        return RedirectResponse(presigned, status_code=307)
+
+    try:
+        content = storage.get(item.object_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Original file missing from storage") from exc
+    return Response(
+        content=content,
+        media_type=item.original_content_type,
+        headers={"Content-Disposition": f'inline; filename="{item.original_filename}"'},
+    )
 
 
 @router.put("/{evidence_id}", response_model=schemas.EvidenceItemOut)
@@ -163,8 +244,10 @@ def archive_evidence(
     db: Session = Depends(get_project_db),
     _admin: models.User = Depends(require_admin),
 ):
-    """Archive, never delete — the original file stays on disk untouched;
-    this only hides it from the default (ACTIVE) evidence list."""
+    """Archive, never delete — the stored object is untouched; this only
+    hides the item from the default (ACTIVE) evidence list. See
+    ADR-0002: a real purge/retention feature is deliberately out of
+    scope, not an incidental side effect of this endpoint."""
     cycle, _result = _get_cycle_and_result(db, cycle_id, result_id)
     _require_unlocked(cycle)
     item = _get_evidence(db, evidence_id, result_id)
