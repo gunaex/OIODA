@@ -1,16 +1,24 @@
 # Release Readiness Checklist
 
-Status as of Phase 7 completion (2026-08-01). 🟢 done and verified · 🟡
-done, minor caveat noted · 🔴 **BLOCKED — must resolve before production
-release**.
+Status as of Release Closure procedure preparation (2026-08-02),
+originally established at Phase 7 completion (2026-08-01). 🟢 done and
+verified · 🟡 done, minor caveat noted · 🔴 **BLOCKED — must resolve
+before production release**.
+
+The project is currently in **Release Closure**: no new features are in
+progress, the only open work is executing the three items below.
+`docs/RELEASE_CLOSURE.md` is the exact, step-by-step procedure a human
+operator follows to close each one (prerequisites, commands, expected
+results, evidence to capture, cleanup, failure diagnosis) — this table
+will be updated with real outcomes once that procedure has been run.
 
 ## Release-blocking items
 
 | # | Item | Status | Evidence |
 |---|---|---|---|
-| 1 | Real Cloudflare R2 staging smoke test executed successfully | 🔴 **BLOCKED** | `scripts/r2_staging_smoke_test.py` exists and is correct (put/head/get/presigned-fetch/delete against a real bucket), but **has not been run** — no real Cloudflare credentials exist in this development environment. Must be run by whoever holds staging R2 credentials; record output in `docs/RELEASE_REHEARSAL.md` when done. |
-| 2 | Screen Capture API real-browser acceptance | 🔴 **BLOCKED** | `getDisplayMedia` cannot be exercised in a headless test browser. Needs a human tester, in a real browser, confirming screen capture → upload works. Shares the upload code path already verified via file input (lower residual risk, but not zero). |
-| 3 | Clipboard-paste real-browser acceptance | 🔴 **BLOCKED** | Same category as #2 — needs a synthetic `ClipboardEvent` with real image bytes that headless automation can't reliably produce; needs human verification. |
+| 1 | Real Cloudflare R2 staging smoke test executed successfully | 🔴 **BLOCKED** | `scripts/r2_staging_smoke_test.py` exists and is correct (put/head/get/presigned-fetch/delete against a real bucket), but **has not been run** — no real Cloudflare credentials exist in this development environment. Procedure to run it: `docs/RELEASE_CLOSURE.md` §1. Record output in `docs/RELEASE_REHEARSAL.md` when done. |
+| 2 | Screen Capture API real-browser acceptance | 🔴 **BLOCKED** | `getDisplayMedia` cannot be exercised in a headless test browser. Needs a human tester, in a real browser, confirming screen capture → upload works. Shares the upload code path already verified via file input (lower residual risk, but not zero). Procedure: `docs/RELEASE_CLOSURE.md` §2. |
+| 3 | Clipboard-paste real-browser acceptance | 🔴 **BLOCKED** | Same category as #2 — needs a synthetic `ClipboardEvent` with real image bytes that headless automation can't reliably produce; needs human verification. Procedure: `docs/RELEASE_CLOSURE.md` §3. |
 
 **Do not describe this application as production-ready while any of the
 above three remain BLOCKED**, per explicit instruction. Everything below
