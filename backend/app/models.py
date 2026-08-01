@@ -139,3 +139,106 @@ class ActivityLog(ProjectBase):
     new_value = Column(Text, nullable=True)
     changed_by = Column(String, nullable=True)
     changed_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- HYB-0 spike: hybrid runner tables ----------
+# Deliberately minimal — see docs/hybrid/HYB-0-GAP-ANALYSIS.md section 5
+# for why these are spike-scoped, not the full workflow/execution_runs/
+# evidence_items model from the hybrid expansion doc's section 8 (that's
+# HYB-1+). No cycle_id / cycle_test_result_id / workflow_revision_id yet
+# — Track A Phase 4 (test cycles) doesn't exist yet, so those FKs would
+# be dishonest placeholders rather than real links.
+
+RUNNER_EVENT_TYPES = (
+    "RUN_CLAIMED",
+    "STEP_STARTED",
+    "STEP_COMPLETED",
+    "CHECKPOINT_WAITING",
+    "CHECKPOINT_RELEASED",
+    "EVIDENCE_UPLOADED",
+    "RUN_COMPLETED",
+)
+ACTOR_TYPES = ("SYSTEM", "RUNNER", "HUMAN")
+HYBRID_RUN_STATUSES = (
+    "RUNNING",
+    "WAITING_FOR_HUMAN",
+    "RESUMING",
+    "PASSED",
+    "FAILED",
+    "BLOCKED",
+    "NOT_APPLICABLE",
+    "CANCELLED",
+)
+CHECKPOINT_DECISIONS = ("PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE")
+
+
+class RunnerToken(MasterBase):
+    """A revocable credential a QA Runner process presents on every
+    request — deliberately not the full `runners` registration table
+    from the hybrid doc's section 8.5 (no heartbeat/capabilities/platform
+    yet, that's HYB-2). Stored hashed, same pattern as RefreshToken."""
+
+    __tablename__ = "runner_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String, nullable=False)
+    token_hash = Column(String, nullable=False, index=True)
+    revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HybridRun(ProjectBase):
+    __tablename__ = "hybrid_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    status = Column(String, default="RUNNING")  # see HYBRID_RUN_STATUSES
+    label = Column(String, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    ended_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HybridRunEvent(ProjectBase):
+    """Append-only technical event stream — never edited in place. Not a
+    substitute for a normalized result table (hybrid doc section 8.9);
+    at HYB-0 scale the run's own `status` column is that result."""
+
+    __tablename__ = "hybrid_run_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("hybrid_runs.id"), nullable=False)
+    event_type = Column(String, nullable=False)  # see RUNNER_EVENT_TYPES
+    actor_type = Column(String, nullable=False)  # SYSTEM | RUNNER | HUMAN
+    payload_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HybridCheckpointDecision(ProjectBase):
+    """One row per decision, never edited in place — mirrors the
+    immutability discipline used everywhere else in this app."""
+
+    __tablename__ = "hybrid_checkpoint_decisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("hybrid_runs.id"), nullable=False)
+    decision = Column(String, nullable=False)  # see CHECKPOINT_DECISIONS
+    reason = Column(Text, nullable=True)
+    decided_by = Column(String, nullable=False)
+    decided_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HybridRunEvidence(ProjectBase):
+    """Spike-scoped evidence record — see gap analysis section 5 decision
+    4 for why this isn't the full evidence_items/evidence_revisions model
+    yet. Same core fields so Phase 5 can generalize it later."""
+
+    __tablename__ = "hybrid_run_evidence"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("hybrid_runs.id"), nullable=False)
+    original_path = Column(String, nullable=False)
+    original_filename = Column(String, nullable=False)
+    original_content_type = Column(String, nullable=False)
+    original_size_bytes = Column(Integer, nullable=False)
+    original_sha256 = Column(String, nullable=False)
+    captured_at = Column(DateTime, default=datetime.utcnow)

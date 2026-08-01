@@ -27,8 +27,22 @@ This roadmap now has two tracks, per
    this workspace yet and the spec explicitly says "do not invent missing
    source content." Revisit once that fixture is available; until then,
    manual entry + Excel/CSV import cover suite/revision/case creation.
-4. Test cycles and execution.
-5. Evidence capture/annotation/storage.
+4. Test cycles and execution — **next up**. Per HYB-0's findings (see
+   below), build these extension points in from the start rather than
+   bolting them on later: `execution_mode` (MANUAL|AUTOMATED|HYBRID) on
+   test-case-to-cycle linkage, `result_source`/`actor_type`
+   (SYSTEM|RUNNER|HUMAN) on cycle results, a nullable `runner_run_id`
+   once HYB-2's real runner registration exists, `step_kind`,
+   `checkpoint_status`, `evidence_source`, and append-only result/event
+   history (not overwrite-in-place). Do not fully wire the hybrid runner
+   into Phase 4 — just don't design the schema/API in a way that closes
+   the door on it.
+5. Evidence capture/annotation/storage. Fold in HYB-0's
+   `hybrid_run_evidence` spike table's field shape (`original_path`,
+   `original_filename`, `original_content_type`, `original_size_bytes`,
+   `original_sha256`, `captured_at`) so hybrid evidence can migrate into
+   the real `evidence_items` model instead of staying a separate table
+   forever.
 6. Dashboard, reports, Excel/ZIP export.
 7. Hardening, threat model, capacity doc, user guides, handover.
 
@@ -58,10 +72,17 @@ implementation team"), before any feature build:
 
 Delivery sequence after the spike:
 
-- **HYB-0** — architecture spike (runner comms design, runner-token
-  security design, Playwright recording spike, semantic locator
-  evaluation, pause/resume browser-context spike, evidence-upload spike,
-  Windows/macOS feasibility check).
+- **HYB-0** — architecture spike. **Done, 2026-08-01** — see
+  [HYB-0-GAP-ANALYSIS.md](hybrid/HYB-0-GAP-ANALYSIS.md) (decisions made)
+  and [HYB-0-SPIKE-RESULTS.md](hybrid/HYB-0-SPIKE-RESULTS.md) (all 10
+  gate criteria passed with recorded evidence — real headed browser,
+  semantic locators, outbound-only runner, pause/resume in the same
+  session, human decision with identity+timestamp, authenticated
+  evidence upload/download, actor-tagged run history, real backend
+  throughout, no auto-PASS on failure). Runner code lives in `runner/`
+  (Node.js + TypeScript + Playwright). **Per the user's explicit
+  instruction, HYB-1 does not start next — return to Track A Phases
+  4–7 first**, carrying the extension points above into that work.
 - **HYB-1** — workflow model and editor (`workflow_definitions`,
   `workflow_revisions`, `workflow_steps`, draft/publish/clone, test-case
   links, manual checkpoint editor).

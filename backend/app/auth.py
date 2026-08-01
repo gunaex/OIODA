@@ -203,3 +203,32 @@ def require_roles(*roles: str):
 # and projects (see require_admin).
 require_tester = require_roles("ADMIN", "TESTER")
 require_admin = require_roles("ADMIN")
+
+
+# ---------- Runner tokens (HYB-0) ----------
+# A separate credential namespace from user sessions — a QA Runner process
+# is not a person and should never hold a user's cookie/JWT. See
+# docs/hybrid/HYB-0-GAP-ANALYSIS.md section 5 decision 2.
+
+
+def issue_runner_token(db: Session, label: str) -> tuple[str, models.RunnerToken]:
+    raw_token = secrets.token_urlsafe(32)
+    record = models.RunnerToken(label=label, token_hash=_hash_token(raw_token))
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return raw_token, record
+
+
+def get_current_runner(request: Request, db: Session = Depends(get_master_db)) -> models.RunnerToken:
+    raw_token = request.headers.get("X-Runner-Token")
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="Missing X-Runner-Token header")
+    record = (
+        db.query(models.RunnerToken)
+        .filter(models.RunnerToken.token_hash == _hash_token(raw_token), models.RunnerToken.revoked == False)  # noqa: E712
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=401, detail="Invalid or revoked runner token")
+    return record

@@ -1,0 +1,19 @@
+{
+  "name": "qa-runner",
+  "version": "0.0.1-hyb0-spike",
+  "private": true,
+  "type": "module",
+  "description": "HYB-0 spike: minimal QA Runner (Node.js + Playwright) proving hybrid manual+automation execution against QA-Again's FastAPI control plane.",
+  "scripts": {
+    "spike": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
