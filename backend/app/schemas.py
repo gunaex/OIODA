@@ -277,3 +277,126 @@ class HybridRunEvidenceOut(BaseModel):
 
 
 HybridRunDetailOut.model_rebuild()
+
+
+# ---------- Test cycles and execution (Phase 4) ----------
+
+
+class TestCycleCreate(BaseModel):
+    suite_id: int
+    script_revision_id: int
+    name: str
+    environment: str
+    cycle_code: Optional[str] = None
+    release_version: Optional[str] = None
+    target_base_url: Optional[str] = None
+
+
+class TestCycleUpdate(BaseModel):
+    name: Optional[str] = None
+    environment: Optional[str] = None
+    cycle_code: Optional[str] = None
+    release_version: Optional[str] = None
+    target_base_url: Optional[str] = None
+    status: Optional[str] = None  # any status except LOCKED — use /lock and /reopen for that
+
+
+class CycleReopenRequest(BaseModel):
+    reason: str
+
+
+class ResultCounts(BaseModel):
+    NOT_RUN: int = 0
+    PASS: int = 0
+    FAIL: int = 0
+    BLOCKED: int = 0
+    NOT_APPLICABLE: int = 0
+
+
+class TestCycleOut(BaseModel):
+    id: int
+    suite_id: int
+    script_revision_id: int
+    cycle_code: Optional[str] = None
+    name: str
+    environment: str
+    release_version: Optional[str] = None
+    target_base_url: Optional[str] = None
+    status: str
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    locked_at: Optional[datetime] = None
+    locked_by: Optional[str] = None
+    result_counts: Optional[ResultCounts] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CycleTestResultUpdate(BaseModel):
+    status: str
+    actual_result_md: Optional[str] = None
+    blocked_reason: Optional[str] = None
+    na_reason: Optional[str] = None
+    defect_reference: Optional[str] = None
+    assigned_tester_email: Optional[str] = None
+
+
+class CycleTestResultOut(BaseModel):
+    id: int
+    cycle_id: int
+    test_case_id: int
+    assigned_tester_email: Optional[str] = None
+    status: str
+    actual_result_md: Optional[str] = None
+    blocked_reason: Optional[str] = None
+    na_reason: Optional[str] = None
+    defect_reference: Optional[str] = None
+    started_at: Optional[datetime] = None
+    executed_at: Optional[datetime] = None
+    executed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
+    review_status: str
+    result_revision_no: int
+    execution_mode: str
+    result_source: str
+    runner_run_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    # Flattened from the linked TestCase so the execution screen doesn't
+    # need a second round trip per row.
+    checkpoint_code: Optional[str] = None
+    case_title: Optional[str] = None
+    case_priority: Optional[str] = None
+    case_action_md: Optional[str] = None
+    case_expected_result_md: Optional[str] = None
+    case_setup_md: Optional[str] = None
+    case_validation_md: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CycleResultReviewRequest(BaseModel):
+    review_status: str  # ACCEPTED | CHANGES_REQUESTED
+    comment: Optional[str] = None
+
+
+class CycleResultHistoryOut(BaseModel):
+    id: int
+    cycle_test_result_id: int
+    result_revision_no: int
+    status: str
+    actual_result_md: Optional[str] = None
+    blocked_reason: Optional[str] = None
+    na_reason: Optional[str] = None
+    changed_by: Optional[str] = None
+    change_source: str
+    changed_at: datetime
+
+    class Config:
+        from_attributes = True

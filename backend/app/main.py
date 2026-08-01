@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse  # noqa: E402
 from slowapi.errors import RateLimitExceeded  # noqa: E402
 
 from .database import MasterBase, master_engine, MasterSessionLocal, ensure_columns, MASTER_COLUMN_PATCHES  # noqa: E402
-from .routers import auth, projects, suites, revisions, cases, runner_tokens, hybrid  # noqa: E402
+from .routers import auth, projects, suites, revisions, cases, cycles, cycle_results, runner_tokens, hybrid  # noqa: E402
 from .seed import seed_bootstrap_admin  # noqa: E402
 from .rate_limit import limiter  # noqa: E402
 
@@ -65,6 +65,8 @@ app.include_router(projects.router)
 app.include_router(suites.router)
 app.include_router(revisions.router)
 app.include_router(cases.router)
+app.include_router(cycles.router)
+app.include_router(cycle_results.router)
 app.include_router(runner_tokens.router)
 app.include_router(hybrid.router)
 

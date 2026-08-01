@@ -128,6 +128,96 @@ class TestCase(ProjectBase):
     __table_args__ = (UniqueConstraint("revision_id", "checkpoint_code", name="uq_case_revision_checkpoint"),)
 
 
+# ---------- Test cycles and execution (Track A Phase 4) ----------
+
+CYCLE_STATUSES = ("DRAFT", "READY", "IN_PROGRESS", "REVIEW", "COMPLETED", "LOCKED", "CANCELLED")
+RESULT_STATUSES = ("NOT_RUN", "PASS", "FAIL", "BLOCKED", "NOT_APPLICABLE")
+REVIEW_STATUSES = ("UNREVIEWED", "ACCEPTED", "CHANGES_REQUESTED")
+# Hybrid extension points (see docs/hybrid/HYB-0-GAP-ANALYSIS.md) — not
+# enabled by this phase, just not designed-away. execution_mode/
+# result_source/runner_run_id are real, meaningful columns today (every
+# Phase 4 result is MANUAL/HUMAN with no runner_run_id). step_kind/
+# checkpoint_status/evidence_source are deliberately NOT added here —
+# they only mean something once workflow_steps (HYB-1) exists; adding
+# them now would be meaningless nullable columns, not a real hook.
+EXECUTION_MODES = ("MANUAL", "AUTOMATED", "HYBRID")
+RESULT_SOURCES = ("HUMAN", "RUNNER", "SYSTEM")
+
+
+class TestCycle(ProjectBase):
+    """A cycle snapshots one exact PUBLISHED script revision's case set at
+    creation time. Publishing a later revision must never change an
+    existing cycle — enforced by simply never re-deriving a cycle's
+    result rows from anything but what was created at cycle-creation
+    time."""
+
+    __tablename__ = "test_cycles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    suite_id = Column(Integer, ForeignKey("test_suites.id"), nullable=False)
+    script_revision_id = Column(Integer, ForeignKey("script_revisions.id"), nullable=False)
+    cycle_code = Column(String, nullable=True)
+    name = Column(String, nullable=False)
+    environment = Column(String, nullable=False)
+    release_version = Column(String, nullable=True)
+    target_base_url = Column(String, nullable=True)
+    status = Column(String, default="READY")  # see CYCLE_STATUSES
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    locked_at = Column(DateTime, nullable=True)
+    locked_by = Column(String, nullable=True)
+
+
+class CycleTestResult(ProjectBase):
+    __tablename__ = "cycle_test_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_id = Column(Integer, ForeignKey("test_cycles.id"), nullable=False)
+    test_case_id = Column(Integer, ForeignKey("test_cases.id"), nullable=False)
+    assigned_tester_email = Column(String, nullable=True)
+    status = Column(String, default="NOT_RUN")  # see RESULT_STATUSES
+    actual_result_md = Column(Text, nullable=True)
+    blocked_reason = Column(Text, nullable=True)
+    na_reason = Column(Text, nullable=True)
+    defect_reference = Column(String, nullable=True)  # free text — real `defects` table is a later phase
+    started_at = Column(DateTime, nullable=True)
+    executed_at = Column(DateTime, nullable=True)
+    executed_by = Column(String, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_by = Column(String, nullable=True)
+    review_status = Column(String, default="UNREVIEWED")  # see REVIEW_STATUSES
+    result_revision_no = Column(Integer, default=0)
+    execution_mode = Column(String, default="MANUAL")  # see EXECUTION_MODES — hybrid extension point
+    result_source = Column(String, default="HUMAN")  # see RESULT_SOURCES — hybrid extension point
+    runner_run_id = Column(Integer, nullable=True)  # reserved: a future hybrid_runs.id, unused until HYB-2
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("cycle_id", "test_case_id", name="uq_result_cycle_case"),)
+
+
+class CycleResultHistory(ProjectBase):
+    """Append-only — never edited in place. One row per mutation of a
+    CycleTestResult, so a status/actual-result change is never silently
+    overwritten (rebuild prompt §12 "Result history")."""
+
+    __tablename__ = "cycle_result_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_test_result_id = Column(Integer, ForeignKey("cycle_test_results.id"), nullable=False)
+    result_revision_no = Column(Integer, nullable=False)
+    status = Column(String, nullable=False)
+    actual_result_md = Column(Text, nullable=True)
+    blocked_reason = Column(Text, nullable=True)
+    na_reason = Column(Text, nullable=True)
+    changed_by = Column(String, nullable=True)
+    change_source = Column(String, default="HUMAN")  # see RESULT_SOURCES — hybrid extension point
+    changed_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ActivityLog(ProjectBase):
     __tablename__ = "activity_log"
 

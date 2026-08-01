@@ -37,6 +37,9 @@ export default function Layout() {
             <NavLink to={`/${slug}/suites`} className={tabClass}>
               Test Suites
             </NavLink>
+            <NavLink to={`/${slug}/cycles`} className={tabClass}>
+              Test Cycles
+            </NavLink>
           </nav>
           <UserBadge />
         </div>

@@ -102,4 +102,24 @@ export const importCasesCsv = (slug, revisionId, file) => {
     .then((r) => r.data)
 }
 
+// Test cycles
+export const listCycles = (slug) => api.get(`/${slug}/cycles`).then((r) => r.data)
+export const createCycle = (slug, payload) => api.post(`/${slug}/cycles`, payload).then((r) => r.data)
+export const getCycle = (slug, cycleId) => api.get(`/${slug}/cycles/${cycleId}`).then((r) => r.data)
+export const updateCycle = (slug, cycleId, payload) => api.put(`/${slug}/cycles/${cycleId}`, payload).then((r) => r.data)
+export const lockCycle = (slug, cycleId) => api.post(`/${slug}/cycles/${cycleId}/lock`).then((r) => r.data)
+export const reopenCycle = (slug, cycleId, reason) =>
+  api.post(`/${slug}/cycles/${cycleId}/reopen`, { reason }).then((r) => r.data)
+
+// Cycle test results (execution)
+export const listCycleResults = (slug, cycleId) => api.get(`/${slug}/cycles/${cycleId}/results`).then((r) => r.data)
+export const getCycleResult = (slug, cycleId, resultId) =>
+  api.get(`/${slug}/cycles/${cycleId}/results/${resultId}`).then((r) => r.data)
+export const updateCycleResult = (slug, cycleId, resultId, payload) =>
+  api.put(`/${slug}/cycles/${cycleId}/results/${resultId}`, payload).then((r) => r.data)
+export const reviewCycleResult = (slug, cycleId, resultId, payload) =>
+  api.post(`/${slug}/cycles/${cycleId}/results/${resultId}/review`, payload).then((r) => r.data)
+export const getCycleResultHistory = (slug, cycleId, resultId) =>
+  api.get(`/${slug}/cycles/${cycleId}/results/${resultId}/history`).then((r) => r.data)
+
 export default api

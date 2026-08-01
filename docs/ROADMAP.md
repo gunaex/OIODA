@@ -27,22 +27,44 @@ This roadmap now has two tracks, per
    this workspace yet and the spec explicitly says "do not invent missing
    source content." Revisit once that fixture is available; until then,
    manual entry + Excel/CSV import cover suite/revision/case creation.
-4. Test cycles and execution — **next up**. Per HYB-0's findings (see
-   below), build these extension points in from the start rather than
-   bolting them on later: `execution_mode` (MANUAL|AUTOMATED|HYBRID) on
-   test-case-to-cycle linkage, `result_source`/`actor_type`
-   (SYSTEM|RUNNER|HUMAN) on cycle results, a nullable `runner_run_id`
-   once HYB-2's real runner registration exists, `step_kind`,
-   `checkpoint_status`, `evidence_source`, and append-only result/event
-   history (not overwrite-in-place). Do not fully wire the hybrid runner
-   into Phase 4 — just don't design the schema/API in a way that closes
-   the door on it.
+4. Test cycles and execution — **done**. `TestCycle` (snapshots one exact
+   PUBLISHED revision's cases as `NOT_RUN` results at creation; a later
+   publish never touches an existing cycle), `CycleTestResult`
+   (PASS/FAIL/BLOCKED/NOT_APPLICABLE with FAIL/BLOCKED/N-A validation,
+   N-A admin review/approval), `CycleResultHistory` (append-only, one row
+   per mutation, `result_revision_no` increments, never overwritten).
+   Cycle lifecycle DRAFT|READY|IN_PROGRESS|REVIEW|COMPLETED|LOCKED|
+   CANCELLED; locking blocks all result mutation, admin-only reopen
+   requires a reason and is audit-logged. Evidence-first execution UI
+   (case list + filters, detail panel, actual-result editor, sticky
+   PASS/NG/BLOCKED/N-A actions, unsaved/saving/saved/error states,
+   per-result draft isolation, history panel). Verified end-to-end via
+   curl (full lifecycle incl. lock/reopen/validation rejections) and
+   Playwright screenshots of the actual execution UI.
+
+   Hybrid extension points included per HYB-0's findings, not enabled:
+   `execution_mode` (MANUAL|AUTOMATED|HYBRID, default MANUAL),
+   `result_source` (HUMAN|RUNNER|SYSTEM, default HUMAN) on both
+   `CycleTestResult` and `CycleResultHistory` (as `change_source`), and a
+   reserved nullable `runner_run_id` (unused until HYB-2's real runner
+   registration exists). `step_kind`/`checkpoint_status`/
+   `evidence_source` were deliberately **not** added — they only mean
+   something once `workflow_steps` (HYB-1) exists; adding them now would
+   be meaningless nullable columns, not a real hook.
+
+   **Documented gap, not silently dropped**: the rebuild prompt requires
+   blocking PASS when the project/cycle evidence policy requires evidence
+   and none exists. Not enforced yet — there is no evidence model until
+   Phase 5. Tracked as a Phase 5 follow-up gate below.
 5. Evidence capture/annotation/storage. Fold in HYB-0's
    `hybrid_run_evidence` spike table's field shape (`original_path`,
    `original_filename`, `original_content_type`, `original_size_bytes`,
    `original_sha256`, `captured_at`) so hybrid evidence can migrate into
    the real `evidence_items` model instead of staying a separate table
-   forever.
+   forever. **Also close the Phase 4 gap**: once evidence exists, wire up
+   the "PASS blocked without required evidence" rule in
+   `routers/cycle_results.py::update_result` (currently an explicit
+   no-op with a comment pointing here).
 6. Dashboard, reports, Excel/ZIP export.
 7. Hardening, threat model, capacity doc, user guides, handover.
 
