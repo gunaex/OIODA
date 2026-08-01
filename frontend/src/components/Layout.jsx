@@ -3,6 +3,11 @@ import { NavLink, Outlet, useParams } from 'react-router-dom'
 import { getProject } from '../api/client'
 import UserBadge from './UserBadge.jsx'
 
+const tabClass = ({ isActive }) =>
+  `px-4 py-2 rounded-md text-sm font-medium ${
+    isActive ? 'bg-emerald-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+  }`
+
 export default function Layout() {
   const { slug } = useParams()
   const [project, setProject] = useState(null)
@@ -25,6 +30,14 @@ export default function Layout() {
             </NavLink>
             <h1 className="text-lg font-semibold text-gray-900 truncate">{project?.name || slug}</h1>
           </div>
+          <nav className="flex gap-2 flex-wrap">
+            <NavLink to={`/${slug}/dashboard`} className={tabClass}>
+              Dashboard
+            </NavLink>
+            <NavLink to={`/${slug}/suites`} className={tabClass}>
+              Test Suites
+            </NavLink>
+          </nav>
           <UserBadge />
         </div>
       </header>

@@ -53,4 +53,53 @@ export const archiveProject = (slug, archived, password) =>
 export const deleteProject = (slug, password) =>
   api.delete(`/projects/${slug}`, { data: { password } }).then((r) => r.data)
 
+// Test suites
+export const listSuites = (slug) => api.get(`/${slug}/suites`).then((r) => r.data)
+export const createSuite = (slug, payload) => api.post(`/${slug}/suites`, payload).then((r) => r.data)
+export const getSuite = (slug, suiteId) => api.get(`/${slug}/suites/${suiteId}`).then((r) => r.data)
+export const updateSuite = (slug, suiteId, payload) =>
+  api.put(`/${slug}/suites/${suiteId}`, payload).then((r) => r.data)
+export const deleteSuite = (slug, suiteId) => api.delete(`/${slug}/suites/${suiteId}`).then((r) => r.data)
+
+// Script revisions (nested under a suite)
+export const listRevisions = (slug, suiteId) => api.get(`/${slug}/suites/${suiteId}/revisions`).then((r) => r.data)
+export const createRevision = (slug, suiteId, payload) =>
+  api.post(`/${slug}/suites/${suiteId}/revisions`, payload).then((r) => r.data)
+export const getRevision = (slug, suiteId, revisionId) =>
+  api.get(`/${slug}/suites/${suiteId}/revisions/${revisionId}`).then((r) => r.data)
+export const publishRevision = (slug, suiteId, revisionId) =>
+  api.post(`/${slug}/suites/${suiteId}/revisions/${revisionId}/publish`).then((r) => r.data)
+export const cloneRevision = (slug, suiteId, revisionId, payload) =>
+  api.post(`/${slug}/suites/${suiteId}/revisions/${revisionId}/clone`, payload).then((r) => r.data)
+
+// Test cases (nested under a revision)
+export const listCases = (slug, revisionId) => api.get(`/${slug}/revisions/${revisionId}/cases`).then((r) => r.data)
+export const createCase = (slug, revisionId, payload) =>
+  api.post(`/${slug}/revisions/${revisionId}/cases`, payload).then((r) => r.data)
+export const updateCase = (slug, revisionId, caseId, payload) =>
+  api.put(`/${slug}/revisions/${revisionId}/cases/${caseId}`, payload).then((r) => r.data)
+export const deleteCase = (slug, revisionId, caseId) =>
+  api.delete(`/${slug}/revisions/${revisionId}/cases/${caseId}`).then((r) => r.data)
+export const caseExportUrl = (slug, revisionId) => `${API_BASE}/${slug}/revisions/${revisionId}/cases/export`
+export const caseImportTemplateUrl = (slug, revisionId) =>
+  `${API_BASE}/${slug}/revisions/${revisionId}/cases/import-template`
+export const importCasesExcel = (slug, revisionId, file) => {
+  const form = new FormData()
+  form.append('file', file)
+  return api
+    .post(`/${slug}/revisions/${revisionId}/cases/import-excel`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data)
+}
+export const importCasesCsv = (slug, revisionId, file) => {
+  const form = new FormData()
+  form.append('file', file)
+  return api
+    .post(`/${slug}/revisions/${revisionId}/cases/import-csv`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data)
+}
+
 export default api

@@ -10,7 +10,16 @@ requirement (user decision, 2026-08-01) — recorded here so it isn't lost.
    login working end-to-end.
 2. Identity/projects/roles.
 3. Test suites, immutable revisions, Excel/CSV import (strict header
-   validation).
+   validation) — **done** (suites, DRAFT/PUBLISHED/SUPERSEDED revisions,
+   clone-for-correction, publish-supersedes-prior, strict-header Excel/CSV
+   import+export, verified end-to-end via Playwright screenshots).
+   **Not yet done**: the Markdown (`.md`) importer for the SATL-style
+   source document (rebuild prompt section 11) — deferred because the
+   required fixture file
+   (`SATL_REGRESSION_CHECKPOINT_SCRIPT_PRE_GOLIVE_2026AUG01.md`) isn't in
+   this workspace yet and the spec explicitly says "do not invent missing
+   source content." Revisit once that fixture is available; until then,
+   manual entry + Excel/CSV import cover suite/revision/case creation.
 4. Test cycles and execution.
 5. Evidence capture/annotation/storage.
 6. Dashboard, reports, Excel/ZIP export.
