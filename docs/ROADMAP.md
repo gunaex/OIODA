@@ -27,6 +27,10 @@ This roadmap now has two tracks, per
    this workspace yet and the spec explicitly says "do not invent missing
    source content." Revisit once that fixture is available; until then,
    manual entry + Excel/CSV import cover suite/revision/case creation.
+   **This is a separate deferred item, not a Release Closure blocker** —
+   it is not part of `docs/RELEASE_CHECKLIST.md`'s blocking-items list
+   and does not gate a production-readiness decision unless someone
+   explicitly promotes it into release scope later.
 4. Test cycles and execution — **done**. `TestCycle` (snapshots one exact
    PUBLISHED revision's cases as `NOT_RUN` results at creation; a later
    publish never touches an existing cycle), `CycleTestResult`
@@ -52,10 +56,13 @@ This roadmap now has two tracks, per
    something once `workflow_steps` (HYB-1) exists; adding them now would
    be meaningless nullable columns, not a real hook.
 
-   **Documented gap, not silently dropped**: the rebuild prompt requires
-   blocking PASS when the project/cycle evidence policy requires evidence
-   and none exists. Not enforced yet — there is no evidence model until
-   Phase 5. Tracked as a Phase 5 follow-up gate below.
+   **Historical Phase 4 gap — resolved in Phase 5.** The rebuild prompt
+   requires blocking PASS when the project/cycle evidence policy
+   requires evidence and none exists; at the time Phase 4 shipped there
+   was no evidence model yet to enforce it against. Kept here only for
+   traceability — `TestCycle.require_evidence_for_pass` now actually
+   enforces this (see Phase 5 below); do not read this paragraph as
+   describing current behavior.
 5. Evidence capture/annotation/storage — **done**, storage backend
    **updated 2026-08-01 per [ADR-0002](ADR-0002-evidence-storage-r2.md)**:
    evidence binaries now live in a private Cloudflare R2 bucket (Standard
@@ -230,7 +237,46 @@ This roadmap now has two tracks, per
    dashboard → real Excel/ZIP downloads, both files opened and verified
    afterward) — recorded in `docs/RELEASE_REHEARSAL.md`.
 
-## Track B — Hybrid manual+automation expansion (approved, not started)
+## Release Closure — Track A
+
+Status: **BLOCKED — Track A implementation is complete, but production
+readiness has not been declared.**
+
+Exact procedure: [RELEASE_CLOSURE.md](RELEASE_CLOSURE.md). Required
+closure steps:
+
+- Run the real Cloudflare R2 staging smoke test.
+- Verify the Screen Capture API in a real browser with a human operator.
+- Verify clipboard-image paste in a real browser with a human operator.
+- Record the real environment, operator, date, outcome, and evidence
+  references in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) and
+  [RELEASE_REHEARSAL.md](RELEASE_REHEARSAL.md).
+- Re-run the complete backend pytest suite.
+- Re-run the frontend production build.
+- Report either `PRODUCTION READY` or `NOT PRODUCTION READY`.
+- Create a stable Track A baseline tag before HYB-1 begins.
+
+### Intended delivery sequence
+
+```
+Track A implementation complete
+  → Release Closure
+  → Production-readiness decision
+  → Stable Track A baseline tag
+  → Refreshed hybrid gap analysis
+  → HYB-1
+  → HYB-2
+  → HYB-3
+  → HYB-4
+  → HYB-5
+```
+
+HYB-1 does not start until this sequence reaches it — that includes not
+starting HYB-1 merely because Track A's code is complete; Release
+Closure, the production-readiness decision, the baseline tag, and the
+refreshed gap analysis all come first.
+
+## Track B — Hybrid manual+automation expansion (HYB-0 complete; HYB-1–HYB-5 pending)
 
 Full detail lives in `QA_AGAIN_HYBRID_AI_QA_MVP_EXPANSION.md`; this is
 the index. QA-Again gains a separate **QA Runner** (Node.js + Playwright,
@@ -244,15 +290,41 @@ provenance; AI may draft content but never finalizes a result.
 Per the hybrid doc's section 20 ("first instruction for the
 implementation team"), before any feature build:
 
-1. Gap analysis against the hybrid doc's sections 4–13, against what
-   Track A actually has at the time (currently: suites/revisions/cases
-   done; cycles/execution/evidence/annotation/reports/export not yet
-   built).
+1. Gap analysis against the hybrid doc's sections 4–13. The original
+   [HYB-0-GAP-ANALYSIS.md](hybrid/HYB-0-GAP-ANALYSIS.md) was written
+   when Track A had only suites/revisions/cases — that premise is now
+   stale. **Before HYB-1 starts, the gap analysis must be refreshed
+   against the final Track A implementation**, specifically covering
+   what didn't exist when the original analysis was written:
+   - the cycle and result domain models (`TestCycle`,
+     `CycleTestResult`, `CycleResultHistory`);
+   - append-only result history and its revision-numbering discipline;
+   - the evidence and annotation models (`EvidenceItem`,
+     `EvidenceRevision`);
+   - the `EvidenceStorage` abstraction and the R2 backend (ADR-0002) —
+     HYB-1+ evidence (if any) should plug into this, not invent a
+     parallel storage path;
+   - actor and evidence provenance conventions (`result_source`,
+     `change_source`, `evidence_source`, `captured_by`/`created_by`);
+   - authentication, CSRF, CORS, and role-boundary enforcement as it
+     now actually exists (Phase 7's `csrf_origin_check`, role checks,
+     project isolation);
+   - dashboard, reporting, Excel, and ZIP export as they now actually
+     exist — any hybrid run data will need to flow into these, not sit
+     beside them unintegrated;
+   - the hybrid extension fields already reserved in the schema
+     (`execution_mode`, `result_source`/`change_source`,
+     `runner_run_id`) and which are still correctly unused;
+   - the final Track A REST API surface and the frontend execution UI
+     (`CycleExecution.jsx`) that HYB-4's pause/resume UI will need to
+     integrate with, rather than the HYB-0 spike's console-only runner
+     output.
 2. Smallest possible **HYB-0 spike** — not the full feature set. Exit
    gate (hybrid doc section 15, HYB-0): a local runner opens a visible
    browser, executes 3 recorded steps, pauses for a human decision,
    resumes, uploads one screenshot, stores an auditable run record. No
-   mocked runner output accepted as satisfying this gate.
+   mocked runner output accepted as satisfying this gate. **Done** — see
+   below.
 
 Delivery sequence after the spike:
 
@@ -264,9 +336,11 @@ Delivery sequence after the spike:
   session, human decision with identity+timestamp, authenticated
   evidence upload/download, actor-tagged run history, real backend
   throughout, no auto-PASS on failure). Runner code lives in `runner/`
-  (Node.js + TypeScript + Playwright). **Per the user's explicit
-  instruction, HYB-1 does not start next — return to Track A Phases
-  4–7 first**, carrying the extension points above into that work.
+  (Node.js + TypeScript + Playwright). Track A Phases 4–7 (cycles,
+  execution, evidence, reporting/export, hardening) were completed after
+  this spike, carrying the extension points above into that work. **HYB-1
+  does not start yet** — see "Release Closure — Track A" above and the
+  intended delivery sequence for what comes first.
 - **HYB-1** — workflow model and editor (`workflow_definitions`,
   `workflow_revisions`, `workflow_steps`, draft/publish/clone, test-case
   links, manual checkpoint editor).

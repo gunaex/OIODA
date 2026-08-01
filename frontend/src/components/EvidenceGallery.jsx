@@ -11,6 +11,10 @@ export default function EvidenceGallery({ slug, cycleId, resultId, canEdit, isAd
   const [error, setError] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [openEvidence, setOpenEvidence] = useState(null)
+  // Local-only pending capture ({ blob, url, evidenceType, filename }) for
+  // screen-capture/paste — no API call, no evidence row, no storage object
+  // exists until the tester explicitly confirms. See docs/RELEASE_CLOSURE.md.
+  const [pendingCapture, setPendingCapture] = useState(null)
   const fileInputRef = useRef(null)
   const pasteZoneRef = useRef(null)
 
@@ -23,6 +27,25 @@ export default function EvidenceGallery({ slug, cycleId, resultId, canEdit, isAd
   }
 
   useEffect(load, [slug, cycleId, resultId])
+
+  // Navigating to a different result must discard any unconfirmed capture —
+  // it belongs to the previous result's evidence context.
+  useEffect(() => {
+    setPendingCapture((prev) => {
+      if (prev) URL.revokeObjectURL(prev.url)
+      return null
+    })
+  }, [slug, cycleId, resultId])
+
+  // Revoke the object URL on unmount so an abandoned preview doesn't leak.
+  useEffect(() => {
+    return () => {
+      setPendingCapture((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url)
+        return prev
+      })
+    }
+  }, [])
 
   const doUpload = async (blob, evidenceType, filename) => {
     setUploading(true)
@@ -48,7 +71,9 @@ export default function EvidenceGallery({ slug, cycleId, resultId, canEdit, isAd
     const item = Array.from(e.clipboardData?.items || []).find((i) => i.type.startsWith('image/'))
     if (!item) return
     const blob = item.getAsFile()
-    if (blob) doUpload(blob, 'PASTED_IMAGE', 'pasted-image.png')
+    if (!blob) return
+    setError(null)
+    setPendingCapture({ blob, url: URL.createObjectURL(blob), evidenceType: 'PASTED_IMAGE', filename: 'pasted-image.png' })
   }
 
   const handleScreenCapture = async () => {
@@ -64,11 +89,25 @@ export default function EvidenceGallery({ slug, cycleId, resultId, canEdit, isAd
       canvas.getContext('2d').drawImage(video, 0, 0)
       stream.getTracks().forEach((t) => t.stop())
       canvas.toBlob((blob) => {
-        if (blob) doUpload(blob, 'SCREENSHOT', 'screen-capture.png')
+        if (blob) setPendingCapture({ blob, url: URL.createObjectURL(blob), evidenceType: 'SCREENSHOT', filename: 'screen-capture.png' })
       }, 'image/png')
     } catch {
       setError('Screen capture was cancelled or is not available in this browser context')
     }
+  }
+
+  const confirmPendingCapture = async () => {
+    if (!pendingCapture || uploading) return
+    const { blob, url, evidenceType, filename } = pendingCapture
+    await doUpload(blob, evidenceType, filename)
+    URL.revokeObjectURL(url)
+    setPendingCapture(null)
+  }
+
+  const cancelPendingCapture = () => {
+    if (!pendingCapture) return
+    URL.revokeObjectURL(pendingCapture.url)
+    setPendingCapture(null)
   }
 
   const handleArchive = async (evidenceId) => {
@@ -100,7 +139,8 @@ export default function EvidenceGallery({ slug, cycleId, resultId, canEdit, isAd
           <button
             type="button"
             onClick={handleScreenCapture}
-            className="px-2 py-1 border border-gray-300 rounded hover:bg-gray-50"
+            disabled={!!pendingCapture}
+            className="px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
           >
             Capture screen
           </button>
@@ -108,6 +148,37 @@ export default function EvidenceGallery({ slug, cycleId, resultId, canEdit, isAd
         </div>
       )}
       {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
+
+      {pendingCapture && (
+        <div className="mb-3 p-3 border border-emerald-300 rounded-md bg-emerald-50">
+          <p className="text-xs font-medium text-emerald-800 mb-2">
+            Preview — nothing is uploaded until you confirm
+          </p>
+          <img
+            src={pendingCapture.url}
+            alt="Capture preview"
+            className="max-w-full max-h-64 rounded border border-gray-200 mb-2"
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={confirmPendingCapture}
+              disabled={uploading}
+              className="px-3 py-1 text-xs font-medium text-white bg-emerald-600 rounded hover:bg-emerald-700 disabled:opacity-50"
+            >
+              Upload evidence
+            </button>
+            <button
+              type="button"
+              onClick={cancelPendingCapture}
+              disabled={uploading}
+              className="px-3 py-1 text-xs font-medium text-gray-700 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-xs text-gray-400">Loading…</p>

@@ -2,6 +2,16 @@
 
 Status: procedure prepared, **not yet executed** — 2026-08-02.
 
+**2026-08-02 update**: a preview-before-upload confirmation step was
+added for Screen Capture and clipboard-paste (checks 2 and 3 below now
+reflect this). The confirm/cancel mechanism itself was verified with
+real headed-browser Playwright automation and direct DB inspection —
+cancel creates zero `EvidenceItem` rows, confirm creates exactly one —
+but that automated run used a synthetic clipboard write, not the
+`getDisplayMedia` OS picker or a human-sourced clipboard image, so it
+does **not** substitute for checks 2 and 3 below, which still require a
+human operator in a real browser.
+
 This document exists to close the three remaining items in
 `docs/RELEASE_CHECKLIST.md`. All three require resources this
 development environment does not have (real Cloudflare R2 credentials,
@@ -284,19 +294,32 @@ smoke test executed successfully`).
    disappear right away, not linger. A lingering share indicator after
    the capture completes would indicate the media stream wasn't stopped
    — note this as a finding if observed.
-4. **Preview before upload — verify actual behavior, don't assume**: as
-   currently implemented, the app uploads the captured frame
-   **immediately** — there is no separate preview-then-confirm dialog
-   before upload. The thumbnail that appears in the evidence gallery
-   after the capture is the *post-upload* preview, not a pre-upload
-   confirmation step. Confirm this is in fact the behavior you observe
-   (it should be, per the current code) — if a pre-upload confirmation
-   step is required for release, that's a product decision to raise
-   separately, not something to fail this check over silently assuming
-   otherwise.
-5. **Exact result attachment**: confirm the resulting evidence thumbnail
-   appears under the **specific case** that was selected when you
-   clicked Capture — not a different case, not unassigned.
+4. **Preview before upload — confirm path**: as of 2026-08-02, the app
+   shows a local, client-side preview of the captured frame — labeled
+   "Preview — nothing is uploaded until you confirm" — with **Upload
+   evidence** and **Cancel** buttons, **before** any network request is
+   made. Confirm in devtools' Network tab that no `POST .../evidence`
+   request fires merely from clicking Capture screen; it must only fire
+   after clicking **Upload evidence**. Confirm the preview image is
+   pixel-identical to what ends up uploaded (same capture, not re-taken).
+   Click **Upload evidence** and confirm the request fires exactly once
+   even if you click it more than once in quick succession (the button
+   must disable/no-op while the upload is in flight).
+4b. **Preview before upload — cancel path**: repeat the capture, but this
+   time click **Cancel** instead. Verify: (a) no `POST .../evidence`
+   request appears in the Network tab at any point, (b) the preview
+   disappears and the Evidence panel's count is unchanged, (c) via the
+   API or DB directly — `GET .../results/{result_id}/evidence` — no new
+   `EvidenceItem` row was created, and (d) if you're running against a
+   real storage backend for this check, confirm no new object exists
+   under that result's `evidence/` prefix (e.g. `reconcile_evidence.py`
+   in dry-run mode reports no unexpected candidate, or inspect the
+   bucket/filesystem directly). This is the core requirement driving this
+   feature — a rejected capture must leave zero trace.
+5. **Exact result attachment**: after confirming an upload, verify the
+   resulting evidence thumbnail appears under the **specific case** that
+   was selected when you clicked Capture — not a different case, not
+   unassigned.
 6. **Stored MIME type, checksum, byte size**: in devtools' Network tab,
    find the `POST .../evidence` request; note the returned evidence
    `id`. Call `GET .../evidence/{id}` (via curl with your browser
@@ -325,7 +348,8 @@ smoke test executed successfully`).
 
 One (or two, if you captured twice per step 7) new `EvidenceItem` row(s)
 with `evidence_type=SCREENSHOT`, correct metadata, and a real, non-empty
-file on whichever storage backend was active.
+file on whichever storage backend was active — **and no row at all**
+for any capture that was Cancelled instead of confirmed (step 4b).
 
 ### Evidence to capture
 
@@ -388,9 +412,12 @@ it must be a genuine OS clipboard image from a human action.
    plausible, the original is immutable across an annotation
    save-and-redownload, and every control is disabled after the cycle is
    locked.
-5. Same preview-before-upload note as check 2 applies here too — paste
-   also uploads immediately, with no separate confirm step; verify this
-   matches what you observe rather than assuming otherwise.
+5. Same preview-before-upload behavior as check 2 applies here too — a
+   paste populates the same client-side preview with **Upload
+   evidence**/**Cancel**, not an immediate upload. Repeat check 2's steps
+   4 and 4b against the pasted image: confirm no upload request fires
+   until you click **Upload evidence**, and confirm clicking **Cancel**
+   leaves no `EvidenceItem` row and no storage object behind.
 
 ### Expected database state
 
