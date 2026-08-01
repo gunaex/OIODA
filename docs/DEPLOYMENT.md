@@ -101,6 +101,16 @@ after a short delay). Use `http://localhost:5173`, not
 `127.0.0.1:5173` — the backend's default `ALLOWED_ORIGINS`/CSRF check
 only accepts the `localhost` origin (see `main.py::_origin_is_allowed`).
 
+Neither script sets `ADMIN_EMAIL`/`ADMIN_PASSWORD`. On first run against
+an empty local database, watch the backend window: it prints a
+one-time, randomly generated admin email/password (`seed.py`'s
+`seed_bootstrap_admin`) — log in with those, then change the password.
+To use your own known credentials instead, set `ADMIN_EMAIL` and
+`ADMIN_PASSWORD` as real environment variables in your own shell before
+running the script — **never** hardcode credentials into `start.bat`/
+`start.ps1` or any other tracked file; they only take effect while the
+user database is completely empty.
+
 If a required tool (`python`, `npm`) isn't on `PATH`, the script fails
 immediately with that specific error rather than continuing partway —
 install the missing tool and re-run.

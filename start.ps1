@@ -1,8 +1,16 @@
 # QA-Again local dev launcher (PowerShell) -- starts backend
 # (FastAPI/uvicorn) and frontend (Vite) each in their own window,
-# installing dependencies on first run only if missing. ADMIN_EMAIL/
-# ADMIN_PASSWORD only take effect if the user database is completely
-# empty (fresh bootstrap) -- ignored once an account already exists.
+# installing dependencies on first run only if missing.
+#
+# No admin credentials are set here. On first run against an empty
+# database, the backend bootstraps one admin account automatically and
+# prints its one-time generated password to the BACKEND window's
+# console (see backend/app/seed.py) -- watch that window after first
+# launch. To choose your own credentials instead, set $env:ADMIN_EMAIL
+# and $env:ADMIN_PASSWORD in your own shell BEFORE running this script
+# (never hardcode them in this file or any tracked file) -- they only
+# take effect while the user database is completely empty and are
+# ignored once an account already exists.
 # Never touches backend/data -- existing local projects/evidence are
 # left alone.
 
@@ -18,8 +26,6 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-$env:ADMIN_EMAIL = "***REMOVED-CREDENTIAL***"
-$env:ADMIN_PASSWORD = "***REMOVED-CREDENTIAL***"
 $env:ALLOWED_ORIGINS = "http://localhost:5173"
 $env:JWT_SECRET_KEY = "dev-local-secret-change-me"
 
@@ -39,7 +45,10 @@ if (-not (Test-Path $frontendModules)) {
 }
 
 Write-Host "Starting backend on http://127.0.0.1:8000 ..."
-Start-Process cmd -ArgumentList "/k", "cd /d `"$root\backend`" && set ADMIN_EMAIL=$($env:ADMIN_EMAIL)&& set ADMIN_PASSWORD=$($env:ADMIN_PASSWORD)&& set ALLOWED_ORIGINS=$($env:ALLOWED_ORIGINS)&& set JWT_SECRET_KEY=$($env:JWT_SECRET_KEY)&& .venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+Write-Host "(First run against an empty database: watch this window for a one-time"
+Write-Host " generated admin password, unless you set ADMIN_EMAIL / ADMIN_PASSWORD"
+Write-Host " yourself before running this script.)"
+Start-Process cmd -ArgumentList "/k", "cd /d `"$root\backend`" && set ALLOWED_ORIGINS=$($env:ALLOWED_ORIGINS)&& set JWT_SECRET_KEY=$($env:JWT_SECRET_KEY)&& .venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
 
 Write-Host "Starting frontend on http://localhost:5173 ..."
 Start-Process cmd -ArgumentList "/k", "cd /d `"$root\frontend`" && npm run dev"
