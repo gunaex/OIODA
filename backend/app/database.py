@@ -40,6 +40,37 @@ MASTER_COLUMN_PATCHES: dict[str, dict[str, str]] = {
 }
 PROJECT_COLUMN_PATCHES: dict[str, dict[str, str]] = {}
 
+# Additive index patches (docs/PERFORMANCE_FAST_PASS.md) — `CREATE INDEX
+# IF NOT EXISTS` is safe against both a fresh database (created via
+# `create_all`, which won't have these yet since the models don't declare
+# them) and an existing one already missing them. Each entry names the
+# query path it exists for, so future readers don't have to guess:
+#   - cycle_test_results.cycle_id: every results-list/dashboard/report
+#     query filters by cycle_id (was a full table scan per lookup).
+#   - cycle_test_results.test_case_id: PASS-evidence and history joins.
+#   - cycle_result_history.cycle_test_result_id: history panel + export.
+#   - evidence_items.cycle_test_result_id: evidence gallery load,
+#     PASS-evidence gate check, dashboard evidence-completeness.
+#   - evidence_items.cycle_id: ZIP/Excel export evidence iteration.
+#   - evidence_revisions.evidence_id: annotation history lookup.
+#   - test_cases.revision_id: case list under a revision, cycle creation.
+#   - test_cases.suite_id: suite case counts.
+#   - script_revisions.suite_id: revision list under a suite.
+#   - defects.cycle_id: dashboard open-defects-by-severity, go-live gate.
+#   - sign_offs.cycle_id: sign-off summary report.
+#   - activity_log.changed_at: dashboard "recent activity" ORDER BY DESC.
+PROJECT_INDEXES: dict[str, list[str]] = {
+    "cycle_test_results": ["cycle_id", "test_case_id"],
+    "cycle_result_history": ["cycle_test_result_id"],
+    "evidence_items": ["cycle_test_result_id", "cycle_id"],
+    "evidence_revisions": ["evidence_id"],
+    "test_cases": ["revision_id", "suite_id"],
+    "script_revisions": ["suite_id"],
+    "defects": ["cycle_id"],
+    "sign_offs": ["cycle_id"],
+    "activity_log": ["changed_at"],
+}
+
 
 def ensure_columns(engine, table_columns: dict[str, dict[str, str]]):
     with engine.connect() as conn:
@@ -48,6 +79,15 @@ def ensure_columns(engine, table_columns: dict[str, dict[str, str]]):
             for name, coltype in columns.items():
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {coltype}"))
+        conn.commit()
+
+
+def ensure_indexes(engine, table_columns: dict[str, list[str]]):
+    with engine.connect() as conn:
+        for table, columns in table_columns.items():
+            for column in columns:
+                index_name = f"ix_{table}_{column}"
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table} ({column})"))
         conn.commit()
 
 
@@ -89,6 +129,7 @@ def get_project_engine(slug: str):
         engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
         ProjectBase.metadata.create_all(bind=engine)
         ensure_columns(engine, PROJECT_COLUMN_PATCHES)
+        ensure_indexes(engine, PROJECT_INDEXES)
         _project_engines[slug] = engine
         _project_sessions[slug] = sessionmaker(
             autocommit=False, autoflush=False, bind=engine

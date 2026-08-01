@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useParams } from 'react-router-dom'
 import {
   getCycle,
   listCycleResults,
+  getCycleResult,
   updateCycleResult,
   reviewCycleResult,
   getCycleResultHistory,
@@ -22,6 +23,8 @@ export default function CycleExecution() {
   const isAdmin = user?.role === 'ADMIN'
 
   const [cycle, setCycle] = useState(null)
+  // Lightweight list (no case action/expected/setup/validation markdown —
+  // see docs/PERFORMANCE_FAST_PASS.md) used for the sidebar/filters.
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -34,6 +37,13 @@ export default function CycleExecution() {
   const [saveState, setSaveState] = useState({}) // resultId -> 'idle'|'saving'|'saved'|'error'
   const [history, setHistory] = useState(null)
   const [showHistory, setShowHistory] = useState(false)
+
+  // Full result detail (adds case_action_md/expected/setup/validation),
+  // fetched lazily per selection and cached for the rest of this page
+  // session — switching back to an already-opened case is instant.
+  const [detailCache, setDetailCache] = useState({})
+  const [detailLoadingId, setDetailLoadingId] = useState(null)
+  const detailRequestSeq = useRef(0)
 
   const load = () => {
     setLoading(true)
@@ -50,7 +60,34 @@ export default function CycleExecution() {
 
   useEffect(load, [slug, cycleId])
 
-  const selected = useMemo(() => results.find((r) => r.id === selectedId) || null, [results, selectedId])
+  // Lazily fetch full case detail for whichever result is selected. A
+  // request sequence number lets a rapid second selection make an
+  // in-flight response for the previous one a no-op, so fast clicking
+  // through the case list never shows stale detail.
+  useEffect(() => {
+    if (!selectedId || detailCache[selectedId]) return
+    const seq = ++detailRequestSeq.current
+    setDetailLoadingId(selectedId)
+    getCycleResult(slug, cycleId, selectedId)
+      .then((full) => {
+        if (seq !== detailRequestSeq.current) return
+        setDetailCache((prev) => ({ ...prev, [selectedId]: full }))
+      })
+      .catch(() => {
+        if (seq !== detailRequestSeq.current) return
+        setError('Could not load case details')
+      })
+      .finally(() => {
+        if (seq === detailRequestSeq.current) setDetailLoadingId(null)
+      })
+  }, [slug, cycleId, selectedId, detailCache])
+
+  const selectedLite = useMemo(() => results.find((r) => r.id === selectedId) || null, [results, selectedId])
+  const selected = useMemo(
+    () => (selectedLite ? { ...selectedLite, ...(detailCache[selectedId] || {}) } : null),
+    [selectedLite, detailCache, selectedId]
+  )
+  const detailLoading = detailLoadingId === selectedId && !detailCache[selectedId]
   const draft = selectedId ? drafts[selectedId] || {} : {}
   const isLocked = cycle?.status === 'LOCKED'
 
@@ -82,6 +119,7 @@ export default function CycleExecution() {
     try {
       const updated = await updateCycleResult(slug, cycleId, selected.id, payload)
       setResults((prev) => prev.map((r) => (r.id === updated.id ? updated : r)))
+      setDetailCache((prev) => ({ ...prev, [updated.id]: updated }))
       setDrafts((prev) => ({ ...prev, [selected.id]: undefined }))
       setSaveState((prev) => ({ ...prev, [selected.id]: 'saved' }))
       const refreshedCycle = await getCycle(slug, cycleId)
@@ -96,6 +134,7 @@ export default function CycleExecution() {
     if (!selected) return
     const updated = await reviewCycleResult(slug, cycleId, selected.id, { review_status: reviewStatus })
     setResults((prev) => prev.map((r) => (r.id === updated.id ? updated : r)))
+    setDetailCache((prev) => ({ ...prev, [updated.id]: updated }))
   }
 
   const toggleHistory = async () => {
@@ -210,26 +249,32 @@ export default function CycleExecution() {
               </div>
             </div>
 
-            {selected.case_setup_md && (
-              <div>
-                <p className="text-xs font-medium text-gray-500 uppercase">Setup</p>
-                <p className="text-sm text-gray-800 whitespace-pre-wrap">{selected.case_setup_md}</p>
-              </div>
+            {detailLoading ? (
+              <p className="text-xs text-gray-400">Loading case details…</p>
+            ) : (
+              <>
+                {selected.case_setup_md && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase">Setup</p>
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap">{selected.case_setup_md}</p>
+                  </div>
+                )}
+                <div>
+                  <p className="text-xs font-medium text-gray-500 uppercase">Action</p>
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{selected.case_action_md}</p>
+                </div>
+                {selected.case_validation_md && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase">Validation</p>
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap">{selected.case_validation_md}</p>
+                  </div>
+                )}
+                <div>
+                  <p className="text-xs font-medium text-gray-500 uppercase">Expected Result</p>
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{selected.case_expected_result_md}</p>
+                </div>
+              </>
             )}
-            <div>
-              <p className="text-xs font-medium text-gray-500 uppercase">Action</p>
-              <p className="text-sm text-gray-800 whitespace-pre-wrap">{selected.case_action_md}</p>
-            </div>
-            {selected.case_validation_md && (
-              <div>
-                <p className="text-xs font-medium text-gray-500 uppercase">Validation</p>
-                <p className="text-sm text-gray-800 whitespace-pre-wrap">{selected.case_validation_md}</p>
-              </div>
-            )}
-            <div>
-              <p className="text-xs font-medium text-gray-500 uppercase">Expected Result</p>
-              <p className="text-sm text-gray-800 whitespace-pre-wrap">{selected.case_expected_result_md}</p>
-            </div>
 
             <EvidenceGallery
               key={selected.id}

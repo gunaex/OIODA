@@ -348,7 +348,15 @@ class CycleTestResultUpdate(BaseModel):
     assigned_tester_email: Optional[str] = None
 
 
-class CycleTestResultOut(BaseModel):
+class CycleTestResultListOut(BaseModel):
+    """Lightweight shape for the results *list* endpoint — everything the
+    Cycle Execution sidebar needs to render, deliberately excluding the
+    four case markdown fields (action/expected/setup/validation), which
+    can be large and are only needed once a specific case is opened. See
+    docs/PERFORMANCE_FAST_PASS.md — the full list used to embed those
+    fields on every one of up to hundreds of rows, making initial cycle
+    load payload-bound rather than query-bound."""
+
     id: int
     cycle_id: int
     test_case_id: int
@@ -375,13 +383,20 @@ class CycleTestResultOut(BaseModel):
     checkpoint_code: Optional[str] = None
     case_title: Optional[str] = None
     case_priority: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CycleTestResultOut(CycleTestResultListOut):
+    """Full shape — adds the case markdown fields. Used by the single-
+    result detail/update/review endpoints, fetched only for the result
+    currently open in the execution screen."""
+
     case_action_md: Optional[str] = None
     case_expected_result_md: Optional[str] = None
     case_setup_md: Optional[str] = None
     case_validation_md: Optional[str] = None
-
-    class Config:
-        from_attributes = True
 
 
 class CycleResultReviewRequest(BaseModel):

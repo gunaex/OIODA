@@ -195,6 +195,8 @@ export default function EvidenceGallery({ slug, cycleId, resultId, canEdit, isAd
                 <img
                   src={evidenceOriginalUrl(slug, cycleId, resultId, item.id)}
                   alt={item.caption || item.original_filename}
+                  loading="lazy"
+                  decoding="async"
                   className="w-full h-full object-cover"
                 />
               </button>

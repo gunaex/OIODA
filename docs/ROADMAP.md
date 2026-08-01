@@ -237,6 +237,18 @@ This roadmap now has two tracks, per
    dashboard → real Excel/ZIP downloads, both files opened and verified
    afterward) — recorded in `docs/RELEASE_REHEARSAL.md`.
 
+## Performance Fast Pass — 2026-08-02
+
+A measurement-first performance pass on Track A (not a new phase, no
+feature work) — see [PERFORMANCE_FAST_PASS.md](PERFORMANCE_FAST_PASS.md)
+for the full before/after data. Fixed a real payload bloat bug (the
+cycle-results list endpoint was shipping every case's full markdown on
+every row — 354KB → 162KB for a 200-case cycle), an N+1 in the cycle
+list endpoint, redundant dashboard/report metric recomputation, added
+additive SQLite indexes on hot foreign-key columns, and made Cycle
+Execution fetch case detail lazily per selection with a session cache.
+Does not change release status or touch the three release blockers.
+
 ## Release Closure — Track A
 
 Status: **BLOCKED — Track A implementation is complete, but production

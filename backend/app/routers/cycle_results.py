@@ -19,6 +19,14 @@ def _get_cycle(db: Session, cycle_id: int) -> models.TestCycle:
     return cycle
 
 
+def _to_list_out(result: models.CycleTestResult, case: models.TestCase) -> schemas.CycleTestResultListOut:
+    out = schemas.CycleTestResultListOut.model_validate(result)
+    out.checkpoint_code = case.checkpoint_code
+    out.case_title = case.title
+    out.case_priority = case.priority
+    return out
+
+
 def _to_out(result: models.CycleTestResult, case: models.TestCase) -> schemas.CycleTestResultOut:
     out = schemas.CycleTestResultOut.model_validate(result)
     out.checkpoint_code = case.checkpoint_code
@@ -43,7 +51,7 @@ def _get_result_with_case(db: Session, cycle_id: int, result_id: int) -> tuple[m
     return result, case
 
 
-@router.get("", response_model=list[schemas.CycleTestResultOut])
+@router.get("", response_model=list[schemas.CycleTestResultListOut])
 def list_results(slug: str, cycle_id: int, db: Session = Depends(get_project_db)):
     _get_cycle(db, cycle_id)
     results = (
@@ -51,7 +59,7 @@ def list_results(slug: str, cycle_id: int, db: Session = Depends(get_project_db)
     )
     case_ids = [r.test_case_id for r in results]
     case_by_id = {c.id: c for c in db.query(models.TestCase).filter(models.TestCase.id.in_(case_ids)).all()}
-    return [_to_out(r, case_by_id[r.test_case_id]) for r in results]
+    return [_to_list_out(r, case_by_id[r.test_case_id]) for r in results]
 
 
 @router.get("/{result_id}", response_model=schemas.CycleTestResultOut)

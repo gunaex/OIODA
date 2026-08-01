@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -32,7 +33,25 @@ def _to_out(db: Session, cycle: models.TestCycle) -> schemas.TestCycleOut:
 @router.get("", response_model=list[schemas.TestCycleOut])
 def list_cycles(slug: str, db: Session = Depends(get_project_db)):
     cycles = db.query(models.TestCycle).order_by(models.TestCycle.created_at.desc()).all()
-    return [_to_out(db, c) for c in cycles]
+    # One grouped query for every cycle's result counts instead of a
+    # per-cycle query (was N+1 — see docs/PERFORMANCE.md).
+    counts_by_cycle: dict[int, schemas.ResultCounts] = {c.id: schemas.ResultCounts() for c in cycles}
+    if cycles:
+        rows = (
+            db.query(models.CycleTestResult.cycle_id, models.CycleTestResult.status, func.count())
+            .filter(models.CycleTestResult.cycle_id.in_(counts_by_cycle.keys()))
+            .group_by(models.CycleTestResult.cycle_id, models.CycleTestResult.status)
+            .all()
+        )
+        for cycle_id, status, n in rows:
+            setattr(counts_by_cycle[cycle_id], status, n)
+
+    out = []
+    for c in cycles:
+        item = schemas.TestCycleOut.model_validate(c)
+        item.result_counts = counts_by_cycle[c.id]
+        out.append(item)
+    return out
 
 
 @router.post("", response_model=schemas.TestCycleOut)

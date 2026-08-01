@@ -1,4 +1,6 @@
+import logging
 import os
+import time
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -42,6 +44,28 @@ with MasterSessionLocal() as _db:
 app = FastAPI(title="QA-Again API")
 
 app.state.limiter = limiter
+
+# Own handler + level, independent of uvicorn's root logging config, so
+# these lines are visible during local development without extra setup.
+perf_logger = logging.getLogger("perf")
+perf_logger.setLevel(logging.INFO)
+if not perf_logger.handlers:
+    _perf_handler = logging.StreamHandler()
+    _perf_handler.setFormatter(logging.Formatter("[perf] %(message)s"))
+    perf_logger.addHandler(_perf_handler)
+    perf_logger.propagate = False
+
+
+@app.middleware("http")
+async def request_timing_log(request: Request, call_next):
+    """Development-only visibility into slow endpoints. Logs method, path,
+    status, and duration -- never query strings, headers, cookies, or
+    bodies, so no secrets/tokens/evidence content ever reach the log."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start) * 1000
+    perf_logger.info("%s %s -> %s in %.1fms", request.method, request.url.path, response.status_code, duration_ms)
+    return response
 
 
 @app.exception_handler(RateLimitExceeded)

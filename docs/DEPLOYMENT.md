@@ -81,6 +81,30 @@ required, matching every other local-dev default in this app. Point it
 at a real (or moto-mocked, for testing) R2 bucket only when you
 specifically need to exercise the R2 path locally.
 
+### Morning quick start (Windows)
+
+Two equivalent one-shot launchers at the repo root — pick whichever
+shell you have open. Both: install `backend/.venv`/`frontend/node_modules`
+only if missing (never reinstall on a normal day), start uvicorn and
+Vite each in their own window, print the local URLs, never print the
+admin password to the console beyond what uvicorn's own bootstrap log
+already does, and never touch `backend/data/` (your existing local
+projects/evidence are untouched).
+
+```
+start.bat      REM cmd.exe / double-click from Explorer
+start.ps1      REM PowerShell: .\start.ps1
+```
+
+Then open `http://localhost:5173/login` (both scripts do this for you
+after a short delay). Use `http://localhost:5173`, not
+`127.0.0.1:5173` — the backend's default `ALLOWED_ORIGINS`/CSRF check
+only accepts the `localhost` origin (see `main.py::_origin_is_allowed`).
+
+If a required tool (`python`, `npm`) isn't on `PATH`, the script fails
+immediately with that specific error rather than continuing partway —
+install the missing tool and re-run.
+
 ## R2 staging smoke test — required before first production release
 
 `tests/test_r2_storage.py` (moto-mocked) proves `R2EvidenceStorage`'s

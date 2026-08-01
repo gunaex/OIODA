@@ -28,8 +28,9 @@ def result_counts(db: Session, cycle_id: int) -> dict:
     return counts
 
 
-def pass_rate(db: Session, cycle_id: int) -> dict:
-    counts = result_counts(db, cycle_id)
+def pass_rate(db: Session, cycle_id: int, counts: dict | None = None) -> dict:
+    if counts is None:
+        counts = result_counts(db, cycle_id)
     total = sum(counts.values())
     approved_na = (
         db.query(models.CycleTestResult.id)

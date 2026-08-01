@@ -53,7 +53,7 @@ def get_dashboard(slug: str, db: Session = Depends(get_project_db), master_db: S
         },
         "total_cases": sum(counts.values()),
         "result_counts": counts,
-        "pass_rate": pass_rate(db, cycle.id),
+        "pass_rate": pass_rate(db, cycle.id, counts=counts),
         "evidence_completeness": evidence_completeness(db, cycle.id),
         "go_live_readiness": go_live_readiness(db, cycle.id),
         "open_defects_by_severity": open_defects_by_severity,

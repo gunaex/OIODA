@@ -27,10 +27,11 @@ def _get_cycle(db: Session, cycle_id: int) -> models.TestCycle:
 @router.get("/execution-summary")
 def execution_summary(slug: str, cycle_id: int, db: Session = Depends(get_project_db)):
     cycle = _get_cycle(db, cycle_id)
+    counts = result_counts(db, cycle_id)
     return {
         "cycle": {"id": cycle.id, "name": cycle.name, "status": cycle.status, "environment": cycle.environment},
-        "result_counts": result_counts(db, cycle_id),
-        "pass_rate": pass_rate(db, cycle_id),
+        "result_counts": counts,
+        "pass_rate": pass_rate(db, cycle_id, counts=counts),
         "evidence_completeness": evidence_completeness(db, cycle_id),
     }
 
