@@ -20,7 +20,8 @@ def register_impl_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/designs/{design_id}/implementation-plan")
     async def create_implementation_plan(design_id: str):
-        from ..flow.api import _designs, _flows
+        from ..flow.api import _designs, _flows, _get_conn
+        import json
         design = _designs.get(design_id)
         if not design:
             raise HTTPException(status_code=404, detail="Design not found")
@@ -28,10 +29,24 @@ def register_impl_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=400,
                 detail="IMPLEMENTATION_PLAN_NOT_ALLOWED: Design must be BASELINE_FROZEN")
 
-        flow = next((f for f in _flows.values() if f.architecture_graph_id == design_id), None)
+        # Load flow from DB (flow_json column) — canonical model
+        flow_dict = None
+        conn = _get_conn()
+        try:
+            row = conn.execute("SELECT flow_json FROM flow_designs WHERE design_id=?", (design_id,)).fetchone()
+            if row and row["flow_json"]:
+                flow_dict = json.loads(row["flow_json"])
+        finally:
+            conn.close()
+
+        # Also check in-memory flows
+        if not flow_dict:
+            flow = next((f for f in _flows.values() if f.architecture_graph_id == design_id), None)
+            flow_dict = flow.to_dict() if flow else None
+
         plan = generate_implementation_plan(
             design.to_dict(),
-            flow=flow.to_dict() if flow else None,
+            flow=flow_dict,
         )
         _plans[plan.plan_id] = plan
         persist_plan(plan)

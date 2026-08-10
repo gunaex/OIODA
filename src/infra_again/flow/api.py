@@ -341,10 +341,20 @@ def register_flow_routes(app: FastAPI) -> None:
         d = _designs.get(design_id)
         if not d:
             raise HTTPException(status_code=404, detail="Design not found")
-        if d.status not in (DesignStatus.REVIEW_READY, DesignStatus.USER_REVIEW):
+        if d.status not in (DesignStatus.DRAFT, DesignStatus.GENERATED, DesignStatus.REVIEW_READY, DesignStatus.USER_REVIEW):
             raise HTTPException(status_code=400, detail=f"Cannot accept design in status {d.status.value}")
         d.accept(accepted_by)
+        # Preserve flow data from DB if no in-memory flow exists
         flow = next((f for f in _flows.values() if f.architecture_graph_id == design_id), None)
+        if not flow:
+            conn = _get_conn()
+            try:
+                row = conn.execute("SELECT flow_json FROM flow_designs WHERE design_id=?", (design_id,)).fetchone()
+                if row and row["flow_json"]:
+                    import json
+                    flow = json.loads(row["flow_json"])
+            finally:
+                conn.close()
         _persist_design(d, flow)
         return {"design": d.to_dict(), "note": "No real infrastructure will be created by this action."}
 

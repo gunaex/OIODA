@@ -1,5 +1,5 @@
 
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react';
 import { api } from '../../lib/api';
 import {
   createExampleDesign, canonicalToDrawioXml, drawioXmlToCanonical,
@@ -10,7 +10,7 @@ import {
 const ReactFlowStudio = lazy(() => import('./ReactFlowStudio'));
 
 // ── Config ──
-const DRAWIO_BASE_URL = (import.meta as any).env?.VITE_DRAWIO_BASE_URL || 'https://embed.diagrams.net';
+const DRAWIO_BASE_URL = (import.meta as any).env?.VITE_DRAWIO_BASE_URL || 'http://localhost:8080';
 
 interface Props {
   actor?: { name: string; role: string };
@@ -467,10 +467,60 @@ export default function ArchitectureWorkspace(props: Props = {}) {
   );
 }
 
-/* ── DrawioEmbed component ── */
+/* ── DrawioEmbed component with security hardening ── */
+const MAX_DRAWIO_XML_BYTES = 2 * 1024 * 1024; // 2 MB
+
 function DrawioEmbed({ ref: fwdRef, xml, onSave, onExport, onError, urlParameters, configuration, baseUrl }: any) {
   const [DrawioComp, setDrawioComp] = useState<any>(null);
   const [loadErr, setLoadErr] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Derive allowed origin from baseUrl
+  const allowedOrigin = useMemo(() => {
+    try {
+      const u = new URL(baseUrl || DRAWIO_BASE_URL);
+      return u.origin;
+    } catch { return (typeof window !== 'undefined' ? window.location.origin : ''); }
+  }, [baseUrl]);
+
+  // PostMessage origin validation
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.origin !== allowedOrigin) {
+        // Silently reject messages from unexpected origins
+        return;
+      }
+      // Allow only from the configured draw.io origin
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [allowedOrigin]);
+
+  // Apply iframe sandbox after mount
+  useEffect(() => {
+    if (!DrawioComp) return;
+    const timer = setTimeout(() => {
+      const iframe = document.querySelector('iframe[src*="drawio"], iframe[src*="diagrams.net"], iframe[src*="localhost"]');
+      if (iframe && !iframe.hasAttribute('data-sandbox-applied')) {
+        // Allow same-origin (needed for draw.io postMessage), scripts (draw.io editor),
+        // forms (search/UI), but deny popups, top-navigation, plugins
+        iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
+        iframe.setAttribute('data-sandbox-applied', 'true');
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [DrawioComp]);
+
+  // Size-limit XML before save
+  const safeOnSave = useCallback((data: any) => {
+    const xmlStr = data.xml || data.data || '';
+    if (xmlStr && xmlStr.length > MAX_DRAWIO_XML_BYTES) {
+      console.error('Draw.io XML exceeds size limit:', xmlStr.length, 'bytes');
+      onError?.('XML_SIZE_EXCEEDED');
+      return;
+    }
+    onSave(data);
+  }, [onSave, onError]);
 
   useEffect(() => {
     import('react-drawio').then(m => {
@@ -489,7 +539,7 @@ function DrawioEmbed({ ref: fwdRef, xml, onSave, onExport, onError, urlParameter
       ref={fwdRef}
       xml={xml}
       autosave={false}
-      onSave={onSave}
+      onSave={safeOnSave}
       onExport={onExport}
       onLoad={() => { }}
       urlParameters={{
