@@ -22,6 +22,12 @@ export const api={
   acceptDesign:(id:string)=>api.post(`/api/v1/designs/${id}/accept`),
   aiGenerate:(id:string,b:any)=>api.post(`/api/v1/designs/${id}/ai-generate`,b),
   updateDesignFlow:(id:string,flow:any)=>api.post(`/api/v1/designs/${id}/update-flow`,{flow}),
+  // AGAINPILOT
+  againpilotStatus:()=>api.get<{mode:string;provider:string;available:boolean}>('/api/v1/againpilot/status'),
+  againpilotGenerate:(b:any)=>api.post<{proposal:any}>('/api/v1/againpilot/generate',b),
+  againpilotRefine:(b:any)=>api.post<{proposal:any;delta:any}>('/api/v1/againpilot/refine',b),
+  againpilotExplain:(b:any)=>api.post<{explanation:string}>('/api/v1/againpilot/explain',b),
+  againpilotSecurity:(b:any)=>api.post<{analysis:any}>('/api/v1/againpilot/security-analysis',b),
   // Plans
   createPlan:(designId:string)=>api.post(`/api/v1/designs/${designId}/implementation-plan`),
   getPlan:(id:string)=>api.get<any>(`/api/v1/implementation-plans/${id}`),

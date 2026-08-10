@@ -8,6 +8,7 @@ import {
 } from '../../lib/drawioEngine';
 
 const ReactFlowStudio = lazy(() => import('./ReactFlowStudio'));
+const AgainPilotPanel = lazy(() => import('./AgainPilotPanel'));
 
 // ── Config ──
 const DRAWIO_BASE_URL = (import.meta as any).env?.VITE_DRAWIO_BASE_URL || 'http://localhost:8080';
@@ -35,7 +36,6 @@ export default function ArchitectureWorkspace(props: Props = {}) {
   const [showCreate, setShowCreate] = useState(false);
   const [showAI, setShowAI] = useState(false);
   const [createForm, setCreateForm] = useState({ name: '', description: '', provider: 'ON_PREM', platform: 'NATIVE_VM', fidelity: 'LOCAL_RUNTIME' });
-  const [aiForm, setAiForm] = useState({ objective: '', components: '', provider: 'ON_PREM', platform: 'NATIVE_VM' });
   const drawioRef = useRef<any>(null);
   const [drawioXml, setDrawioXml] = useState<string>('');
   const [drawioLoading, setDrawioLoading] = useState(true);
@@ -185,79 +185,6 @@ export default function ArchitectureWorkspace(props: Props = {}) {
       setShowCreate(false);
       if (wsId && onWsChange) api.setWsDesign(wsId, did).catch(() => { });
     } catch (e: any) { setMsg('Error: ' + e.message); }
-  };
-
-  // ── AI Generate ──
-  const aiGenerate = async () => {
-    if (!currentDesign) return;
-    const did = currentDesign.id || currentDesign.designId;
-    try {
-      const r = await api.aiGenerate(did, { brief: aiForm });
-
-      // Build proposal from AI response
-      const proposal: ArchitectureProposal = {
-        summary: r.flow?.rationale || `AI-generated ${aiForm.provider} architecture`,
-        nodes: (r.flow?.nodes || []).map((n: any) => ({
-          nodeId: n.id || n.nodeId || '',
-          name: n.data?.label || n.label || '',
-          category: n.data?.category || 'APPLICATION',
-          provider: aiForm.provider,
-          nativeService: n.data?.nativeService || '',
-          platform: aiForm.platform,
-          properties: {},
-          securityZone: 'private',
-          dataClassification: 'internal',
-          owner: '',
-          source: 'AI_POC',
-          verificationState: 'UNVERIFIED',
-        })),
-        edges: (r.flow?.edges || []).map((e: any) => ({
-          edgeId: e.id || e.edgeId || '',
-          sourceNodeId: e.source || e.sourceNodeId || '',
-          targetNodeId: e.target || e.targetNodeId || '',
-          type: 'request',
-          protocol: 'TCP',
-          direction: 'unidirectional',
-          dataType: '',
-          securityClassification: 'none',
-          label: e.label || '',
-        })),
-        groups: [],
-        nativeServiceRecommendations: [],
-        dataFlow: [],
-        operationFlow: [],
-        securityFlow: [],
-        assumptions: [],
-        risks: [],
-        questions: [],
-      };
-
-      // Validate proposal
-      const validation = validateArchitectureProposal(proposal);
-      if (!validation.valid) {
-        setMsg('AI proposal validation errors: ' + validation.errors.join('; '));
-        return;
-      }
-
-      // Convert proposal → canonical
-      const cd = createExampleDesign(aiForm.provider);
-      cd.designId = did;
-      cd.title = currentDesign.name || 'AI Generated';
-      cd.provider = aiForm.provider;
-      cd.platform = aiForm.platform;
-      cd.nodes = proposal.nodes;
-      cd.edges = proposal.edges;
-      cd.aiRationale = proposal.summary;
-
-      // Persist
-      await api.updateDesignFlow(did, cd).catch(() => { });
-      setCanonical(cd);
-      const xml = canonicalToDrawioXml(cd, 'architecture');
-      setDrawioXml(xml);
-      setMsg('AI generated: ' + cd.title);
-      setShowAI(false);
-      loadDesigns();
-    } catch (e: any) { setMsg('AI error: ' + e.message); }
   };
 
   // ── Accept design ──
@@ -430,23 +357,80 @@ export default function ArchitectureWorkspace(props: Props = {}) {
         </div>
       </div>
 
-      {/* AI Modal */}
+      {/* AGAINPILOT Panel */}
       {showAI && (
-        <div className="modal-overlay" onClick={() => setShowAI(false)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <div className="flex-between mb-sm"><div className="panel-title">AI Architecture Generator</div><button className="btn btn-ghost btn-sm" onClick={() => setShowAI(false)}>×</button></div>
-            <div className="badge badge-warning mb-sm" style={{ fontSize: 10 }}>AI_GENERATION_MODE=DETERMINISTIC_POC</div>
-            <input className="form-input" placeholder="Business objective" value={aiForm.objective} onChange={e => setAiForm({ ...aiForm, objective: e.target.value })} />
-            <input className="form-input" placeholder="Key components" value={aiForm.components} onChange={e => setAiForm({ ...aiForm, components: e.target.value })} />
-            <select className="form-select" value={aiForm.provider} onChange={e => setAiForm({ ...aiForm, provider: e.target.value })}>
-              {['AWS', 'GCP', 'ON_PREM', 'PRIVATE_CLOUD'].map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-            <select className="form-select" value={aiForm.platform} onChange={e => setAiForm({ ...aiForm, platform: e.target.value })}>
-              {['NATIVE_VM', 'KUBERNETES', 'OPENSHIFT_OCP', 'BARE_METAL'].map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-            <button className="btn btn-primary" onClick={aiGenerate} style={{ width: '100%' }}>Generate Architecture</button>
-          </div>
-        </div>
+        <Suspense fallback={<div className="loading">Loading AGAINPILOT…</div>}>
+          <AgainPilotPanel
+            provider={provider}
+            platform={canonical?.platform || 'KUBERNETES'}
+            onApply={(proposal: any) => {
+              // Convert AGAINPILOT proposal → canonical → persist → draw.io
+              const cd = createExampleDesign(provider);
+              cd.title = proposal.title || 'AGAINPILOT Architecture';
+              cd.description = proposal.summary || '';
+              cd.nodes = (proposal.nodes || []).map((n: any) => ({
+                nodeId: n.nodeId, name: n.name, category: n.category,
+                provider: n.provider || provider, nativeService: n.nativeService || '',
+                platform: n.platform || 'NATIVE_VM',
+                properties: n.properties || {},
+                securityZone: n.securityZone || 'private',
+                dataClassification: n.dataClassification || 'internal',
+                owner: n.owner || '', source: n.source || 'AI_GENERATED',
+                verificationState: n.verificationState || 'UNVERIFIED',
+              }));
+              cd.edges = (proposal.edges || []).map((e: any) => ({
+                edgeId: e.edgeId, sourceNodeId: e.sourceNodeId, targetNodeId: e.targetNodeId,
+                type: e.type || 'request', protocol: e.protocol || 'TCP',
+                direction: e.direction || 'unidirectional',
+                dataType: e.dataType || '', securityClassification: e.securityClassification || 'none',
+                label: e.label || '',
+              }));
+              cd.groups = (proposal.groups || []).map((g: any) => ({
+                groupId: g.groupId, name: g.name, type: g.type || 'SUBNET',
+                parentGroupId: g.parentGroupId || '',
+                provider: g.provider || provider, securityZone: g.securityZone || 'private',
+              }));
+              cd.views = {
+                architecture: proposal.views?.architecture?.nodes || cd.nodes.map((n: any) => n.nodeId),
+                dataFlow: proposal.views?.dataFlow?.nodes || [],
+                operationFlow: proposal.views?.operationFlow?.nodes || [],
+                securityFlow: proposal.views?.securityFlow?.nodes || [],
+              };
+              cd.aiRationale = proposal.rationale || '';
+              cd.assumptions = proposal.assumptions || [];
+              cd.risks = proposal.risks || [];
+              cd.diagramEngine = 'drawio';
+
+              const did = currentDesign?.id || currentDesign?.designId;
+              if (did) {
+                api.updateDesignFlow(did, cd).then(() => {
+                  setCanonical(cd);
+                  const xml = canonicalToDrawioXml(cd, 'architecture');
+                  setDrawioXml(xml);
+                  setMsg('AGAINPILOT architecture applied');
+                  loadDesigns();
+                }).catch((e: any) => setMsg('Apply error: ' + e.message));
+              } else {
+                // No design selected — create one first
+                api.createDesign({
+                  name: cd.title,
+                  description: cd.description,
+                  provider: cd.provider,
+                  platform: cd.platform,
+                  fidelity: 'LOCAL_RUNTIME',
+                }).then((r: any) => {
+                  const newDid = r.id || r.designId;
+                  cd.designId = newDid;
+                  return api.updateDesignFlow(newDid, cd);
+                }).then(() => {
+                  loadDesigns();
+                  setMsg('Design created from AGAINPILOT proposal');
+                }).catch((e: any) => setMsg('Create error: ' + e.message));
+              }
+            }}
+            onClose={() => setShowAI(false)}
+          />
+        </Suspense>
       )}
 
       {/* Create Modal */}

@@ -425,6 +425,13 @@ from ..flow.api import register_flow_routes
 register_flow_routes(app)
 
 # ===========================================================================
+# AGAINPILOT — AI Architecture Copilot (Phase C)
+# ===========================================================================
+
+from ..intelligence.againpilot_api import register_againpilot_routes
+register_againpilot_routes(app)
+
+# ===========================================================================
 # Implementation Planning API (Phase 6)
 # ===========================================================================
 
