@@ -14,6 +14,7 @@
     "lucide-react": "^1.31.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-drawio": "^1.0.7",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {

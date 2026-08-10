@@ -1,117 +1,89 @@
 
-import { useState, useEffect, useCallback, useRef, useContext } from 'react';
-import {
-  ReactFlow, Background, Controls, MiniMap, addEdge,
-  Connection, Node, Edge, MarkerType, BackgroundVariant,
-  applyNodeChanges, applyEdgeChanges, NodeChange, EdgeChange
-} from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
+import { useState, useEffect, useCallback, useRef, useContext, lazy, Suspense } from 'react';
 import { api } from '../../lib/api';
 import { ActorCtx } from '../../App';
+import { createExampleDesign, generateMermaid, type CanonicalDesign, type ArchitectureNode } from '../../lib/drawioEngine';
+
+const ReactFlowStudio = lazy(() => import('./ReactFlowStudio'));
 
 interface Props { actor: {name:string;role:string}; wsId: string; onWsChange: (id:string,name:string)=>void; }
 
-const LAYERS = ['architecture','dataFlow','operationFlow','securityFlow'] as const;
-type Layer = typeof LAYERS[number];
-
-const PROVIDER_SERVICES: Record<string, {id:string;label:string;category:string}[]> = {
-  AWS: [
-    {id:'cf',label:'CloudFront',category:'NETWORK'},{id:'waf',label:'WAF',category:'SECURITY'},
-    {id:'alb',label:'ALB',category:'NETWORK'},{id:'gw',label:'API Gateway',category:'GATEWAY'},
-    {id:'lambda',label:'Lambda',category:'APPLICATION'},{id:'ecs',label:'ECS',category:'APPLICATION'},
-    {id:'eks',label:'EKS',category:'APPLICATION'},{id:'ec2',label:'EC2',category:'APPLICATION'},
-    {id:'rds',label:'RDS',category:'DATABASE'},{id:'dynamodb',label:'DynamoDB',category:'DATABASE'},
-    {id:'elasticache',label:'ElastiCache',category:'CACHE'},{id:'s3',label:'S3',category:'STORAGE'},
-    {id:'sqs',label:'SQS',category:'QUEUE'},{id:'sns',label:'SNS',category:'QUEUE'},
-    {id:'eventbridge',label:'EventBridge',category:'QUEUE'},{id:'kms',label:'KMS',category:'SECURITY'},
-    {id:'iam',label:'IAM',category:'IDENTITY'},{id:'cw',label:'CloudWatch',category:'OBSERVABILITY'},
-    {id:'route53',label:'Route 53',category:'NETWORK'},
-  ],
-  GCP: [
-    {id:'clb',label:'Cloud LB',category:'NETWORK'},{id:'cloudrun',label:'Cloud Run',category:'APPLICATION'},
-    {id:'gke',label:'GKE',category:'APPLICATION'},{id:'cloudsql',label:'Cloud SQL',category:'DATABASE'},
-    {id:'bigquery',label:'BigQuery',category:'DATABASE'},{id:'pubsub',label:'Pub/Sub',category:'QUEUE'},
-    {id:'gcs',label:'Cloud Storage',category:'STORAGE'},{id:'monitoring',label:'Monitoring',category:'OBSERVABILITY'},
-  ],
-  ON_PREM: [
-    {id:'app',label:'App Server',category:'APPLICATION'},{id:'k8s',label:'Kubernetes',category:'APPLICATION'},
-    {id:'db',label:'Database',category:'DATABASE'},{id:'cache',label:'Cache',category:'CACHE'},
-    {id:'storage',label:'Storage',category:'STORAGE'},{id:'lb',label:'Load Balancer',category:'NETWORK'},
-    {id:'fw',label:'Firewall',category:'SECURITY'},{id:'vpn',label:'VPN Gateway',category:'NETWORK'},
-  ],
-  PRIVATE_CLOUD: [
-    {id:'app',label:'App Server',category:'APPLICATION'},{id:'k8s',label:'Kubernetes',category:'APPLICATION'},
-    {id:'db',label:'Database',category:'DATABASE'},{id:'cache',label:'Cache',category:'CACHE'},
-    {id:'storage',label:'Storage',category:'STORAGE'},{id:'lb',label:'Load Balancer',category:'NETWORK'},
-    {id:'fw',label:'Firewall',category:'SECURITY'},{id:'idp',label:'Identity Provider',category:'IDENTITY'},
-  ],
-};
-
-const CAT_COLORS: Record<string,string> = {
-  USER:'var(--info)', IDENTITY:'var(--warning)', SECURITY:'var(--danger)',
-  NETWORK:'#a371f7', GATEWAY:'var(--accent)', APPLICATION:'var(--accent)',
-  SERVICE:'var(--accent)', WORKFLOW:'var(--accent)', DATABASE:'#e3b341',
-  STORAGE:'var(--info)', QUEUE:'var(--warning)', CACHE:'var(--warning)',
-  OBSERVABILITY:'var(--neutral)', EXTERNAL:'var(--text-muted)',
-};
-
-function ServiceNode({ data, selected }: any) {
-  return (
-    <div style={{
-      padding:'6px 12px', borderRadius:6, fontSize:11, fontWeight:500,
-      background: selected ? 'var(--bg-active)' : 'var(--bg-surface)',
-      border:`1.5px solid ${selected ? CAT_COLORS[data.category]||'var(--border-default)' : 'var(--border-default)'}`,
-      color:'var(--text-primary)', cursor:'pointer', minWidth:80, textAlign:'center',
-      boxShadow: selected ? `0 0 0 2px ${CAT_COLORS[data.category]}30` : 'none',
-    }}>
-      <div style={{fontSize:9,color:CAT_COLORS[data.category]||'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:2}}>{data.category}</div>
-      {data.label}
-    </div>
-  );
-}
-const nodeTypes = { default: ServiceNode };
+type Engine = 'drawio' | 'reactflow';
+const VIEWS = ['architecture','dataFlow','operationFlow','securityFlow'] as const;
+type ViewName = typeof VIEWS[number];
 
 export default function ArchitectureWorkspace({ actor, wsId, onWsChange }: Props) {
+  const [engine, setEngine] = useState<Engine>('drawio');
   const [designs, setDesigns] = useState<any[]>([]);
   const [currentDesign, setCurrentDesign] = useState<any>(null);
-  const [flow, setFlow] = useState<any>(null);
-  const [layer, setLayer] = useState<Layer>('architecture');
+  const [canonical, setCanonical] = useState<CanonicalDesign | null>(null);
+  const [view, setView] = useState<ViewName>('architecture');
+  const [selNode, setSelNode] = useState<ArchitectureNode | null>(null);
   const [msg, setMsg] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [showAI, setShowAI] = useState(false);
-  const [aiForm, setAiForm] = useState({objective:'',components:'',provider:'ON_PREM',platform:'NATIVE_VM'});
   const [createForm, setCreateForm] = useState({name:'',description:'',provider:'ON_PREM',platform:'NATIVE_VM',fidelity:'LOCAL_RUNTIME'});
-  const [selNode, setSelNode] = useState<any>(null);
-  const [nodes, setNodes] = useState<Node[]>([]);
-  const [edges, setEdges] = useState<Edge[]>([]);
-
-  const onNodesChange = useCallback((changes: NodeChange[]) => setNodes(nds => applyNodeChanges(changes, nds)), []);
-  const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges(eds => applyEdgeChanges(changes, eds)), []);
-  const reactFlowInstance = useRef<any>(null);
+  const [aiForm, setAiForm] = useState({objective:'',components:'',provider:'ON_PREM',platform:'NATIVE_VM'});
+  const drawioRef = useRef<any>(null);
+  const [drawioXml, setDrawioXml] = useState<string>('');
+  const [drawioLoading, setDrawioLoading] = useState(true);
+  const [drawioReady, setDrawioReady] = useState(false);
 
   const loadDesigns = () => api.designs().then((d:any)=>setDesigns(d.designs||[])).catch(()=>{});
 
   useEffect(()=>{loadDesigns();},[]);
 
-  // Load flow when design changes
+  // Load canonical design when selected
   useEffect(()=>{
-    if (!currentDesign) { setNodes([]); setEdges([]); setFlow(null); return; }
+    if (!currentDesign) { setCanonical(null); setDrawioXml(''); return; }
     const did = currentDesign.id||currentDesign.designId;
     api.getDesign(did).then((d:any)=>{
-      const f = d.flow || d;
-      setFlow(f);
-      if (f?.nodes) setNodes(f.nodes.map((n:any)=>({...n,type:n.type||'default'})));
-      if (f?.edges) setEdges(f.edges.map((e:any)=>({...e,markerEnd:{type:MarkerType.ArrowClosed,color:'var(--text-muted)'},style:{stroke:'var(--border-default)',strokeWidth:1.5}})));
-    }).catch(()=>{});
+      const flow = d.flow || d;
+      // If design has draw.io XML, use it
+      if (flow?.diagramDocument && flow?.diagramEngine==='drawio') {
+        setCanonical(flow as CanonicalDesign);
+        setDrawioXml(flow.diagramDocument);
+        setDrawioLoading(false);
+      } else {
+        // Create canonical from design data
+        const cd = createExampleDesign(currentDesign.provider||'ON_PREM');
+        cd.designId = did;
+        cd.title = currentDesign.name||'';
+        cd.description = currentDesign.description||'';
+        cd.provider = currentDesign.provider||'ON_PREM';
+        cd.platform = currentDesign.platform||'NATIVE_VM';
+        cd.status = currentDesign.status||'DRAFT';
+        setCanonical(cd);
+        // Generate initial draw.io XML via Mermaid
+        const mm = generateMermaid(cd.nodes, cd.edges, 'architecture');
+        setDrawioXml(''); // Clear to trigger reload
+        setDrawioLoading(false);
+      }
+    }).catch(()=>{setDrawioLoading(false);});
   }, [currentDesign]);
 
-  // Filter by layer
-  const visibleNodes = layer==='architecture' ? nodes : nodes.filter(n=>flow?.layers?.[layer]?.nodes?.includes(n.id));
-  const visibleEdges = layer==='architecture' ? edges : edges.filter(e=>flow?.layers?.[layer]?.edges?.includes(e.id));
+  // Handle draw.io save
+  const handleDrawioSave = useCallback((data: any) => {
+    const xml = data.xml || data.data || '';
+    if (!xml || !canonical) return;
+    const updatedCanonical = { ...canonical, diagramDocument: xml, diagramEngine: 'drawio', updatedAt: new Date().toISOString() };
+    setCanonical(updatedCanonical);
+    setDrawioXml(xml);
+    // Persist
+    const did = currentDesign?.id||currentDesign?.designId;
+    if (did) {
+      api.post(`/api/v1/designs/${did}/update-flow`, { flow: updatedCanonical })
+        .then(()=>setMsg('Design saved'))
+        .catch((e:any)=>setMsg('Save error: '+e.message));
+    }
+  }, [canonical, currentDesign]);
 
-  const onConnect = useCallback((params:Connection)=>setEdges(eds=>addEdge({...params,markerEnd:{type:MarkerType.ArrowClosed,color:'var(--text-muted)'},style:{stroke:'var(--border-default)',strokeWidth:1.5}},eds)),[setEdges]);
-
-  const onNodeClick = useCallback((_:any,node:any)=>{setSelNode(node);},[]);
+  // Handle draw.io export (for programmatic save)
+  const handleDrawioExport = useCallback((data: any) => {
+    if (data.format === 'xmlsvg' || data.format === 'svg') {
+      handleDrawioSave({ xml: data.xml || data.data });
+    }
+  }, [handleDrawioSave]);
 
   const createDesign = async () => {
     try {
@@ -123,34 +95,20 @@ export default function ArchitectureWorkspace({ actor, wsId, onWsChange }: Props
   };
 
   const aiGenerate = async () => {
-    if (!currentDesign) return;
-    const did = currentDesign.id||currentDesign.designId;
+    if (!canonical) return;
+    const did = currentDesign?.id||currentDesign?.designId;
     try {
+      // Try AI generation endpoint
       const r = await api.post(`/api/v1/designs/${did}/ai-generate`, {brief:aiForm});
-      setFlow(r.flow);
-      if (r.flow?.nodes) setNodes(r.flow.nodes.map((n:any)=>({...n,type:n.type||'default'})));
-      if (r.flow?.edges) setEdges(r.flow.edges.map((e:any)=>({...e,markerEnd:{type:MarkerType.ArrowClosed,color:'var(--text-muted)'},style:{stroke:'var(--border-default)',strokeWidth:1.5}})));
-      setMsg('AI generated: '+r.status); setShowAI(false); loadDesigns();
-    } catch(e:any) { setMsg('Error: '+e.message); }
-  };
-
-  const saveFlow = async () => {
-    if (!currentDesign) return;
-    const did = currentDesign.id||currentDesign.designId;
-    try {
-      const lyrNodes = layer==='architecture' ? nodes.map(n=>n.id) : nodes.filter(n=>flow?.layers?.[layer]?.nodes?.includes(n.id)).map(n=>n.id);
-      const lyrEdges = layer==='architecture' ? edges.map(e=>e.id) : edges.filter(e=>flow?.layers?.[layer]?.edges?.includes(e.id)).map(e=>e.id);
-      const updatedFlow = {...flow, nodes:nodes.map(n=>({id:n.id,type:n.type,position:n.position,data:n.data})), edges:edges.map(e=>({id:e.id,source:e.source,target:e.target,label:e.label,animated:e.animated})), layers:{...flow?.layers,[layer]:{nodes:lyrNodes,edges:lyrEdges}}};
-      await api.post(`/api/v1/designs/${did}/update-flow`, {flow:updatedFlow});
-      setFlow(updatedFlow); setMsg('Flow saved');
-    } catch(e:any) { setMsg('Error: '+e.message); }
-  };
-
-  const addServiceNode = (svc: {id:string;label:string;category:string}) => {
-    const nid = `svc-${svc.id}-${Date.now()}`;
-    const nn = {id:nid,type:'default',position:{x:300+Math.random()*200,y:200+Math.random()*300},data:{label:svc.label,category:svc.category,provider:createForm.provider}};
-    setNodes(nds=>[...nds,nn as Node]);
-    setMsg(`Added: ${svc.label}`);
+      // Convert AI flow to canonical
+      const cd = createExampleDesign(aiForm.provider);
+      cd.designId = did; cd.title = currentDesign?.name||'AI Generated';
+      cd.provider = aiForm.provider; cd.platform = aiForm.platform;
+      setCanonical(cd);
+      const mm = generateMermaid(cd.nodes, cd.edges, 'architecture');
+      setDrawioXml(''); // trigger reload with Mermaid
+      setMsg('AI generated: '+cd.title); setShowAI(false); loadDesigns();
+    } catch(e:any) { setMsg('AI error: '+e.message); }
   };
 
   const acceptDesign = async () => {
@@ -158,8 +116,8 @@ export default function ArchitectureWorkspace({ actor, wsId, onWsChange }: Props
     try { await api.acceptDesign(currentDesign.id||currentDesign.designId); loadDesigns(); setMsg('Design accepted'); } catch(e:any){setMsg('Error: '+e.message);}
   };
 
-  const provider = currentDesign?.provider || createForm.provider;
-  const servicesList = PROVIDER_SERVICES[provider] || PROVIDER_SERVICES['ON_PREM'];
+  const isFrozen = currentDesign?.status==='ACCEPTED'||currentDesign?.status==='BASELINE_FROZEN';
+  const provider = canonical?.provider || currentDesign?.provider || 'ON_PREM';
 
   return (
     <div style={{display:'flex',height:'calc(100vh - 88px)',gap:0,overflow:'hidden'}}>
@@ -169,6 +127,11 @@ export default function ArchitectureWorkspace({ actor, wsId, onWsChange }: Props
           <div className="panel-title">Designs</div>
           <button className="btn btn-primary btn-sm" style={{marginTop:8,width:'100%'}} onClick={()=>setShowCreate(!showCreate)}>+ New Design</button>
           <button className="btn btn-secondary btn-sm" style={{marginTop:4,width:'100%'}} onClick={()=>setShowAI(!showAI)}>AI Generate</button>
+          {/* Engine toggle */}
+          <div className="flex-row gap-xs" style={{marginTop:8}}>
+            <button className={`btn btn-sm ${engine==='drawio'?'btn-primary':'btn-ghost'}`} style={{fontSize:9,flex:1}} onClick={()=>setEngine('drawio')}>draw.io</button>
+            <button className={`btn btn-sm ${engine==='reactflow'?'btn-primary':'btn-ghost'}`} style={{fontSize:9,flex:1}} onClick={()=>setEngine('reactflow')}>React Flow</button>
+          </div>
         </div>
         <div className="flex-col" style={{flex:1,overflow:'auto',padding:'4px 8px',gap:2}}>
           {designs.map((d:any)=>(
@@ -183,70 +146,73 @@ export default function ArchitectureWorkspace({ actor, wsId, onWsChange }: Props
         </div>
       </div>
 
-      {/* CENTER CANVAS */}
+      {/* CENTER — draw.io or React Flow */}
       <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
-        {/* Toolbar */}
         <div style={{height:36,minHeight:36,background:'var(--bg-surface)',borderBottom:'1px solid var(--border-default)',display:'flex',alignItems:'center',padding:'0 12px',gap:8}}>
-          <span style={{fontSize:11,fontWeight:600,color:'var(--text-primary)'}}>{currentDesign?.name || currentDesign?.id || currentDesign?.designId || 'No design selected'}</span>
-          {currentDesign && <span className={`badge ${currentDesign.status==='ACCEPTED'||currentDesign.status==='BASELINE_FROZEN'?'badge-success':'badge-neutral'}`} style={{fontSize:9}}>{currentDesign.status||'DRAFT'}</span>}
-          <span className="badge badge-info" style={{fontSize:9}}>{currentDesign?.provider||'?'}</span>
-          <span className="badge badge-neutral" style={{fontSize:9}}>{currentDesign?.platform||'?'}</span>
+          <span style={{fontSize:11,fontWeight:600,color:'var(--text-primary)'}}>{canonical?.title||'No design'}</span>
+          {currentDesign && <span className={`badge ${isFrozen?'badge-success':'badge-neutral'}`} style={{fontSize:9}}>{currentDesign.status||'DRAFT'}</span>}
+          <span className="badge badge-info" style={{fontSize:9}}>{provider}</span>
           <div style={{flex:1}}/>
-          {/* Layer tabs */}
-          {LAYERS.map(l=>(<button key={l} onClick={()=>setLayer(l)} className={`btn btn-sm ${layer===l?'btn-primary':'btn-ghost'}`} style={{fontSize:10,textTransform:'capitalize'}}>{l.replace(/([A-Z])/g,' $1')}</button>))}
-          <button className="btn btn-primary btn-sm" onClick={saveFlow}>Save</button>
-          {currentDesign && currentDesign.status!=='ACCEPTED' && currentDesign.status!=='BASELINE_FROZEN' && <button className="btn btn-success btn-sm" style={{background:'var(--success)',color:'#000'}} onClick={acceptDesign}>Accept</button>}
+          {VIEWS.map(v=>(<button key={v} onClick={()=>setView(v)} className={`btn btn-sm ${view===v?'btn-primary':'btn-ghost'}`} style={{fontSize:10,textTransform:'capitalize'}}>{v.replace(/([A-Z])/g,' $1')}</button>))}
+          {!isFrozen && <button className="btn btn-primary btn-sm" onClick={()=>drawioRef.current?.exportDiagram({format:'xmlsvg'})}>Save</button>}
+          {!isFrozen && currentDesign && <button className="btn btn-sm" style={{background:'var(--success)',color:'#000'}} onClick={acceptDesign}>Accept</button>}
+          {isFrozen && <span className="badge badge-success">FROZEN</span>}
         </div>
-        {/* Canvas */}
-        {currentDesign ? (
-          <div style={{flex:1,background:'var(--bg-root)'}}>
-            <ReactFlow
-              nodes={visibleNodes} edges={visibleEdges}
-              onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-              onConnect={onConnect} onNodeClick={onNodeClick}
-              nodeTypes={nodeTypes} fitView
-              defaultEdgeOptions={{markerEnd:{type:MarkerType.ArrowClosed,color:'var(--text-muted)'},style:{stroke:'var(--border-default)',strokeWidth:1.5}}}
-              style={{background:'var(--bg-root)'}}
-            >
-              <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--border-subtle)"/>
-              <Controls style={{background:'var(--bg-surface)',border:'1px solid var(--border-default)',borderRadius:6}}/>
-              <MiniMap style={{background:'var(--bg-surface)',border:'1px solid var(--border-default)',borderRadius:6}} nodeColor={n=>CAT_COLORS[(n.data as any)?.category]||'var(--text-muted)'}/>
-            </ReactFlow>
-          </div>
-        ) : (
-          <div className="empty-state" style={{flex:1}}>
-            <div className="empty-state-title">Select or create a design</div>
-            <div className="empty-state-desc">Choose a design from the left panel or create a new one to start designing.</div>
-          </div>
-        )}
+        <div style={{flex:1,background:'var(--bg-root)',position:'relative'}}>
+          {!currentDesign ? (
+            <div className="empty-state" style={{height:'100%'}}>
+              <div className="empty-state-title">Select or create a design</div>
+            </div>
+          ) : engine==='drawio' ? (
+            drawioLoading ? <div className="loading">Loading draw.io...</div> : (
+              <DrawioEmbed
+                ref={drawioRef}
+                xml={drawioXml}
+                onSave={handleDrawioSave}
+                onExport={handleDrawioExport}
+                urlParameters={{ libraries: false, saveAndExit: false, noExitBtn: true, noSaveBtn: false }}
+                configuration={{ defaultFonts: ['system-ui'] }}
+              />
+            )
+          ) : (
+            <Suspense fallback={<div className="loading">Loading React Flow...</div>}>
+              <ReactFlowStudio canonical={canonical} onSave={(c:CanonicalDesign)=>setCanonical(c)} />
+            </Suspense>
+          )}
+        </div>
       </div>
 
-      {/* RIGHT PANEL — Inspector + Services */}
+      {/* RIGHT PANEL — Inspector */}
       <div style={{width:200,minWidth:200,background:'var(--bg-surface)',borderLeft:'1px solid var(--border-default)',display:'flex',flexDirection:'column',overflow:'hidden'}}>
         <div style={{padding:12,borderBottom:'1px solid var(--border-default)'}}>
-          <div className="panel-title" style={{marginBottom:8}}>Services</div>
-          <div style={{fontSize:9,color:'var(--text-muted)',marginBottom:8}}>{provider}</div>
-          <div className="flex-col" style={{gap:2,maxHeight:300,overflow:'auto'}}>
-            {servicesList.map(s=>(
-              <button key={s.id} onClick={()=>addServiceNode(s)}
-                style={{textAlign:'left',padding:'4px 8px',borderRadius:3,border:'none',cursor:'pointer',fontSize:10,background:'var(--bg-elevated)',color:'var(--text-secondary)',display:'flex',alignItems:'center',gap:4}}
-                onMouseEnter={e=>{(e.target as HTMLElement).style.background='var(--bg-hover)'}}
-                onMouseLeave={e=>{(e.target as HTMLElement).style.background='var(--bg-elevated)'}}>
-                <span style={{width:6,height:6,borderRadius:'50%',background:CAT_COLORS[s.category]||'var(--text-muted)',flexShrink:0}}/>
-                {s.label}
-              </button>
-            ))}
-          </div>
+          <div className="panel-title" style={{marginBottom:8}}>Inspector</div>
+          {selNode ? (
+            <div className="flex-col gap-xs" style={{fontSize:10}}>
+              <div><span className="text-muted">ID:</span> <span className="mono">{selNode.nodeId}</span></div>
+              <div><span className="text-muted">Name:</span> <span style={{color:'var(--text-primary)'}}>{selNode.name}</span></div>
+              <div><span className="text-muted">Category:</span> {selNode.category}</div>
+              <div><span className="text-muted">Provider:</span> {selNode.provider}</div>
+              <div><span className="text-muted">Service:</span> {selNode.nativeService||'-'}</div>
+              <div><span className="text-muted">Platform:</span> {selNode.platform||'-'}</div>
+              <div><span className="text-muted">Security:</span> {selNode.securityZone||'-'}</div>
+              <div><span className="text-muted">Data:</span> {selNode.dataClassification||'-'}</div>
+              <div><span className="text-muted">Owner:</span> {selNode.owner||'-'}</div>
+            </div>
+          ) : canonical ? (
+            <div className="flex-col gap-xs" style={{fontSize:10}}>
+              <div className="text-muted">Select a node to inspect</div>
+              <div className="mt-sm"><span className="text-muted">Nodes:</span> <span style={{color:'var(--text-primary)'}}>{canonical.nodes.length}</span></div>
+              <div><span className="text-muted">Edges:</span> <span style={{color:'var(--text-primary)'}}>{canonical.edges.length}</span></div>
+              <div><span className="text-muted">Provider:</span> {canonical.provider}</div>
+              {canonical.nodes.map(n=>(
+                <button key={n.nodeId} onClick={()=>setSelNode(n)}
+                  style={{textAlign:'left',padding:'3px 6px',borderRadius:3,border:'none',cursor:'pointer',fontSize:9,background:'var(--bg-elevated)',color:'var(--text-secondary)'}}>
+                  {n.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
-        {/* Node Inspector */}
-        {selNode && (
-          <div style={{padding:12,flex:1,overflow:'auto'}}>
-            <div className="panel-title" style={{marginBottom:8}}>Inspector</div>
-            <div style={{fontSize:10,color:'var(--text-muted',fontFamily:'monospace'}}>{selNode.id}</div>
-            <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginTop:4}}>{selNode.data?.label}</div>
-            <div style={{fontSize:10,color:CAT_COLORS[selNode.data?.category]||'var(--text-muted)',marginTop:4}}>{selNode.data?.category}</div>
-          </div>
-        )}
       </div>
 
       {/* AI Modal */}
@@ -254,16 +220,16 @@ export default function ArchitectureWorkspace({ actor, wsId, onWsChange }: Props
         <div className="modal-overlay" onClick={()=>setShowAI(false)}>
           <div className="modal-content" onClick={e=>e.stopPropagation()}>
             <div className="flex-between mb-sm"><div className="panel-title">AI Architecture Generator</div><button className="btn btn-ghost btn-sm" onClick={()=>setShowAI(false)}>×</button></div>
-            {!currentDesign && <div className="text-muted mb-sm" style={{fontSize:11}}>Select or create a design first.</div>}
-            <input className="form-input" placeholder="Business objective (e.g. Payment processing platform)" value={aiForm.objective} onChange={e=>setAiForm({...aiForm,objective:e.target.value})}/>
-            <input className="form-input" placeholder="Key components (e.g. API, workers, database)" value={aiForm.components} onChange={e=>setAiForm({...aiForm,components:e.target.value})}/>
+            <div className="badge badge-warning mb-sm" style={{fontSize:10}}>AI_GENERATION_MODE=DETERMINISTIC_POC</div>
+            <input className="form-input" placeholder="Business objective" value={aiForm.objective} onChange={e=>setAiForm({...aiForm,objective:e.target.value})}/>
+            <input className="form-input" placeholder="Key components" value={aiForm.components} onChange={e=>setAiForm({...aiForm,components:e.target.value})}/>
             <select className="form-select" value={aiForm.provider} onChange={e=>setAiForm({...aiForm,provider:e.target.value})}>
               {['AWS','GCP','ON_PREM','PRIVATE_CLOUD'].map(p=><option key={p} value={p}>{p}</option>)}
             </select>
             <select className="form-select" value={aiForm.platform} onChange={e=>setAiForm({...aiForm,platform:e.target.value})}>
               {['NATIVE_VM','KUBERNETES','OPENSHIFT_OCP','BARE_METAL'].map(p=><option key={p} value={p}>{p}</option>)}
             </select>
-            <button className="btn btn-primary" onClick={aiGenerate} disabled={!currentDesign} style={{width:'100%'}}>Generate Architecture</button>
+            <button className="btn btn-primary" onClick={aiGenerate} style={{width:'100%'}}>Generate Architecture</button>
           </div>
         </div>
       )}
@@ -281,9 +247,47 @@ export default function ArchitectureWorkspace({ actor, wsId, onWsChange }: Props
           </div>
         </div>
       )}
-
-      {/* Msg */}
       {msg && <div style={{position:'fixed',bottom:16,right:16,zIndex:100,padding:'8px 16px',background:'var(--bg-elevated)',border:'1px solid var(--border-default)',borderRadius:6,fontSize:11,color:'var(--info)',maxWidth:300}} onClick={()=>setMsg('')}>{msg}</div>}
     </div>
+  );
+}
+
+/* DrawioEmbed component — wraps react-drawio iframe */
+function DrawioEmbed({ ref: fwdRef, xml, onSave, onExport, urlParameters, configuration }: any) {
+  const [DrawioComp, setDrawioComp] = useState<any>(null);
+  const [ready, setReady] = useState(false);
+
+  useEffect(()=>{
+    import('react-drawio').then(m=>{
+      setDrawioComp(()=>m.DrawIoEmbed);
+    }).catch(e=>console.error('Failed to load react-drawio:', e));
+  }, []);
+
+  const handleLoad = useCallback((data:any)=>{
+    setReady(true);
+  }, []);
+
+  if (!DrawioComp) return <div className="loading">Loading draw.io editor...</div>;
+
+  return (
+    <DrawioComp
+      ref={fwdRef}
+      xml={xml}
+      autosave={false}
+      onSave={onSave}
+      onExport={onExport}
+      onLoad={handleLoad}
+      urlParameters={{
+        embed: 1,
+        proto: 'json',
+        libraries: false,
+        noSaveBtn: false,
+        noExitBtn: true,
+        saveAndExit: false,
+        ...urlParameters,
+      }}
+      configuration={configuration}
+      baseUrl="https://embed.diagrams.net"
+    />
   );
 }
