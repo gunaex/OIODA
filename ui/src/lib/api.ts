@@ -5,6 +5,22 @@ async function req<T=any>(path:string,opts?:RequestInit):Promise<T>{
   if(!res.ok){const b=await res.text().catch(()=>'');throw new Error(`HTTP ${res.status}: ${b.slice(0,300)}`);}
   return res.json();
 }
+
+// ── ID guards ──
+function assertResourceId(id: string | undefined | null, type: string): string {
+  if (!id || id === 'undefined' || id === 'null') {
+    throw new Error(`${type.toUpperCase()}_ID_REQUIRED`);
+  }
+  return id;
+}
+
+// ── Design response normalization ──
+function normalizeDesignId(response: any): string {
+  const id = response?.design?.designId ?? response?.designId ?? response?.id;
+  if (!id) throw new Error('CREATE_DESIGN_NO_ID');
+  return id;
+}
+
 export const api={
   get:<T=any>(p:string)=>req<T>(p),
   post:<T=any>(p:string,d?:unknown)=>req<T>(p,{method:'POST',body:d?JSON.stringify(d):undefined}),
@@ -12,16 +28,19 @@ export const api={
   workspaces:()=>api.get<{workspaces:any[]}>('/api/v1/workspaces'),
   createWorkspace:(b:any)=>api.post('/api/v1/workspaces',b),
   getWorkspace:(id:string)=>api.get<{workspace:any}>(`/api/v1/workspaces/${id}`),
-  setWsDesign:(id:string,designId:string)=>api.post(`/api/v1/workspaces/${id}/current-design?design_id=${encodeURIComponent(designId)}`),
-  setWsPlan:(id:string,planId:string)=>api.post(`/api/v1/workspaces/${id}/current-plan?plan_id=${encodeURIComponent(planId)}`),
-  setWsPackage:(id:string,pkgId:string)=>api.post(`/api/v1/workspaces/${id}/current-package?package_id=${encodeURIComponent(pkgId)}`),
-  // Designs
+  setWsDesign:(id:string,designId:string)=>api.post(`/api/v1/workspaces/${id}/current-design?design_id=${encodeURIComponent(assertResourceId(designId,'design'))}`),
+  setWsPlan:(id:string,planId:string)=>api.post(`/api/v1/workspaces/${id}/current-plan?plan_id=${encodeURIComponent(assertResourceId(planId,'plan'))}`),
+  setWsPackage:(id:string,pkgId:string)=>api.post(`/api/v1/workspaces/${id}/current-package?package_id=${encodeURIComponent(assertResourceId(pkgId,'package'))}`),
+  // Designs — normalized responses
   designs:()=>api.get<{designs:any[]}>('/api/v1/designs'),
-  createDesign:(b:any)=>api.post('/api/v1/designs',b),
-  getDesign:(id:string)=>api.get<any>(`/api/v1/designs/${id}`),
-  acceptDesign:(id:string)=>api.post(`/api/v1/designs/${id}/accept`),
-  aiGenerate:(id:string,b:any)=>api.post(`/api/v1/designs/${id}/ai-generate`,b),
-  updateDesignFlow:(id:string,flow:any)=>api.post(`/api/v1/designs/${id}/update-flow`,{flow}),
+  createDesign: async (b:any) => {
+    const r = await api.post('/api/v1/designs',b);
+    return { designId: normalizeDesignId(r), ...r };
+  },
+  getDesign: (id:string) => api.get<any>(`/api/v1/designs/${assertResourceId(id,'design')}`),
+  acceptDesign: (id:string) => api.post(`/api/v1/designs/${assertResourceId(id,'design')}/accept`),
+  aiGenerate: (id:string,b:any) => api.post(`/api/v1/designs/${assertResourceId(id,'design')}/ai-generate`,b),
+  updateDesignFlow: (id:string,flow:any) => api.post(`/api/v1/designs/${assertResourceId(id,'design')}/update-flow`,{flow}),
   // AGAINPILOT
   againpilotStatus:()=>api.get<{mode:string;provider:string;available:boolean}>('/api/v1/againpilot/status'),
   againpilotGenerate:(b:any)=>api.post<{proposal:any}>('/api/v1/againpilot/generate',b),

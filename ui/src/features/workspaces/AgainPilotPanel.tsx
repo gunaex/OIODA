@@ -6,6 +6,7 @@ import { api } from '../../lib/api';
 interface Props {
   provider: string;
   platform: string;
+  hasDesign: boolean;
   onApply: (proposal: any) => void;
   onClose: () => void;
 }
@@ -33,7 +34,7 @@ and separates public ingress from private data services.`,
 
 type Stage = 'input' | 'generating' | 'review';
 
-export default function AgainPilotPanel({ provider, platform, onApply, onClose }: Props) {
+export default function AgainPilotPanel({ provider, platform, hasDesign, onApply, onClose }: Props) {
   const [stage, setStage] = useState<Stage>('input');
   const [brief, setBrief] = useState('');
   const [providerPref, setProviderPref] = useState(provider || 'AWS');
@@ -274,7 +275,7 @@ export default function AgainPilotPanel({ provider, platform, onApply, onClose }
             {/* Actions */}
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-primary" onClick={applyToCanvas} style={{ flex: 1 }}>
-                Apply to Canvas
+                {hasDesign ? 'Apply to Canvas' : 'Create Design & Apply'}
               </button>
               <button className="btn btn-secondary" onClick={() => setStage('input')}>
                 Refine

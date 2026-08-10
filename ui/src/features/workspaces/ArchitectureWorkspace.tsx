@@ -49,7 +49,7 @@ export default function ArchitectureWorkspace(props: Props = {}) {
   // ── Load canonical + generate draw.io XML ──
   const loadCanonicalFromDesign = useCallback((design: any) => {
     if (!design) { setCanonical(null); setDrawioXml(''); return; }
-    const did = design.id || design.designId;
+    const did = design.designId;
     setDrawioLoading(true);
     setDrawioError(false);
     api.getDesign(did).then((d: any) => {
@@ -136,22 +136,21 @@ export default function ArchitectureWorkspace(props: Props = {}) {
     setCanonical(updated);
     setDrawioXml(xml);
 
-    const did = currentDesign?.id || currentDesign?.designId;
-    if (did) {
-      // Persist full canonical + XML
-      api.updateDesignFlow(did, updated)
-        .then(() => {
-          const newNodeCount = classifications.filter(c => c.classification === 'NEW_VISUAL_NODE').length;
-          const removedCount = classifications.filter(c => c.classification === 'REMOVED_NODE').length;
-          const unmapped = classifications.filter(c => c.classification === 'UNMAPPED_COMPONENT').length;
-          let statusMsg = 'Design saved';
-          if (newNodeCount > 0) statusMsg += ` (+${newNodeCount} new node${newNodeCount > 1 ? 's' : ''})`;
-          if (removedCount > 0) statusMsg += ` (-${removedCount} removed)`;
-          if (unmapped > 0) statusMsg += ` [${unmapped} unmapped]`;
-          setMsg(statusMsg);
-        })
-        .catch((e: any) => setMsg('Save error: ' + e.message));
-    }
+    const did = currentDesign?.designId;
+    if (!did) { setMsg('Save error: no design selected'); return; }
+    // Persist full canonical + XML
+    api.updateDesignFlow(did, updated)
+      .then(() => {
+        const newNodeCount = classifications.filter(c => c.classification === 'NEW_VISUAL_NODE').length;
+        const removedCount = classifications.filter(c => c.classification === 'REMOVED_NODE').length;
+        const unmapped = classifications.filter(c => c.classification === 'UNMAPPED_COMPONENT').length;
+        let statusMsg = 'Design saved';
+        if (newNodeCount > 0) statusMsg += ` (+${newNodeCount} new node${newNodeCount > 1 ? 's' : ''})`;
+        if (removedCount > 0) statusMsg += ` (-${removedCount} removed)`;
+        if (unmapped > 0) statusMsg += ` [${unmapped} unmapped]`;
+        setMsg(statusMsg);
+      })
+      .catch((e: any) => setMsg('Save error: ' + e.message));
   }, [canonical, currentDesign]);
 
   const handleDrawioExport = useCallback((data: any) => {
@@ -170,7 +169,8 @@ export default function ArchitectureWorkspace(props: Props = {}) {
         platform: createForm.platform,
         fidelity: createForm.fidelity,
       });
-      const did = r.id || r.designId;
+      const did = r.designId;
+      if (!did) throw new Error('CREATE_DESIGN_NO_ID');
       // Immediately set canonical for this design
       const cd = createExampleDesign(createForm.provider);
       cd.designId = did;
@@ -179,7 +179,7 @@ export default function ArchitectureWorkspace(props: Props = {}) {
       cd.provider = createForm.provider;
       cd.platform = createForm.platform;
       // Persist initial flow with canonical data
-      await api.updateDesignFlow(did, cd).catch(() => { });
+      await api.updateDesignFlow(did, cd);
       setMsg('Design created: ' + did);
       loadDesigns();
       setShowCreate(false);
@@ -191,7 +191,8 @@ export default function ArchitectureWorkspace(props: Props = {}) {
   const acceptDesign = async () => {
     if (!currentDesign) return;
     try {
-      const did = currentDesign.id || currentDesign.designId;
+      const did = currentDesign.designId;
+      if (!did) throw new Error('DESIGN_ID_REQUIRED');
       await api.acceptDesign(did);
       loadDesigns();
       setMsg('Design accepted — now frozen');
@@ -252,13 +253,13 @@ export default function ArchitectureWorkspace(props: Props = {}) {
         </div>
         <div className="flex-col" style={{ flex: 1, overflow: 'auto', padding: '4px 8px', gap: 2 }}>
           {designs.map((d: any) => (
-            <button key={d.id || d.designId} onClick={() => setCurrentDesign(d)}
+            <button key={d.designId} onClick={() => setCurrentDesign(d)}
               style={{
                 textAlign: 'left', padding: '6px 8px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 11,
-                background: (currentDesign?.id || currentDesign?.designId) === (d.id || d.designId) ? 'var(--bg-active)' : 'transparent',
+                background: currentDesign?.designId === d.designId ? 'var(--bg-active)' : 'transparent',
                 color: 'var(--text-secondary)'
               }}>
-              <div style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{(d.name || d.metadata?.name || d.designId || d.id || '').slice(0, 20)}</div>
+              <div style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{(d.name || d.metadata?.name || d.designId || '').slice(0, 20)}</div>
               <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{d.status || 'DRAFT'} · {d.provider || '?'}</div>
             </button>
           ))}
@@ -363,6 +364,7 @@ export default function ArchitectureWorkspace(props: Props = {}) {
           <AgainPilotPanel
             provider={provider}
             platform={canonical?.platform || 'KUBERNETES'}
+            hasDesign={!!currentDesign}
             onApply={(proposal: any) => {
               // Convert AGAINPILOT proposal → canonical → persist → draw.io
               const cd = createExampleDesign(provider);
@@ -401,9 +403,10 @@ export default function ArchitectureWorkspace(props: Props = {}) {
               cd.risks = proposal.risks || [];
               cd.diagramEngine = 'drawio';
 
-              const did = currentDesign?.id || currentDesign?.designId;
-              if (did) {
-                api.updateDesignFlow(did, cd).then(() => {
+              const existingDid = currentDesign?.designId;
+              if (existingDid) {
+                // Apply to existing design
+                api.updateDesignFlow(existingDid, cd).then(() => {
                   setCanonical(cd);
                   const xml = canonicalToDrawioXml(cd, 'architecture');
                   setDrawioXml(xml);
@@ -411,21 +414,27 @@ export default function ArchitectureWorkspace(props: Props = {}) {
                   loadDesigns();
                 }).catch((e: any) => setMsg('Apply error: ' + e.message));
               } else {
-                // No design selected — create one first
+                // Atomic create-and-apply
                 api.createDesign({
                   name: cd.title,
-                  description: cd.description,
+                  description: cd.description || '',
                   provider: cd.provider,
                   platform: cd.platform,
                   fidelity: 'LOCAL_RUNTIME',
-                }).then((r: any) => {
-                  const newDid = r.id || r.designId;
+                }).then((cr: any) => {
+                  const newDid = cr.designId;
+                  if (!newDid) throw new Error('CREATE_DESIGN_NO_ID');
                   cd.designId = newDid;
-                  return api.updateDesignFlow(newDid, cd);
-                }).then(() => {
+                  return api.updateDesignFlow(newDid, cd).then(() => newDid);
+                }).then((newDid: string) => {
+                  if (wsId && onWsChange) api.setWsDesign(wsId, newDid).catch(() => {});
+                  return api.getDesign(newDid);
+                }).then((d: any) => {
+                  const authoritative = d.design || d;
+                  setCurrentDesign(authoritative);
                   loadDesigns();
-                  setMsg('Design created from AGAINPILOT proposal');
-                }).catch((e: any) => setMsg('Create error: ' + e.message));
+                  setMsg('Design created from AGAINPILOT proposal: ' + cd.designId);
+                }).catch((e: any) => setMsg('Create & Apply error: ' + e.message));
               }
             }}
             onClose={() => setShowAI(false)}
