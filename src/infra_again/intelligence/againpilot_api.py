@@ -93,7 +93,21 @@ def register_againpilot_routes(app: FastAPI) -> None:
 
         try:
             proposal = againpilot.generate(request)
-            return {"proposal": proposal.to_dict()}
+            # Run quality validation
+            from .againpilot import validate_architecture_quality
+            node_dicts = [n.to_dict() for n in proposal.nodes]
+            edge_dicts = [e.to_dict() for e in proposal.edges]
+            group_dicts = [g.to_dict() for g in proposal.groups]
+            quality = validate_architecture_quality(
+                node_dicts, edge_dicts, group_dicts,
+                proposal.detected_requirements.provider,
+                proposal.detected_requirements,
+                "INTERNET_FACING_MULTI_AZ_WEB_APPLICATION",
+            )
+            return {
+                "proposal": proposal.to_dict(),
+                "quality": quality.to_dict(),
+            }
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
         except Exception as e:

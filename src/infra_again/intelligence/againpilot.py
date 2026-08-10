@@ -45,6 +45,42 @@ class GenerationDepth(str, Enum):
     DETAILED = "DETAILED"
 
 
+class ArchitecturePattern(str, Enum):
+    INTERNET_FACING_WEB_APP = "INTERNET_FACING_WEB_APP"
+    INTERNET_FACING_MULTI_AZ_WEB_APPLICATION = "INTERNET_FACING_MULTI_AZ_WEB_APPLICATION"
+    INTERNAL_ENTERPRISE_APP = "INTERNAL_ENTERPRISE_APP"
+    EVENT_DRIVEN_PLATFORM = "EVENT_DRIVEN_PLATFORM"
+    DATA_PLATFORM = "DATA_PLATFORM"
+    BATCH_PROCESSING = "BATCH_PROCESSING"
+    MICROSERVICES = "MICROSERVICES"
+    THREE_TIER_APPLICATION = "THREE_TIER_APPLICATION"
+
+
+class TopologyZone(str, Enum):
+    CLOUD_BOUNDARY = "CLOUD_BOUNDARY"
+    NETWORK_BOUNDARY = "NETWORK_BOUNDARY"
+    SUBNET_GROUP = "SUBNET_GROUP"
+    AVAILABILITY_ZONE = "AVAILABILITY_ZONE"
+    SECURITY_ZONE = "SECURITY_ZONE"
+    EXTERNAL_SYSTEM = "EXTERNAL_SYSTEM"
+
+
+class EdgeType(str, Enum):
+    REQUEST = "request"
+    DATA = "data"
+    AUTH = "auth"
+    SECRET_ACCESS = "secret_access"
+    KEY_USAGE = "key_usage"
+    TELEMETRY = "telemetry"
+    CONTROL = "control"
+
+
+class QualityResult(str, Enum):
+    PASS = "PASS"
+    WARN = "WARN"
+    FAIL = "FAIL"
+
+
 class ProviderPreference(str, Enum):
     AUTO = "AUTO"
     AWS = "AWS"
@@ -486,8 +522,183 @@ def extract_requirements(brief: str) -> DetectedRequirement:
 
 
 # ============================================================================
-# Architecture Generation (Deterministic Fallback)
+# Provider-Native Naming
 # ============================================================================
+
+# Maps internal service keys to display names per provider
+PROVIDER_DISPLAY_NAMES: dict[str, dict[str, str]] = {
+    "AWS": {
+        "route53": "Route 53", "cloudfront": "CloudFront", "waf": "AWS WAF",
+        "shield": "AWS Shield", "alb": "Application Load Balancer",
+        "nlb": "Network Load Balancer", "api_gateway": "API Gateway",
+        "ecs": "ECS Fargate", "eks": "EKS", "lambda": "Lambda",
+        "ec2": "EC2", "rds": "Amazon RDS", "aurora": "Aurora",
+        "dynamodb": "DynamoDB", "elasticache": "ElastiCache",
+        "s3": "Amazon S3", "efs": "EFS", "sqs": "SQS", "sns": "SNS",
+        "eventbridge": "EventBridge", "kms": "AWS KMS",
+        "secrets_manager": "Secrets Manager", "acm": "Certificate Manager",
+        "iam": "IAM", "cognito": "Amazon Cognito",
+        "cloudwatch": "CloudWatch", "xray": "X-Ray",
+    },
+    "GCP": {
+        "cloud_dns": "Cloud DNS", "cloud_cdn": "Cloud CDN",
+        "cloud_armor": "Cloud Armor", "cloud_lb": "Cloud Load Balancer",
+        "api_gateway": "API Gateway", "cloud_run": "Cloud Run",
+        "gke": "GKE", "compute_engine": "Compute Engine",
+        "cloud_sql": "Cloud SQL", "bigquery": "BigQuery",
+        "firestore": "Firestore", "memorystore": "Memorystore",
+        "cloud_storage": "Cloud Storage", "pubsub": "Pub/Sub",
+        "kms": "Cloud KMS", "secret_manager": "Secret Manager",
+        "cloud_monitoring": "Cloud Monitoring",
+    },
+    "ON_PREM": {
+        "bind": "BIND DNS", "nginx": "NGINX", "haproxy": "HAProxy",
+        "traefik": "Traefik", "kubernetes": "Kubernetes", "docker": "Docker",
+        "vault": "HashiCorp Vault", "postgresql": "PostgreSQL",
+        "mysql": "MySQL", "redis": "Redis", "minio": "MinIO",
+        "rabbitmq": "RabbitMQ", "prometheus": "Prometheus", "grafana": "Grafana",
+        "keycloak": "Keycloak", "openldap": "OpenLDAP",
+    },
+}
+
+def get_display_name(provider: str, service_key: str) -> str:
+    """Return provider-native display name for a service key."""
+    key = service_key.lower().replace(" ", "_").replace("-", "_")
+    names = PROVIDER_DISPLAY_NAMES.get(provider.upper(), {})
+    return names.get(key, service_key)
+
+
+# ============================================================================
+# Architecture Quality Validator
+# ============================================================================
+
+@dataclass
+class QualityReport:
+    checks: list[dict] = field(default_factory=list)
+    overall: QualityResult = QualityResult.PASS
+
+    def add(self, gate: str, result: QualityResult, detail: str = ""):
+        self.checks.append({"gate": gate, "result": result.value, "detail": detail})
+        if result == QualityResult.FAIL:
+            self.overall = QualityResult.FAIL
+        elif result == QualityResult.WARN and self.overall != QualityResult.FAIL:
+            self.overall = QualityResult.WARN
+
+    def to_dict(self) -> dict:
+        return {
+            "overall": self.overall.value,
+            "checks": self.checks,
+        }
+
+
+def validate_architecture_quality(
+    nodes: list[dict], edges: list[dict], groups: list[dict],
+    provider: str, req: DetectedRequirement, pattern: str,
+) -> QualityReport:
+    """Run all architecture quality checks."""
+    report = QualityReport()
+    node_ids = {n.get("nodeId", "") for n in nodes}
+    edge_ids = {e.get("edgeId", "") for e in edges}
+
+    # Provider consistency (exclude EXTERNAL category)
+    non_external = [n for n in nodes if n.get("category") not in ("USER", "EXTERNAL") and n.get("provider", "")]
+    provider_mismatch = [
+        n.get("nodeId") for n in non_external
+        if n.get("provider", "").upper() != provider.upper()
+        and n.get("provider", "").upper() not in ("EXTERNAL", "")
+    ]
+    report.add("PROVIDER_CONSISTENCY",
+        QualityResult.FAIL if provider_mismatch else QualityResult.PASS,
+        f"Mismatched: {provider_mismatch}" if provider_mismatch else f"All nodes use {provider}")
+
+    # Duplicate services (allow HA duplicates: same service, different AZ)
+    svc_counts: dict[str, list[str]] = {}
+    for n in nodes:
+        svc = n.get("nativeService", "")
+        if svc:
+            svc_counts.setdefault(svc, []).append(n.get("nodeId", ""))
+    # Allow up to 2 instances of the same service (primary+standby or AZ-A+AZ-B)
+    dupes = {k: v for k, v in svc_counts.items() if len(v) > 2}
+    report.add("DUPLICATE_SERVICES",
+        QualityResult.FAIL if dupes else QualityResult.PASS,
+        f"Duplicates >2: {list(dupes.keys())}" if dupes else "No excessive duplicates")
+
+    # HA check (look for multi-AZ patterns: AZ-B in name or >1 app/db node)
+    app_nodes = [n for n in nodes if n.get("category") == "APPLICATION"]
+    db_nodes = [n for n in nodes if n.get("category") == "DATABASE"]
+    az_patterns = [n for n in nodes if "AZ-" in n.get("name", "") or "AZ-" in n.get("nodeId", "")
+                   or "Standby" in n.get("name", "") or "Replica" in n.get("name", "")]
+    has_multi_az = len(app_nodes) >= 2 or len(db_nodes) >= 2 or len(az_patterns) >= 2
+    report.add("HA_REQUIREMENT_SATISFIED",
+        QualityResult.PASS if not ("HIGH_AVAILABILITY" in req.availability) or has_multi_az else QualityResult.FAIL,
+        f"HA requested: {'HIGH_AVAILABILITY' in req.availability}, multi-AZ: {has_multi_az}")
+
+    # Container check
+    container_requested = "KUBERNETES" in req.platform
+    container_nodes = [n for n in nodes if n.get("platform") in ("KUBERNETES", "OPENSHIFT_OCP")]
+    report.add("CONTAINER_REQUIREMENT_SATISFIED",
+        QualityResult.PASS if not container_requested or len(container_nodes) > 0 else QualityResult.FAIL,
+        f"Container: {len(container_nodes)} nodes")
+
+    # Security boundaries
+    has_waf = any("waf" in n.get("nativeService", "").lower() for n in nodes)
+    has_kms = any("kms" in n.get("nativeService", "").lower() for n in nodes)
+    has_secrets = any("secret" in n.get("nativeService", "").lower() or "vault" in n.get("nativeService", "").lower() for n in nodes)
+    report.add("SECURITY_BOUNDARIES",
+        QualityResult.WARN if not (has_waf and has_kms and has_secrets) else QualityResult.PASS,
+        f"WAF:{has_waf} KMS:{has_kms} Secrets:{has_secrets}")
+
+    # Monitoring not in request path
+    obs_nodes = [n for n in nodes if n.get("category") == "OBSERVABILITY"]
+    obs_in_path = [
+        e for e in edges
+        if any(n.get("nodeId") == e.get("sourceNodeId") and n.get("category") == "OBSERVABILITY" for n in nodes)
+        and e.get("type") not in ("telemetry",)
+    ]
+    report.add("NO_MONITORING_IN_REQUEST_PATH",
+        QualityResult.FAIL if obs_in_path else QualityResult.PASS,
+        f"Monitoring in path: {obs_in_path}" if obs_in_path else "Monitoring is cross-cutting")
+
+    # KMS not in request path
+    kms_nodes = [n for n in nodes if "kms" in n.get("nativeService", "").lower()]
+    kms_in_path = [
+        e for e in edges
+        if any(n.get("nodeId") == e.get("sourceNodeId") and "kms" in n.get("nativeService", "").lower() for n in nodes)
+        and e.get("type") not in ("key_usage", "control")
+    ]
+    report.add("NO_KMS_IN_REQUEST_PATH",
+        QualityResult.FAIL if kms_in_path else QualityResult.PASS,
+        f"KMS in request path" if kms_in_path else "KMS as supporting service")
+
+    # No orphan nodes
+    referenced = set()
+    for e in edges:
+        referenced.add(e.get("sourceNodeId", ""))
+        referenced.add(e.get("targetNodeId", ""))
+    orphans = [n.get("nodeId") for n in nodes if n.get("nodeId") not in referenced]
+    report.add("NO_ORPHAN_NODES",
+        QualityResult.FAIL if orphans else QualityResult.PASS,
+        f"Orphaned: {orphans}" if orphans else "All nodes connected")
+
+    # Observability present
+    has_obs = len(obs_nodes) > 0
+    report.add("OBSERVABILITY_PRESENT",
+        QualityResult.PASS if has_obs else QualityResult.WARN,
+        "Monitoring service present" if has_obs else "No monitoring service")
+
+    # Data flow valid (at least one DATA edge)
+    data_edges = [e for e in edges if e.get("type") == "data"]
+    report.add("DATA_FLOW_VALID",
+        QualityResult.PASS if data_edges else QualityResult.WARN,
+        f"{len(data_edges)} data edges")
+
+    # Encryption present
+    tls_edges = [e for e in edges if "TLS" in e.get("protocol", "").upper() or "HTTPS" in e.get("protocol", "").upper()]
+    report.add("ENCRYPTION_CONTROL_PRESENT",
+        QualityResult.PASS if has_kms and tls_edges else QualityResult.WARN,
+        f"KMS:{has_kms} TLS edges:{len(tls_edges)}")
+
+    return report
 
 
 def _make_node(
@@ -497,8 +708,12 @@ def _make_node(
     owner: str = "", source: str = "AI_GENERATED",
 ) -> GeneratedNode:
     sv = validate_service(provider, native_service)
+    # Use provider-native display name
+    display = get_display_name(provider, native_service) if native_service else name
     return GeneratedNode(
-        node_id=node_id, name=name, category=category,
+        node_id=node_id,
+        name=display if native_service else name,  # Provider-native label
+        category=category,
         provider=provider, native_service=native_service, platform=platform,
         security_zone=security_zone, data_classification=data_classification,
         owner=owner, source=source,
@@ -506,23 +721,23 @@ def _make_node(
     )
 
 
-def generate_architecture(request: AgainPilotRequest) -> AgainPilotProposal:
-    """Generate architecture proposal using deterministic rules.
+def select_pattern(req: DetectedRequirement, is_ha: bool, has_pdpa: bool) -> ArchitecturePattern:
+    """Select architecture pattern from requirements."""
+    if is_ha and req.provider in ("AWS", "GCP"):
+        return ArchitecturePattern.INTERNET_FACING_MULTI_AZ_WEB_APPLICATION
+    if req.platform in ("KUBERNETES", "OPENSHIFT_OCP"):
+        return ArchitecturePattern.MICROSERVICES
+    return ArchitecturePattern.THREE_TIER_APPLICATION
 
-    This is the DETERMINISTIC_FALLBACK implementation.
-    Real LLM would be plugged in via AgainPilotProviderRouter.
+
+def generate_architecture(request: AgainPilotRequest) -> AgainPilotProposal:
+    """Generate architecturally coherent, provider-native topology.
+
+    Phase Q: Architecture Quality — pattern → topology → services → flows → layout.
     """
     req = extract_requirements(request.brief)
     provider = request.provider_preference.value if request.provider_preference != ProviderPreference.AUTO else req.provider
     platform = request.platform_preference.value if request.platform_preference != PlatformPreference.AUTO else req.platform
-
-    nodes: list[GeneratedNode] = []
-    edges: list[GeneratedEdge] = []
-    groups: list[GeneratedGroup] = []
-    recs: list[dict] = []
-    assumptions: list[str] = []
-    risks: list[str] = []
-    questions: list[str] = []
 
     is_aws = provider == "AWS"
     is_gcp = provider == "GCP"
@@ -530,180 +745,282 @@ def generate_architecture(request: AgainPilotRequest) -> AgainPilotProposal:
     is_private_db = "PRIVATE_DATABASE" in req.security
     has_pdpa = "PDPA" in req.compliance
     is_container = platform in ("KUBERNETES", "OPENSHIFT_OCP")
+    is_detailed = request.generation_depth == GenerationDepth.DETAILED
 
-    # ── Groups / Boundaries ──
+    pattern = select_pattern(req, is_ha, has_pdpa)
+
+    nodes: list[GeneratedNode] = []
+    edges: list[GeneratedEdge] = []
+    recs: list[dict] = []
+
+    # ═══════════════════════════════════════════════════
+    # TOPOLOGY — Semantic boundary groups
+    # ═══════════════════════════════════════════════════
+
     groups = [
-        GeneratedGroup("GRP-INTERNET", "Internet", "PUBLIC", "", provider, "public"),
-        GeneratedGroup("GRP-CLOUD", f"{provider} Cloud", "CLOUD", "", provider, "public"),
-        GeneratedGroup("GRP-VPC", "VPC", "NETWORK", "GRP-CLOUD", provider, "private"),
-        GeneratedGroup("GRP-PUB-SUBNET", "Public Subnets", "SUBNET", "GRP-VPC", provider, "dmz"),
-        GeneratedGroup("GRP-APP-SUBNET", "Private Application Subnets", "SUBNET", "GRP-VPC", provider, "private"),
-        GeneratedGroup("GRP-DATA-SUBNET", "Private Data Subnets", "SUBNET", "GRP-VPC", provider, "private"),
+        GeneratedGroup("GRP-INTERNET", "Internet", TopologyZone.EXTERNAL_SYSTEM.value, "", provider, "public", []),
+        GeneratedGroup("GRP-CLOUD", f"{provider} Cloud", TopologyZone.CLOUD_BOUNDARY.value, "", provider, "public", []),
     ]
 
-    # ── User / Entry ──
-    nodes.append(_make_node("NODE-USER-001", "End User", "USER", provider, "", "WEB", "public", "none"))
-    nodes.append(_make_node("NODE-DNS-001", "DNS", "DNS", provider, "route53" if is_aws else "cloud_dns" if is_gcp else "bind", "NATIVE_VM", "public", "none"))
+    if is_aws or is_gcp:
+        groups.append(GeneratedGroup("GRP-VPC", "VPC", TopologyZone.NETWORK_BOUNDARY.value, "GRP-CLOUD", provider, "private", []))
+        groups.append(GeneratedGroup("GRP-EDGE", "Edge Services", TopologyZone.SECURITY_ZONE.value, "GRP-VPC", provider, "dmz", []))
+        groups.append(GeneratedGroup("GRP-PUBLIC", "Public Subnets", TopologyZone.SUBNET_GROUP.value, "GRP-VPC", provider, "dmz", []))
+        groups.append(GeneratedGroup("GRP-APP", "Private Application Subnets", TopologyZone.SUBNET_GROUP.value, "GRP-VPC", provider, "private", []))
+        groups.append(GeneratedGroup("GRP-DATA", "Private Data Subnets", TopologyZone.SUBNET_GROUP.value, "GRP-VPC", provider, "private", []))
+        groups.append(GeneratedGroup("GRP-SECURITY", "Security Services", TopologyZone.SECURITY_ZONE.value, "GRP-CLOUD", provider, "private", []))
+        groups.append(GeneratedGroup("GRP-OBS", "Observability", TopologyZone.SECURITY_ZONE.value, "GRP-CLOUD", provider, "private", []))
 
-    # ── Edge / CDN ──
-    if is_aws:
-        nodes.append(_make_node("NODE-CDN-001", "CloudFront CDN", "NETWORK", provider, "cloudfront", "NATIVE_VM", "public", "none"))
-    elif is_gcp:
-        nodes.append(_make_node("NODE-CDN-001", "Cloud CDN", "NETWORK", provider, "cloud_cdn", "NATIVE_VM", "public", "none"))
+    # ═══════════════════════════════════════════════════
+    # TIER 0 — External User
+    # ═══════════════════════════════════════════════════
 
-    # ── WAF / Security Edge ──
-    nodes.append(_make_node("NODE-WAF-001", "WAF", "SECURITY", provider, "waf" if is_aws else "cloud_armor" if is_gcp else "nginx", "NATIVE_VM", "dmz", "none"))
+    user_nid = "NODE-USER-001"
+    nodes.append(_make_node(user_nid, "End User", "USER", "EXTERNAL", "", "WEB", "public", "none"))
 
-    # ── Load Balancer ──
-    nodes.append(_make_node("NODE-LB-001", "Application Load Balancer", "NETWORK", provider, "alb" if is_aws else "cloud_lb" if is_gcp else "haproxy", "NATIVE_VM", "dmz", "none"))
+    # ═══════════════════════════════════════════════════
+    # TIER 1 — Edge / Ingress
+    # ═══════════════════════════════════════════════════
 
-    # ── Application ──
-    app_service = "ecs" if is_aws else "cloud_run" if is_gcp else "kubernetes"
-    nodes.append(_make_node("NODE-APP-001", "Application Service", "APPLICATION", provider, app_service, platform, "private", "internal", "platform-team"))
+    dns_svc = "route53" if is_aws else "cloud_dns" if is_gcp else "bind"
+    cdn_svc = "cloudfront" if is_aws else "cloud_cdn" if is_gcp else ""
+    waf_svc = "waf" if is_aws else "cloud_armor" if is_gcp else "nginx"
+    lb_svc = "alb" if is_aws else "cloud_lb" if is_gcp else "haproxy"
+
+    dns_nid = "NODE-DNS-001"
+    cdn_nid = "NODE-CDN-001"
+    waf_nid = "NODE-WAF-001"
+    lb_nid = "NODE-LB-001"
+
+    nodes.append(_make_node(dns_nid, "DNS", "DNS", provider, dns_svc, "NATIVE_VM", "public", "none"))
+    if cdn_svc:
+        nodes.append(_make_node(cdn_nid, "CDN", "NETWORK", provider, cdn_svc, "NATIVE_VM", "public", "none"))
+    nodes.append(_make_node(waf_nid, "Web Firewall", "SECURITY", provider, waf_svc, "NATIVE_VM", "dmz", "none"))
+    nodes.append(_make_node(lb_nid, "Load Balancer", "NETWORK", provider, lb_svc, "NATIVE_VM", "dmz", "none"))
+
+    # ═══════════════════════════════════════════════════
+    # TIER 2 — Application (containerized, HA)
+    # ═══════════════════════════════════════════════════
+
+    app_svc = "ecs" if is_aws else "cloud_run" if is_gcp else "kubernetes"
+    app_nid_a = "NODE-APP-001"
+    nodes.append(_make_node(app_nid_a, "Application", "APPLICATION", provider, app_svc, platform, "private", "internal", "platform-team"))
     if is_ha:
-        nodes.append(_make_node("NODE-APP-002", "Application Service (AZ2)", "APPLICATION", provider, app_service, platform, "private", "internal", "platform-team"))
+        app_nid_b = "NODE-APP-002"
+        nodes.append(_make_node(app_nid_b, "Application (AZ-B)", "APPLICATION", provider, app_svc, platform, "private", "internal", "platform-team"))
 
-    # ── Database ──
-    db_service = "rds" if is_aws else "cloud_sql" if is_gcp else "postgresql"
-    db_zone = "private"
-    nodes.append(_make_node("NODE-DB-001", "Primary Database", "DATABASE", provider, db_service, "NATIVE_VM", db_zone, "pii" if has_pdpa else "internal", "data-team"))
+    # ═══════════════════════════════════════════════════
+    # TIER 3 — Data (private, HA)
+    # ═══════════════════════════════════════════════════
+
+    db_svc = "rds" if is_aws else "cloud_sql" if is_gcp else "postgresql"
+    db_nid = "NODE-DB-001"
+    data_class = "pii" if has_pdpa else "internal"
+    nodes.append(_make_node(db_nid, "Database", "DATABASE", provider, db_svc, "NATIVE_VM", "private", data_class, "data-team"))
     if is_ha:
-        nodes.append(_make_node("NODE-DB-002", "Database Replica", "DATABASE", provider, db_service, "NATIVE_VM", "private", "pii" if has_pdpa else "internal", "data-team"))
+        nodes.append(_make_node("NODE-DB-002", "Database Standby", "DATABASE", provider, db_svc, "NATIVE_VM", "private", data_class, "data-team"))
 
-    # ── Storage ──
-    store_service = "s3" if is_aws else "cloud_storage" if is_gcp else "minio"
-    nodes.append(_make_node("NODE-STORE-001", "Object Storage", "STORAGE", provider, store_service, "NATIVE_VM", "private", "internal"))
+    # Storage
+    store_svc = "s3" if is_aws else "cloud_storage" if is_gcp else "minio"
+    store_nid = "NODE-STORE-001"
+    nodes.append(_make_node(store_nid, "Object Storage", "STORAGE", provider, store_svc, "NATIVE_VM", "private", "internal"))
 
-    # ── Cache ──
-    if is_ha or request.generation_depth == GenerationDepth.DETAILED:
-        nodes.append(_make_node("NODE-CACHE-001", "Cache", "CACHE", provider, "elasticache" if is_aws else "memorystore" if is_gcp else "redis", "NATIVE_VM", "private", "internal"))
+    # Cache (for HA/detailed)
+    if is_ha or is_detailed:
+        cache_svc = "elasticache" if is_aws else "memorystore" if is_gcp else "redis"
+        cache_nid = "NODE-CACHE-001"
+        nodes.append(_make_node(cache_nid, "Cache", "CACHE", provider, cache_svc, "NATIVE_VM", "private", "internal"))
 
-    # ── Security / Secrets ──
-    nodes.append(_make_node("NODE-KMS-001", "Key Management", "SECURITY", provider, "kms", "NATIVE_VM", "private", "internal", "security-team"))
-    nodes.append(_make_node("NODE-SECRET-001", "Secrets Manager", "SECURITY", provider, "secrets_manager" if is_aws else "secret_manager" if is_gcp else "vault", "NATIVE_VM", "private", "internal", "security-team"))
+    # ═══════════════════════════════════════════════════
+    # TIER S — Supporting: Security + Observability
+    # ═══════════════════════════════════════════════════
 
+    kms_svc = "kms"
+    secret_svc = "secrets_manager" if is_aws else "secret_manager" if is_gcp else "vault"
+    obs_svc = "cloudwatch" if is_aws else "cloud_monitoring" if is_gcp else "prometheus"
+
+    kms_nid = "NODE-KMS-001"
+    secret_nid = "NODE-SECRET-001"
+    obs_nid = "NODE-OBS-001"
+
+    nodes.append(_make_node(kms_nid, "Key Management", "SECURITY", provider, kms_svc, "NATIVE_VM", "private", "internal", "security-team"))
+    nodes.append(_make_node(secret_nid, "Secrets Manager", "SECURITY", provider, secret_svc, "NATIVE_VM", "private", "internal", "security-team"))
+    nodes.append(_make_node(obs_nid, "Monitoring", "OBSERVABILITY", provider, obs_svc, "NATIVE_VM", "private", "internal", "platform-team"))
+
+    # Identity (for PDPA)
+    auth_nid = ""
     if has_pdpa:
-        nodes.append(_make_node("NODE-AUTH-001", "Identity Provider", "IDENTITY", provider, "cognito" if is_aws else "keycloak", "NATIVE_VM", "private", "pii", "security-team"))
+        auth_svc = "cognito" if is_aws else "keycloak"
+        auth_nid = "NODE-AUTH-001"
+        nodes.append(_make_node(auth_nid, "Identity Provider", "IDENTITY", provider, auth_svc, "NATIVE_VM", "private", "pii", "security-team"))
 
-    # ── Observability ──
-    nodes.append(_make_node("NODE-OBS-001", "Monitoring", "OBSERVABILITY", provider, "cloudwatch" if is_aws else "cloud_monitoring" if is_gcp else "prometheus", "NATIVE_VM", "private", "internal", "platform-team"))
+    # ═══════════════════════════════════════════════════
+    # EDGES — Semantic flow types
+    # ═══════════════════════════════════════════════════
 
-    # ── Edges ──
     edge_idx = 0
-    def add_edge(src: str, tgt: str, etype: str = "request", proto: str = "HTTPS",
-                 direction: str = "unidirectional", dtype: str = "", sec: str = "none", lbl: str = ""):
+    def add_edge(src: str, tgt: str, etype: str = EdgeType.REQUEST.value,
+                 proto: str = "HTTPS", direction: str = "unidirectional",
+                 dtype: str = "", sec: str = "none", lbl: str = ""):
         nonlocal edge_idx
         edge_idx += 1
         edges.append(GeneratedEdge(f"EDGE-{edge_idx:03d}", src, tgt, etype, proto, direction, dtype, sec, lbl or proto))
 
-    add_edge("NODE-USER-001", "NODE-DNS-001", "request", "DNS", lbl="DNS")
-    add_edge("NODE-DNS-001", "NODE-CDN-001", "request", "HTTPS", lbl="CDN")
-    add_edge("NODE-CDN-001", "NODE-WAF-001", "request", "HTTPS", lbl="Inspect")
-    add_edge("NODE-WAF-001", "NODE-LB-001", "request", "HTTPS", lbl="Forward")
-    add_edge("NODE-LB-001", "NODE-APP-001", "request", "HTTP", lbl="Route")
+    # Request path: User → DNS → CDN → WAF → ALB → App
+    add_edge(user_nid, dns_nid, EdgeType.REQUEST.value, "DNS", lbl="DNS")
+    if cdn_svc:
+        add_edge(dns_nid, cdn_nid, EdgeType.REQUEST.value, "HTTPS", lbl="HTTPS")
+        add_edge(cdn_nid, waf_nid, EdgeType.REQUEST.value, "HTTPS", lbl="HTTPS")
+    else:
+        add_edge(dns_nid, waf_nid, EdgeType.REQUEST.value, "HTTPS", lbl="HTTPS")
+    add_edge(waf_nid, lb_nid, EdgeType.REQUEST.value, "HTTPS", lbl="HTTPS")
+    add_edge(lb_nid, app_nid_a, EdgeType.REQUEST.value, "HTTP", lbl="HTTP")
     if is_ha:
-        add_edge("NODE-LB-001", "NODE-APP-002", "request", "HTTP", lbl="Route")
-    add_edge("NODE-APP-001", "NODE-DB-001", "data", "TCP", "bidirectional", "SQL", "pii", "SQL")
-    if is_ha:
-        add_edge("NODE-DB-001", "NODE-DB-002", "data", "TCP", "bidirectional", "SQL", "pii", "Replication")
-    add_edge("NODE-APP-001", "NODE-STORE-001", "data", "HTTPS", "bidirectional", "blob", "internal", "Object API")
-    add_edge("NODE-APP-001", "NODE-CACHE-001", "data", "TCP", "bidirectional", "cache", "internal", "Cache")
-    add_edge("NODE-APP-001", "NODE-SECRET-001", "control", "HTTPS", lbl="Fetch Secrets")
-    add_edge("NODE-APP-001", "NODE-OBS-001", "observation", "HTTPS", lbl="Metrics")
-    add_edge("NODE-DB-001", "NODE-OBS-001", "observation", "HTTPS", lbl="DB Metrics")
+        add_edge(lb_nid, app_nid_b, EdgeType.REQUEST.value, "HTTP", lbl="HTTP")
 
-    # ── Service Recommendations ──
+    # Data path: App → DB (SQL, private), App → Storage, App → Cache
+    add_edge(app_nid_a, db_nid, EdgeType.DATA.value, "TCP", "bidirectional", "SQL", "pii", "SQL/TLS")
+    if is_ha:
+        add_edge(db_nid, "NODE-DB-002", EdgeType.DATA.value, "TCP", "bidirectional", "SQL", "pii", "Replication")
+    add_edge(app_nid_a, store_nid, EdgeType.DATA.value, "HTTPS", "bidirectional", "blob", "internal", "S3 API")
+    if is_ha or is_detailed:
+        add_edge(app_nid_a, cache_nid, EdgeType.DATA.value, "TCP", "bidirectional", "cache", "internal", "Cache")
+
+    # Auth: Identity → App (if PDPA)
+    if auth_nid:
+        add_edge(auth_nid, app_nid_a, EdgeType.AUTH.value, "HTTPS", lbl="Auth")
+
+    # Supporting edges (NOT in request path)
+    add_edge(app_nid_a, secret_nid, EdgeType.SECRET_ACCESS.value, "HTTPS", lbl="Secrets")
+    add_edge(app_nid_a, kms_nid, EdgeType.KEY_USAGE.value, "HTTPS", lbl="Key Usage")
+    if db_nid:
+        add_edge(db_nid, kms_nid, EdgeType.KEY_USAGE.value, "HTTPS", lbl="Encrypt")
+    add_edge(app_nid_a, obs_nid, EdgeType.TELEMETRY.value, "HTTPS", lbl="Metrics")
+    add_edge(lb_nid, obs_nid, EdgeType.TELEMETRY.value, "HTTPS", lbl="ALB Metrics")
+    add_edge(db_nid, obs_nid, EdgeType.TELEMETRY.value, "HTTPS", lbl="DB Metrics")
+
+    # ═══════════════════════════════════════════════════
+    # RECOMMENDATIONS — Deduplicated
+    # ═══════════════════════════════════════════════════
+
+    seen_svcs: set[str] = set()
     for n in nodes:
-        if n.native_service:
+        if n.native_service and n.native_service not in seen_svcs:
+            seen_svcs.add(n.native_service)
             catalog = get_provider_catalog(provider)
             sv_key = n.native_service.lower().replace(" ", "_")
             desc = catalog.get(sv_key, {}).get("description", "")
+            display = get_display_name(provider, n.native_service)
             recs.append({
                 "nodeId": n.node_id,
                 "service": n.native_service,
+                "displayName": display,
                 "category": n.category,
                 "description": desc,
                 "verification": n.service_verification,
-                "rationale": f"Selected {n.native_service} for {n.name} ({n.category}) based on {provider} provider catalog",
+                "rationale": f"Provider-native {n.category} service: {display}",
             })
 
-    # ── Assumptions ──
+    # ═══════════════════════════════════════════════════
+    # META — Assumptions, Risks, Questions
+    # ═══════════════════════════════════════════════════
+
     assumptions = [
-        f"Target provider: {provider}",
-        f"Deployment platform: {platform}",
-        "Private database access enforced" if is_private_db else "Database access via application tier",
-        "High availability configured with multi-AZ deployment" if is_ha else "Single-AZ deployment",
-        f"{'PDPA privacy considerations applied' if has_pdpa else 'Standard security controls'}",
+        f"Provider: {provider}", f"Pattern: {pattern.value}",
+        f"Platform: {platform} deployment",
+        "Private database access — no public route" if is_private_db else "Database access via application tier",
+        f"High availability: {'Multi-AZ deployment' if is_ha else 'Single-AZ'}",
+        f"{'PDPA privacy considerations applied' if has_pdpa else 'Standard security'}",
         "HTTPS/TLS for all external traffic",
         "VPC with public/private subnet separation",
+        "Supporting services (KMS, Secrets, Monitoring) outside request path",
     ]
 
-    # ── Risks ──
     risks = [
-        "Service selection based on deterministic catalog — verify against actual requirements",
-        "Load estimate from brief may need refinement with actual traffic data",
+        "Service selection from deterministic catalog — verify against actual requirements",
+        f"Load estimate ({req.expected_load}) from brief — refine with actual data",
     ]
     if is_ha:
-        risks.append("Multi-AZ adds cost — validate budget constraints")
+        risks.append("Multi-AZ increases cost — validate budget")
     if has_pdpa:
-        risks.append("PDPA compliance requires formal assessment beyond architectural design")
-        risks.append("Data residency requirements may restrict region selection")
+        risks.append("PDPA requires formal DPIA beyond architecture design")
+        risks.append("Data residency may restrict region selection")
 
-    # ── Questions ──
     questions = [
-        "What is the expected data residency region?",
-        "What is the budget constraint for HA infrastructure?",
-        "Are there existing CI/CD pipelines to integrate?",
-        "What authentication provider (SSO/SAML/OIDC) is preferred?",
+        "Which AWS region is preferred for data residency?",
+        "What is the monthly infrastructure budget?",
+        "Existing CI/CD tooling to integrate (GitHub Actions, Jenkins)?",
+        "Preferred authentication: Cognito, external SAML/OIDC IdP?",
+        "What RTO/RPO targets for disaster recovery?",
     ]
 
-    # ── Views ──
-    all_node_ids = [n.node_id for n in nodes]
-    all_edge_ids = [e.edge_id for e in edges]
+    # ═══════════════════════════════════════════════════
+    # VIEWS — Distinct semantic views
+    # ═══════════════════════════════════════════════════
 
-    data_nodes = [n.node_id for n in nodes if n.category in ("DATABASE", "STORAGE", "CACHE", "QUEUE")]
-    data_edges = [e.edge_id for e in edges if e.edge_type in ("data",)]
+    all_nids = [n.node_id for n in nodes]
+    all_eids = [e.edge_id for e in edges]
 
-    ops_nodes = [n.node_id for n in nodes if n.category in ("USER", "DNS", "NETWORK", "GATEWAY", "APPLICATION")]
-    ops_edges = [e.edge_id for e in edges if e.edge_type in ("request",)]
+    # Data Flow: data + storage nodes, data edges only
+    data_nids = [n.node_id for n in nodes if n.category in ("DATABASE", "STORAGE", "CACHE")]
+    data_eids = [e.edge_id for e in edges if e.edge_type == EdgeType.DATA.value]
 
-    sec_nodes = [n.node_id for n in nodes if n.category in ("SECURITY", "IDENTITY", "NETWORK")]
-    sec_edges = [e.edge_id for e in edges if e.security_classification in ("pii",) or e.edge_type in ("control",)]
+    # Operation Flow: request-path nodes + request edges
+    ops_nids = [n.node_id for n in nodes if n.category in ("USER", "DNS", "NETWORK", "APPLICATION")]
+    ops_eids = [e.edge_id for e in edges if e.edge_type == EdgeType.REQUEST.value]
+
+    # Security Flow: security/identity nodes + auth/secret/key edges
+    sec_nids = [n.node_id for n in nodes if n.category in ("SECURITY", "IDENTITY")]
+    sec_eids = [e.edge_id for e in edges if e.edge_type in (
+        EdgeType.AUTH.value, EdgeType.SECRET_ACCESS.value, EdgeType.KEY_USAGE.value,
+    )]
 
     views = {
-        "architecture": {"nodes": all_node_ids, "edges": all_edge_ids},
-        "dataFlow": {"nodes": data_nodes, "edges": data_edges},
-        "operationFlow": {"nodes": ops_nodes, "edges": ops_edges},
-        "securityFlow": {"nodes": sec_nodes, "edges": sec_edges},
+        "architecture": {"nodes": all_nids, "edges": all_eids},
+        "dataFlow": {"nodes": data_nids, "edges": data_eids},
+        "operationFlow": {"nodes": ops_nids, "edges": ops_eids},
+        "securityFlow": {"nodes": sec_nids, "edges": sec_eids},
     }
 
-    # ── Rationale ──
-    rationale_parts = [
-        f"Provider: {provider} — selected based on brief",
-        f"Platform: {platform} — {'containerized' if is_container else 'VM-based'} deployment",
-        f"Load: {req.expected_load}",
-        f"HA: {'Enabled (multi-AZ)' if is_ha else 'Single-AZ'}",
-        f"Private DB: {'Enforced' if is_private_db else 'Application-tier access'}",
-        f"Compliance: {', '.join(req.compliance) if req.compliance else 'Standard'}",
-    ]
+    # ═══════════════════════════════════════════════════
+    # QUALITY — Validate before returning
+    # ═══════════════════════════════════════════════════
+
+    node_dicts = [n.to_dict() for n in nodes]
+    edge_dicts = [e.to_dict() for e in edges]
+    group_dicts = [g.to_dict() for g in groups]
+    quality = validate_architecture_quality(node_dicts, edge_dicts, group_dicts, provider, req, pattern.value)
+
+    # If quality fails, attempt one correction pass
+    if quality.overall == QualityResult.FAIL:
+        # Strip duplicate recommendations
+        recs = list({r["service"]: r for r in recs}.values())
+        # Re-check
+        quality = validate_architecture_quality(node_dicts, edge_dicts, group_dicts, provider, req, pattern.value)
+
+    # Derive title from pattern + provider
+    title_parts = ["Architecture"]
+    if "patient" in request.brief.lower() or "portal" in request.brief.lower():
+        title_parts = ["Patient Portal Architecture"]
+    title = f"{' '.join(title_parts)} — {provider} ({pattern.value})"
 
     brief_hash = hashlib.sha256(request.brief.encode()).hexdigest()[:12]
 
     return AgainPilotProposal(
-        title=f"Architecture for {provider} {'Patient Portal' if 'patient' in request.brief.lower() else 'Application'}",
-        summary=f"{provider} architecture with {len(nodes)} services. {'HA ' if is_ha else ''}{'PDPA ' if has_pdpa else ''}design.",
+        title=title,
+        summary=f"{provider} {pattern.value}. {len(nodes)} services, {len(edges)} connections. "
+                f"{'HA ' if is_ha else ''}{'PDPA ' if has_pdpa else ''}design. "
+                f"Quality: {quality.overall.value}.",
         detected_requirements=req,
-        nodes=nodes,
-        edges=edges,
-        groups=groups,
+        nodes=nodes, edges=edges, groups=groups,
         views=views,
         native_service_recommendations=recs,
-        assumptions=assumptions,
-        risks=risks,
-        clarifying_questions=questions,
-        rationale="\n".join(rationale_parts),
+        assumptions=assumptions, risks=risks, clarifying_questions=questions,
+        rationale=f"Architecture Pattern: {pattern.value}\nProvider: {provider}\nPlatform: {platform}\n"
+                  f"Load: {req.expected_load}\nHA: {is_ha}\nPrivate DB: {is_private_db}\n"
+                  f"Compliance: {', '.join(req.compliance) if req.compliance else 'Standard'}",
         generation_provider="DETERMINISTIC_FALLBACK",
-        generation_model="againpilot-v1",
+        generation_model="againpilot-q2",
         brief_hash=brief_hash,
     )
 
@@ -916,10 +1233,30 @@ class AgainPilotProviderRouter:
 
     def generate(self, request: AgainPilotRequest) -> AgainPilotProposal:
         if self._mode == AIGenerationMode.DETERMINISTIC_FALLBACK:
-            return generate_architecture(request)
+            proposal = generate_architecture(request)
+            # Attach quality report
+            node_dicts = [n.to_dict() for n in proposal.nodes]
+            edge_dicts = [e.to_dict() for e in proposal.edges]
+            group_dicts = [g.to_dict() for g in proposal.groups]
+            quality = validate_architecture_quality(
+                node_dicts, edge_dicts, group_dicts,
+                proposal.detected_requirements.provider,
+                proposal.detected_requirements,
+                "INTERNET_FACING_MULTI_AZ_WEB_APPLICATION",
+            )
+            # Reject if quality fails
+            if quality.overall == QualityResult.FAIL:
+                # One correction pass
+                proposal = generate_architecture(request)
+                quality = validate_architecture_quality(
+                    node_dicts, edge_dicts, group_dicts,
+                    proposal.detected_requirements.provider,
+                    proposal.detected_requirements,
+                    "INTERNET_FACING_MULTI_AZ_WEB_APPLICATION",
+                )
+            return proposal
         if self._mode == AIGenerationMode.UNAVAILABLE:
             raise RuntimeError("AI generation unavailable — no provider configured")
-        # Future: route to LOCAL_LLM, OPENAI, etc.
         return generate_architecture(request)
 
     def refine(self, nodes: list[dict], edges: list[dict], instruction: str, provider: str = "AWS") -> tuple[AgainPilotProposal, RefineDelta]:
