@@ -69,10 +69,16 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _persist_design(design: DesignBaseline, flow: FlowDefinition | None = None) -> None:
+def _persist_design(design: DesignBaseline, flow: FlowDefinition | dict | None = None) -> None:
     conn = _get_conn()
     try:
         now = datetime.now(timezone.utc).isoformat()
+        flow_json = ""
+        if flow:
+            if hasattr(flow, 'to_dict'):
+                flow_json = json.dumps(flow.to_dict())
+            elif isinstance(flow, dict):
+                flow_json = json.dumps(flow)
         conn.execute("""
             INSERT OR REPLACE INTO flow_designs
             (design_id, name, description, revision, status,
@@ -88,7 +94,7 @@ def _persist_design(design: DesignBaseline, flow: FlowDefinition | None = None) 
             design.requirements_checksum,
             design.architecture_checksum,
             design.flow_checksum,
-            json.dumps(flow.to_dict()) if flow else "",
+            flow_json,
             design.accepted_at,
             design.accepted_by,
             design.created_at or now,
@@ -236,6 +242,7 @@ def register_flow_routes(app: FastAPI) -> None:
         )
         design.metadata = {"name": name, "description": description}
         _designs[design.design_id] = design
+        _persist_design(design)
         return {"design": design.to_dict()}
 
     @app.get("/api/v1/designs/{design_id}")
@@ -243,7 +250,16 @@ def register_flow_routes(app: FastAPI) -> None:
         d = _designs.get(design_id)
         if not d:
             raise HTTPException(status_code=404, detail="Design not found")
-        return {"design": d.to_dict()}
+        result = d.to_dict()
+        # Include stored flow data
+        conn = _get_conn()
+        try:
+            row = conn.execute("SELECT flow_json FROM flow_designs WHERE design_id=?", (design_id,)).fetchone()
+            if row and row["flow_json"]:
+                result["flow"] = json.loads(row["flow_json"])
+        finally:
+            conn.close()
+        return {"design": result}
 
     @app.post("/api/v1/designs/{design_id}/generate")
     async def generate_design(design_id: str):
