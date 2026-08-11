@@ -146,7 +146,11 @@ class ImplementationExecutionMapper:
     def _determine_action(task: ImplementationTask) -> ActionType | None:
         cat = task.category
         auto = task.automation.value if hasattr(task.automation, 'value') else str(task.automation)
-        if auto == "MANUAL" or cat == "DOCUMENTATION":
+        # BLOCKED (N3 execution_classification=BLOCKED — CONTROLLED_REAL/
+        # PRODUCTION targets) must never become an executable task, same as
+        # MANUAL. Without this, a policy-blocked task would still leak into
+        # the ExecutionPackage the AIRLOCK evaluates.
+        if auto in ("MANUAL", "BLOCKED") or cat == "DOCUMENTATION":
             return None
 
         # Check task description for action hints

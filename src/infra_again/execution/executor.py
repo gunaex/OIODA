@@ -164,6 +164,10 @@ resource "aws_s3_bucket" "main" {{
         # PLAN_ONLY: observe artifacts on disk
         return {"observed": {"artifacts": "plan-only-execution"}, "observed_at": time.time()}
 
+    async def destroy(self, task: ExecutionTask, target: ExecutionTarget, correlation_id: str) -> dict[str, Any]:
+        # PLAN_ONLY never mutates anything — nothing exists to destroy.
+        return {"status": "COMPLETED", "note": "PLAN_ONLY performed zero mutation — nothing to destroy"}
+
 
 # ===========================================================================
 # FakecloudExecutor
@@ -221,9 +225,17 @@ class FakecloudExecutor(ExecutionAdapter):
         return result
 
     @staticmethod
-    def _generate_hcl(task: ExecutionTask, correlation_id: str) -> str:
+    def _bucket_name(task: ExecutionTask, correlation_id: str) -> str:
+        """The exact (never prefix/wildcard) resource identity this task
+        owns — execute() and destroy() must derive it identically, or a
+        destroy could miss the real resource or, worse, match a different
+        one."""
         bucket_name = f"infra-again-{correlation_id[:8]}-{task.execution_task_id.lower()}"
-        bucket_name = bucket_name.lower().replace("_", "-")  # S3 requires lowercase
+        return bucket_name.lower().replace("_", "-")  # S3 requires lowercase
+
+    @staticmethod
+    def _generate_hcl(task: ExecutionTask, correlation_id: str) -> str:
+        bucket_name = FakecloudExecutor._bucket_name(task, correlation_id)
         return f"""# INFRA-AGAIN Phase 7 — FAKECLOUD SIMULATED
 terraform {{
   required_version = ">= 1.0"
@@ -264,6 +276,23 @@ resource "aws_s3_bucket" "main" {{
         except Exception as e:
             return {"observed": {}, "observed_at": time.time(), "error": str(e)}
 
+    async def destroy(self, task: ExecutionTask, target: ExecutionTarget, correlation_id: str) -> dict[str, Any]:
+        """Exact-ownership destroy — deletes ONLY the exact bucket this task
+        created (same derivation as _generate_hcl uses), never a prefix or
+        wildcard match against other buckets in the same fakecloud."""
+        bucket_name = FakecloudExecutor._bucket_name(task, correlation_id)
+        try:
+            import boto3
+            s3 = boto3.client("s3", endpoint_url="http://localhost:4566",
+                aws_access_key_id="test", aws_secret_access_key="test", region_name="us-east-1")
+            s3.delete_bucket(Bucket=bucket_name)
+            return {"status": "COMPLETED", "destroyed": bucket_name}
+        except Exception as e:
+            err = str(e)
+            if "NoSuchBucket" in err or "404" in err:
+                return {"status": "COMPLETED", "destroyed": bucket_name, "note": "already absent"}
+            return {"status": "FAILED", "error": err, "attemptedTarget": bucket_name}
+
 
 # ===========================================================================
 # KindExecutor
@@ -271,6 +300,12 @@ resource "aws_s3_bucket" "main" {{
 
 class KindExecutor(ExecutionAdapter):
     """Execute against local kind Kubernetes cluster."""
+
+    @staticmethod
+    def _namespace_name(correlation_id: str) -> str:
+        """The exact (never prefix/wildcard) namespace this run owns —
+        execute() and destroy() must derive it identically."""
+        return f"infra-again-{correlation_id[:8]}".lower()
 
     @property
     def supported_action_types(self) -> list[ActionType]:
@@ -292,7 +327,7 @@ class KindExecutor(ExecutionAdapter):
         # Use explicit context if available, fall back to default
         ctx = target.environment_name or ""
         ctx_args = ["--context", f"kind-{ctx}"] if ctx else []
-        ns_name = f"infra-again-{correlation_id[:8]}".lower()
+        ns_name = KindExecutor._namespace_name(correlation_id)
         deploy_name = f"app-{correlation_id[:8]}".lower()
         svc_name = f"svc-{correlation_id[:8]}".lower()
 
@@ -395,3 +430,25 @@ class KindExecutor(ExecutionAdapter):
             observed["error"] = str(e)
 
         return {"observed": observed, "observed_at": time.time()}
+
+    async def destroy(self, task: ExecutionTask, target: ExecutionTarget, correlation_id: str) -> dict[str, Any]:
+        """Exact-ownership destroy — deletes ONLY the exact namespace this
+        run created (same derivation execute() uses). Deleting the
+        namespace takes its deployment/service with it; no other
+        namespace is ever touched, so a foreign/unrelated namespace with a
+        similar name is never at risk."""
+        import shutil
+        kubectl = shutil.which("kubectl") or "kubectl"
+        ctx = target.environment_name or ""
+        ctx_args = ["--context", f"kind-{ctx}"] if ctx else []
+        ns_name = KindExecutor._namespace_name(correlation_id)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                kubectl, *ctx_args, "delete", "namespace", ns_name, "--ignore-not-found=true",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            if proc.returncode != 0:
+                return {"status": "FAILED", "error": stderr.decode(errors="replace"), "attemptedTarget": ns_name}
+            return {"status": "COMPLETED", "destroyed": ns_name, "output": stdout.decode(errors="replace")}
+        except Exception as e:
+            return {"status": "FAILED", "error": str(e), "attemptedTarget": ns_name}

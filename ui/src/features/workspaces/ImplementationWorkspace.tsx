@@ -111,6 +111,111 @@ function PlanDetail({ plan, status, onApprove, busy }: { plan: any; status: any;
       {status?.status === 'REVIEW_READY' && !plan.dependencyCycleDetected && (
         <button className="btn btn-primary btn-sm" disabled={busy} onClick={onApprove}>Approve Plan</button>
       )}
+
+      {(status?.status || plan.status) === 'APPROVED_FOR_EXECUTION' && <ExecutionPanel planId={plan.planId} />}
+    </div>
+  );
+}
+
+// Phase N4 — minimal AIRLOCK/execution panel. Shows Plan Approved →
+// Execution Package created → AIRLOCK (preflight) result → Execution
+// result, plus blockers/rejection reasons verbatim from the API. Never
+// renders anything as "Verified Success" — that is N5's independent
+// observer/validator/verifier concern, not something this phase or the
+// executor itself can claim.
+const CHECK_TONE: Record<string, string> = { PASS: 'badge-success', FAIL: 'badge-warning', BLOCK: 'badge-danger', NOT_APPLICABLE: 'badge-neutral' };
+const TARGET_TYPES = ['fakecloud', 'kind', 'plan-only'];
+
+function ExecutionPanel({ planId }: { planId: string }) {
+  const [pkg, setPkg] = useState<any>(null);
+  const [preflight, setPreflight] = useState<any>(null);
+  const [execResult, setExecResult] = useState<any>(null);
+  const [targetType, setTargetType] = useState('fakecloud');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<any>(null);
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+      <div className="panel-title" style={{ fontSize: 10, marginBottom: 6 }}>Execution (AIRLOCK)</div>
+
+      {err && (
+        <div style={{ marginBottom: 8, fontSize: 9, color: 'var(--danger)' }}>
+          Rejected: {typeof err === 'string' ? err : JSON.stringify(err)}
+        </div>
+      )}
+
+      {!pkg && (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <select className="form-select" value={targetType} onChange={e => setTargetType(e.target.value)} style={{ fontSize: 10 }}>
+            {TARGET_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <button className="btn btn-primary btn-sm" disabled={busy} onClick={async () => {
+            setBusy(true); setErr(null);
+            try {
+              const r = await api.createPackage(planId, { target_type: targetType, idempotency_key: `ui-${planId}` });
+              setPkg(r.package);
+            } catch (e: any) { setErr(e.message); }
+            finally { setBusy(false); }
+          }}>Create Execution Package</button>
+        </div>
+      )}
+
+      {pkg && (
+        <div style={{ fontSize: 10 }}>
+          <div style={{ marginBottom: 6 }}>
+            Package: <span className="mono">{pkg.executionPackageId}</span>{' '}
+            <span className={`badge ${pkg.status === 'COMPLETED' ? 'badge-success' : 'badge-neutral'}`} style={{ fontSize: 8 }}>{pkg.status}</span>
+          </div>
+
+          {!preflight && (
+            <button className="btn btn-secondary btn-sm" disabled={busy} onClick={async () => {
+              setBusy(true); setErr(null);
+              try {
+                const r = await api.preflight(pkg.executionPackageId);
+                setPreflight(r);
+                setPkg((p: any) => ({ ...p, status: r.status }));
+              } catch (e: any) { setErr(e.message); }
+              finally { setBusy(false); }
+            }}>Run Preflight (AIRLOCK)</button>
+          )}
+
+          {preflight && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ marginBottom: 4 }}>
+                AIRLOCK Result: <span className={`badge ${preflight.status === 'PREFLIGHT_PASSED' ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: 8 }}>{preflight.status}</span>
+              </div>
+              {preflight.checks.filter((c: any) => c.status !== 'PASS').map((c: any) => (
+                <div key={c.checkId} style={{ color: 'var(--danger)', paddingLeft: 4, fontSize: 9 }}>
+                  • {c.name}: {c.status} — {c.message}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {preflight?.status === 'PREFLIGHT_PASSED' && !execResult && (
+            <button className="btn btn-primary btn-sm" disabled={busy} onClick={async () => {
+              setBusy(true); setErr(null);
+              try {
+                const r = await api.execute(pkg.executionPackageId);
+                setExecResult(r.result);
+              } catch (e: any) { setErr(e.message); }
+              finally { setBusy(false); }
+            }}>Execute</button>
+          )}
+
+          {execResult && (
+            <div style={{ marginTop: 8 }}>
+              <div>Execution Result: <span className={`badge ${execResult.status === 'COMPLETED' ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: 8 }}>{execResult.status}</span></div>
+              <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>
+                Run: <span className="mono">{execResult.runId}</span> · {execResult.tasksPassed} passed · {execResult.tasksFailed} failed
+              </div>
+              <div style={{ fontSize: 8, color: 'var(--text-muted)', marginTop: 4 }}>
+                (Executor-reported result only — independent verification is a separate later phase, not claimed here.)
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -113,6 +113,14 @@ class ExecutionAdapter(ABC):
     async def observe(self, target: ExecutionTarget, resource_ids: list[str] | None = None) -> dict[str, Any]:
         ...
 
+    @abstractmethod
+    async def destroy(self, task: Any, target: ExecutionTarget, correlation_id: str) -> dict[str, Any]:
+        """Phase N4 — destroy EXACTLY the resource(s) this task's exact
+        correlation_id/task_id created. Never a prefix/wildcard match —
+        implementations must derive the exact same identifier execute()
+        used, so a resource this run never created can never be touched."""
+        ...
+
 
 class ExecutionAdapterRegistry:
     """Registry mapping target types to executor adapters."""

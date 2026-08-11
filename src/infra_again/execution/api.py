@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from .phase7_models import (
     ExecutionPackage, ExecutionTask, ExecutionTarget, ExecutionFidelity,
-    ExecutionPackageStatus, ExecutionTaskStatus,
+    ExecutionPackageStatus, ExecutionTaskStatus, ActionType,
 )
 from .mapper import ImplementationExecutionMapper
 from .preflight import PreflightEngine
@@ -59,6 +59,33 @@ def register_execution_routes(app: FastAPI) -> None:
         from ..implementation.api import _plans
         from ..implementation.persistence import load_plan
         return _plans.get(plan_id) or load_plan(plan_id)
+
+    def _gather_plan_currency(plan: Any) -> tuple[int, str, str]:
+        """Phase N4 — live (architecture_revision, provider_intelligence_version,
+        feasibility_digest) for whatever the plan is bound to, computed fresh
+        every call. This is the AIRLOCK's only source of truth for staleness —
+        never the plan's own (possibly stale) recollection of these values."""
+        if not plan or getattr(plan, "generation_method", "") != "ARCHITECTURE_AWARE":
+            return 0, "", ""
+        from ..flow.api import _designs, _get_conn
+        from ..intelligence.catalog import get_catalog
+        from ..intelligence.feasibility import assess_architecture_feasibility, feasibility_digest
+        import json as _json
+
+        design = _designs.get(plan.design_id)
+        current_rev = design.revision if design else (plan.architecture_revision or plan.design_revision)
+        current_pi_version = get_catalog().version()
+        conn = _get_conn()
+        try:
+            row = conn.execute("SELECT flow_json FROM flow_designs WHERE design_id=?", (plan.design_id,)).fetchone()
+        finally:
+            conn.close()
+        flow_data = _json.loads(row["flow_json"]) if row and row["flow_json"] else {}
+        assessment = assess_architecture_feasibility(
+            flow_data.get("nodes", []), architecture_id=plan.design_id,
+            architecture_revision=str(current_rev), requested_fidelity=plan.target_fidelity,
+        )
+        return current_rev, current_pi_version, feasibility_digest(assessment)
 
     @app.post("/api/v1/implementation-plans/{plan_id}/execution-readiness")
     async def get_execution_readiness(plan_id: str):
@@ -147,8 +174,14 @@ def register_execution_routes(app: FastAPI) -> None:
 
         # Look up current plan for checksum comparison
         current_plan = _lookup_plan(pkg.plan_id)
+        current_rev, current_pi_version, current_feas_digest = _gather_plan_currency(current_plan)
 
-        checks = PreflightEngine.run(pkg, current_plan_checksum=getattr(current_plan, 'plan_checksum', '') if current_plan else "")
+        checks = PreflightEngine.run(
+            pkg, current_plan_checksum=getattr(current_plan, 'plan_checksum', '') if current_plan else "",
+            current_plan=current_plan, current_architecture_revision=current_rev,
+            current_provider_intelligence_version=current_pi_version,
+            current_feasibility_digest=current_feas_digest,
+        )
         pkg.preflight_checks = checks
         pkg.status = ExecutionPackageStatus.PREFLIGHT_PASSED if not PreflightEngine.has_fail_or_block(checks) else ExecutionPackageStatus.PREFLIGHT_FAILED
         pkg.updated_at = _now()
@@ -255,6 +288,35 @@ def register_execution_routes(app: FastAPI) -> None:
                         ),
                     },
                 )
+
+        # =====================================================================
+        # Gate 0.5: LIVE PLAN CURRENCY (Phase N4) — the checksum/plan-id
+        # guards above catch a CONTENT change, but N3 staleness (architecture
+        # revision / Provider Intelligence / feasibility drift) flips only
+        # plan.status, never plan_checksum. A package whose preflight passed
+        # before the drift occurred must still be rejected here, at the
+        # actual mutation boundary — never rely solely on an earlier
+        # advisory check that could itself have gone stale since.
+        # =====================================================================
+        if current_plan:
+            status = getattr(current_plan, "status", None)
+            status_value = status.value if hasattr(status, "value") else str(status)
+            if status_value != "APPROVED_FOR_EXECUTION":
+                raise HTTPException(status_code=409, detail={
+                    "error": "PLAN_NOT_APPROVED",
+                    "planStatus": status_value,
+                    "message": f"Plan {pkg.plan_id} is no longer APPROVED_FOR_EXECUTION (status: {status_value}).",
+                })
+            current_rev, current_pi_version, current_feas_digest = _gather_plan_currency(current_plan)
+            if getattr(current_plan, "generation_method", "") == "ARCHITECTURE_AWARE":
+                from ..implementation.architecture_planner import check_plan_freshness
+                freshness = check_plan_freshness(current_plan, current_rev, current_pi_version, current_feas_digest)
+                if freshness["stale"]:
+                    raise HTTPException(status_code=409, detail={
+                        "error": "STALE_PLAN",
+                        "reasons": freshness["reasons"],
+                        "message": "Plan bindings no longer match current architecture/Provider Intelligence/feasibility state.",
+                    })
 
         # Policy check
         if not pkg.policy_decision:
@@ -441,16 +503,77 @@ def register_execution_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/execution-runs/{run_id}/cleanup")
     async def cleanup_run(run_id: str):
-        """Cleanup run-owned resources."""
+        """Destroy exactly the resources this run created — Phase N4.
+        Rollback is a separate, explicit, controlled action: it is never
+        performed implicitly by execute() or by a failure path, only by a
+        caller hitting this endpoint. Each executor derives the exact same
+        identifier destroy() targets that execute() used to create it, so
+        nothing outside this run's exact ownership is ever touched."""
         run = _runs.get(run_id) or _persistence.load_run(run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        return {
-            "runId": run_id,
-            "cleanupEligible": True,
-            "note": "Run-owned ephemeral resources: AUTO cleanup allowed",
-            "action": "destroy_run_owned_resources",
+
+        package_id = run.get("packageId", "")
+        pkg = _packages.get(package_id)
+        if not pkg:
+            d = _persistence.load_package(package_id)
+            if not d:
+                raise HTTPException(status_code=404, detail="Package not found for run")
+            target_dict = d.get("target", {})
+            pkg = ExecutionPackage(
+                execution_package_id=d.get("executionPackageId", ""), plan_id=d.get("planId", ""),
+                plan_revision=d.get("planRevision", 1), plan_checksum=d.get("planChecksum", ""),
+                design_id=d.get("designId", ""), design_revision=d.get("designRevision", 1),
+                correlation_id=d.get("correlationId", ""),
+                target=ExecutionTarget(
+                    target_id=target_dict.get("targetId", ""), target_type=target_dict.get("targetType", "PLAN_ONLY"),
+                    provider=target_dict.get("provider", ""), platform=target_dict.get("platform", ""),
+                    fidelity=ExecutionFidelity(target_dict.get("fidelity", "PLAN_ONLY")),
+                    endpoint_reference=target_dict.get("endpointReference", ""),
+                    environment_name=target_dict.get("environmentName", ""),
+                    isolated=target_dict.get("isolated", True), ephemeral=target_dict.get("ephemeral", True),
+                    managed_by=target_dict.get("managedBy", "INFRA_AGAIN"),
+                    created_by_run_id=target_dict.get("createdByRunId", ""),
+                    capabilities=target_dict.get("capabilities", []),
+                ),
+                fidelity=ExecutionFidelity(target_dict.get("fidelity", "PLAN_ONLY")),
+            )
+            for t_data in d.get("tasks", []):
+                pkg.tasks.append(ExecutionTask(
+                    execution_task_id=t_data.get("executionTaskId", ""),
+                    implementation_task_id=t_data.get("implementationTaskId", ""),
+                    work_package_id=t_data.get("workPackageId", ""), title=t_data.get("title", ""),
+                    action_type=ActionType(t_data.get("actionType", "VALIDATE_RESOURCE")),
+                ))
+
+        from .executor import PlanOnlyExecutor, FakecloudExecutor, KindExecutor
+        if pkg.target.target_type == "PLAN_ONLY":
+            executor = PlanOnlyExecutor()
+        elif pkg.target.target_type == "FAKECLOUD":
+            executor = FakecloudExecutor()
+        elif pkg.target.target_type == "KIND":
+            executor = KindExecutor()
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported target: {pkg.target.target_type}")
+
+        destroyed: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        for task in pkg.tasks:
+            outcome = await executor.destroy(task, pkg.target, pkg.correlation_id)
+            entry = {"taskId": task.execution_task_id, **outcome}
+            (destroyed if outcome.get("status") == "COMPLETED" else failed).append(entry)
+
+        cleanup_result = {
+            "runId": run_id, "packageId": package_id, "correlationId": pkg.correlation_id,
+            "destroyed": destroyed, "failed": failed,
+            "status": "COMPLETED" if not failed else "PARTIAL",
         }
+        _persistence.persist_event({
+            "eventId": f"EVT-{uuid.uuid4().hex[:8].upper()}", "packageId": package_id, "taskId": "",
+            "eventType": "CLEANUP_COMPLETED" if not failed else "CLEANUP_PARTIAL",
+            "timestamp": _now(), "data": cleanup_result,
+        })
+        return cleanup_result
 
     # =========================================================================
     # Test-only endpoint: force-update a plan's checksum for stale-package

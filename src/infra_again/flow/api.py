@@ -204,6 +204,73 @@ def _reconstruct_flow(data: dict) -> FlowDefinition:
 
 
 # ============================================================================
+# Design revision lifecycle — Phase N4.0
+# ============================================================================
+#
+# N3 found that DesignBaseline.revision existed but nothing ever incremented
+# it, making N3's architecture-revision staleness binding dead in practice.
+# Fixed here: any canonical (execution-relevant) content change recomputes
+# architecture_checksum and, only when that checksum actually differs from
+# what's persisted, bumps revision deterministically. Presentation-only
+# fields (name/position/label/styling) are deliberately excluded from the
+# signature so cosmetic edits never churn the revision. A change to an
+# already-frozen baseline moves it into the existing (previously unused)
+# DesignStatus.DESIGN_CHANGED_AFTER_ACCEPTANCE state rather than silently
+# staying BASELINE_FROZEN — the domain already had a name for this, it was
+# just never wired up.
+
+
+def _execution_relevant_node_signature(n: dict[str, Any]) -> dict[str, str]:
+    data = n.get("data") if isinstance(n.get("data"), dict) else {}
+    data = data or {}
+    return {
+        "nodeId": n.get("nodeId") or n.get("id", ""),
+        "category": n.get("category") or data.get("category", ""),
+        "provider": n.get("provider") or data.get("provider", ""),
+        "nativeService": n.get("nativeService", ""),
+        "platform": n.get("platform", ""),
+    }
+
+
+def _execution_relevant_edge_signature(e: dict[str, Any]) -> dict[str, str]:
+    return {
+        "edgeId": e.get("edgeId") or e.get("id", ""),
+        "source": e.get("sourceNodeId") or e.get("source", ""),
+        "target": e.get("targetNodeId") or e.get("target", ""),
+    }
+
+
+def _compute_architecture_checksum(flow: dict[str, Any] | None) -> str:
+    flow = flow or {}
+    nodes = sorted(
+        (_execution_relevant_node_signature(n) for n in flow.get("nodes", [])),
+        key=lambda x: x["nodeId"],
+    )
+    edges = sorted(
+        (_execution_relevant_edge_signature(e) for e in flow.get("edges", [])),
+        key=lambda x: x["edgeId"],
+    )
+    data = {"nodes": nodes, "edges": edges}
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _apply_canonical_content(d: DesignBaseline, flow: dict[str, Any] | None) -> bool:
+    """Recompute the architecture checksum for `flow` and, only if it
+    differs from what's currently persisted, bump revision (+ transition
+    an already-frozen baseline to DESIGN_CHANGED_AFTER_ACCEPTANCE). Returns
+    True iff content actually changed — a no-op save (identical content
+    posted again) must never bump revision."""
+    new_checksum = _compute_architecture_checksum(flow)
+    changed = new_checksum != d.architecture_checksum
+    if changed:
+        d.architecture_checksum = new_checksum
+        d.revision += 1
+        if d.status in (DesignStatus.ACCEPTED, DesignStatus.BASELINE_FROZEN):
+            d.status = DesignStatus.DESIGN_CHANGED_AFTER_ACCEPTANCE
+    return changed
+
+
+# ============================================================================
 # In-memory caches (backed by SQLite)
 # ============================================================================
 
@@ -375,7 +442,8 @@ def register_flow_routes(app: FastAPI) -> None:
         d = _designs.get(design_id)
         if not d:
             raise HTTPException(status_code=404, detail="Design not found")
-        if d.status not in (DesignStatus.DRAFT, DesignStatus.GENERATED, DesignStatus.REVIEW_READY, DesignStatus.USER_REVIEW):
+        if d.status not in (DesignStatus.DRAFT, DesignStatus.GENERATED, DesignStatus.REVIEW_READY,
+                            DesignStatus.USER_REVIEW, DesignStatus.DESIGN_CHANGED_AFTER_ACCEPTANCE):
             raise HTTPException(status_code=400, detail=f"Cannot accept design in status {d.status.value}")
         d.accept(accepted_by)
         # Preserve flow data from DB if no in-memory flow exists
@@ -445,15 +513,24 @@ def register_flow_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/designs/{design_id}/update-flow")
     async def update_design_flow(design_id: str, body: dict[str, Any]):
-        """Update graph flow for a design."""
+        """Update graph flow for a design. Phase N4.0: editing an already-
+        frozen baseline is now allowed (previously hard-blocked) — instead,
+        a genuine execution-relevant content change bumps revision and
+        moves the design to DESIGN_CHANGED_AFTER_ACCEPTANCE, so any plan
+        approved against the old revision can be detected as stale rather
+        than the edit being silently refused or silently accepted with no
+        trace."""
         d = _designs.get(design_id)
         if not d:
             raise HTTPException(status_code=404, detail="Design not found")
-        if d.status.value in ("ACCEPTED", "BASELINE_FROZEN"):
-            raise HTTPException(status_code=400, detail={"error": "Cannot edit accepted/frozen design"})
         flow = body.get("flow", {})
+        content_changed = _apply_canonical_content(d, flow)
         _persist_design(d, flow)
-        return {"designId": design_id, "status": "updated"}
+        return {
+            "designId": design_id, "status": "updated",
+            "revision": d.revision, "designStatus": d.status.value,
+            "contentChanged": content_changed,
+        }
 
     # ------------------------------------------------------------------
     # Flows
