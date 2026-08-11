@@ -305,3 +305,36 @@ def assess_architecture_feasibility(
         overall_executability=overall,
         node_feasibility=node_results,
     )
+
+
+def feasibility_digest(assessment: ArchitectureFeasibilityAssessment) -> str:
+    """Phase N3 — deterministic digest of the feasibility EVIDENCE used to
+    produce a plan (not the whole assessment object, just the parts that
+    would change what's plannable). Lets a plan detect "the same
+    architecture now resolves differently" (e.g. a service's
+    executionSupportState changed) without re-deriving feasibility itself —
+    N3 binds this digest, it never recomputes feasibility and calls the
+    result the same plan."""
+    import hashlib
+    import json
+
+    data = {
+        "overallExecutability": assessment.overall_executability,
+        "requestedFidelity": assessment.requested_fidelity,
+        "nodes": sorted(
+            [
+                {
+                    "nodeId": n.node_id,
+                    "providerLifecycleState": n.provider_lifecycle_state,
+                    "executionSupportState": n.execution_support_state,
+                    "executorAvailable": n.executor_available,
+                    "observerAvailable": n.observer_available,
+                    "validatorAvailable": n.validator_available,
+                    "verifierAvailable": n.verifier_available,
+                }
+                for n in assessment.node_feasibility
+            ],
+            key=lambda x: x["nodeId"],
+        ),
+    }
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]

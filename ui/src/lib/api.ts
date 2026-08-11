@@ -49,8 +49,9 @@ export const api={
   againpilotExplain:(b:any)=>api.post<{explanation:string}>('/api/v1/againpilot/explain',b),
   againpilotSecurity:(b:any)=>api.post<{analysis:any}>('/api/v1/againpilot/security-analysis',b),
   // Plans
-  createPlan:(designId:string)=>api.post(`/api/v1/designs/${designId}/implementation-plan`),
+  createPlan:(designId:string,targetFidelity:string='SIMULATED')=>api.post(`/api/v1/designs/${designId}/implementation-plan?targetFidelity=${encodeURIComponent(targetFidelity)}`),
   getPlan:(id:string)=>api.get<any>(`/api/v1/implementation-plans/${id}`),
+  getPlanStatus:(id:string)=>api.get<any>(`/api/v1/implementation-plans/${id}/status`),
   approvePlan:(id:string)=>api.post(`/api/v1/implementation-plans/${id}/approve`),
   rejectPlan:(id:string)=>api.post(`/api/v1/implementation-plans/${id}/request-change`),
   // Execution

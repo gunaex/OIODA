@@ -75,6 +75,7 @@ def _reconstruct_plan(data: dict) -> ImplementationPlan:
         WorkPackageType, TaskStatus, AutomationEligibility, RiskSeverity,
         ReadinessState, GateState, EvidenceType, EstimateSource, EffortUnit,
         DeliveryStage, RiskCategory, PlanStatus,
+        TaskExecutionClassification, RollbackCapability,
     )
     plan = ImplementationPlan(
         plan_id=data.get("planId", ""), design_id=data.get("designId", ""),
@@ -87,6 +88,22 @@ def _reconstruct_plan(data: dict) -> ImplementationPlan:
         critical_path=data.get("criticalPath", []),
         critical_path_duration=data.get("criticalPathDuration", ""),
         baseline_checksums=data.get("baselineChecksums", {}),
+        architecture_id=data.get("architectureId", ""),
+        architecture_revision=data.get("architectureRevision", 0),
+        plan_version=data.get("planVersion", 1),
+        plan_digest=data.get("planDigest", ""),
+        approved_plan_digest=data.get("approvedPlanDigest", ""),
+        provider_intelligence_version=data.get("providerIntelligenceVersion", ""),
+        feasibility_digest=data.get("feasibilityDigest", ""),
+        feasibility_assessment_id=data.get("feasibilityAssessmentId", ""),
+        target_fidelity=data.get("targetFidelity", ""),
+        correlation_id=data.get("correlationId", ""),
+        created_by=data.get("createdBy", ""),
+        generation_method=data.get("generationMethod", "LEGACY_FLOW_HEURISTIC"),
+        stale=data.get("stale", False), stale_reason=data.get("staleReason", ""),
+        superseded_by=data.get("supersededBy", ""),
+        dependency_cycle_detected=data.get("dependencyCycleDetected", False),
+        cycle_nodes=data.get("cycleNodes", []),
     )
     # Reconstruct work packages
     for wp_data in data.get("workPackages", []):
@@ -97,6 +114,10 @@ def _reconstruct_plan(data: dict) -> ImplementationPlan:
             dependencies=wp_data.get("dependencies", []),
             parallel_group=wp_data.get("parallelGroup", ""),
             status=TaskStatus(wp_data["status"]) if wp_data.get("status") else TaskStatus.PLANNED,
+            execution_readiness=wp_data.get("executionReadiness", "UNKNOWN"),
+            blocking_issues=wp_data.get("blockingIssues", []),
+            estimated_cost=wp_data.get("estimatedCost", "UNKNOWN"),
+            blast_radius=wp_data.get("blastRadius", "UNKNOWN"),
         )
         for t_data in wp_data.get("tasks", []):
             task = ImplementationTask(
@@ -111,6 +132,23 @@ def _reconstruct_plan(data: dict) -> ImplementationPlan:
                 automation=AutomationEligibility(t_data["automation"]) if t_data.get("automation") else AutomationEligibility.MANUAL,
                 derived_from=t_data.get("derivedFrom", []),
                 local_validatable=t_data.get("localValidatable", False),
+                source_node_ids=t_data.get("sourceNodeIds", []),
+                source_edge_ids=t_data.get("sourceEdgeIds", []),
+                provider=t_data.get("provider", ""),
+                canonical_service_id=t_data.get("canonicalServiceId", ""),
+                runtime_mode=t_data.get("runtimeMode", ""),
+                requirement_refs=t_data.get("requirementRefs", []),
+                decision_refs=t_data.get("decisionRefs", []),
+                provider_intelligence_ref=t_data.get("providerIntelligenceRef", ""),
+                provider_intelligence_version=t_data.get("providerIntelligenceVersion", ""),
+                target_fidelity=t_data.get("targetFidelity", ""),
+                execution_classification=TaskExecutionClassification(t_data["executionClassification"])
+                    if t_data.get("executionClassification") else TaskExecutionClassification.UNKNOWN,
+                blocking_issues=t_data.get("blockingIssues", []),
+                estimated_cost=t_data.get("estimatedCost", "UNKNOWN"),
+                blast_radius=t_data.get("blastRadius", "UNKNOWN"),
+                rollback_capability=RollbackCapability(t_data["rollbackCapability"])
+                    if t_data.get("rollbackCapability") else RollbackCapability.NOT_APPLICABLE,
             )
             wp.tasks.append(task)
         plan.work_packages.append(wp)

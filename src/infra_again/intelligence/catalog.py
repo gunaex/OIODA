@@ -619,6 +619,21 @@ class ProviderCatalog:
     def get_snapshots(self) -> list[CatalogSnapshot]:
         return list(self._snapshots)
 
+    def version(self) -> str:
+        """Phase N3 — deterministic version identifier for the current
+        catalog content. Changes whenever any service's lifecycle/
+        execution_support/launch_types/etc. changes, so a plan bound to
+        this value can detect Provider Intelligence drift (e.g. a service
+        going DISCOVERED -> SUPPORTED after a plan was approved) without
+        needing a separately-maintained version counter."""
+        digest = hashlib.sha256(
+            json.dumps(
+                sorted(s.compute_service_checksum() for s in self._services.values()),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()[:16]
+        return f"PI-{digest}"
+
     # ------------------------------------------------------------------
     # Comparison
     # ------------------------------------------------------------------

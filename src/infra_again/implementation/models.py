@@ -32,6 +32,9 @@ class WorkPackageType(str, Enum):
     TESTING = "TESTING"
     DEPLOYMENT = "DEPLOYMENT"
     DOCUMENTATION = "DOCUMENTATION"
+    # Phase N3 — logical package categories used by architecture_planner.py
+    IDENTITY = "IDENTITY"
+    COMPUTE = "COMPUTE"
 
 
 class TaskStatus(str, Enum):
@@ -129,6 +132,29 @@ class RiskCategory(str, Enum):
     COST = "COST"
     DEPENDENCY = "DEPENDENCY"
     MIGRATION = "MIGRATION"
+
+
+# Phase N3 — task execution classification. N2 feasibility (per node, per
+# target fidelity) feeds this directly; it is never inferred from anything
+# else. UNEXECUTABLE/BLOCKED tasks are still generated and visible, never
+# dropped from the plan.
+class TaskExecutionClassification(str, Enum):
+    EXECUTABLE = "EXECUTABLE"
+    PLAN_ONLY = "PLAN_ONLY"
+    UNEXECUTABLE = "UNEXECUTABLE"
+    BLOCKED = "BLOCKED"
+    UNKNOWN = "UNKNOWN"
+
+
+# Phase N3 — rollback semantics. Planning-time classification only; no
+# mutation happens in N3, so this describes what rollback WOULD look like,
+# not a result of any actual rollback.
+class RollbackCapability(str, Enum):
+    AUTOMATIC = "AUTOMATIC"
+    MANUAL = "MANUAL"
+    PARTIAL = "PARTIAL"
+    UNAVAILABLE = "UNAVAILABLE"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
 # ============================================================================
@@ -257,6 +283,28 @@ class ImplementationTask:
     delivery_stage: DeliveryStage | None = None
     local_validatable: bool = False
 
+    # Phase N3 — architecture traceability + Provider Intelligence / N2
+    # feasibility binding. All default to empty/UNKNOWN so tasks built by
+    # the legacy flow-heuristic planner.py (which never sets these) keep
+    # working unchanged everywhere downstream (execution/mapper.py only
+    # reads the pre-N3 fields above).
+    source_node_ids: list[str] = field(default_factory=list)
+    source_edge_ids: list[str] = field(default_factory=list)
+    provider: str = ""
+    canonical_service_id: str = ""
+    runtime_mode: str = ""
+    requirement_refs: list[str] = field(default_factory=list)
+    decision_refs: list[str] = field(default_factory=list)
+    provider_intelligence_ref: str = ""
+    provider_intelligence_version: str = ""
+    target_fidelity: str = ""
+    execution_classification: TaskExecutionClassification = TaskExecutionClassification.UNKNOWN
+    blocking_issues: list[str] = field(default_factory=list)
+    # UNKNOWN unless real evidence exists — never fabricated as 0/LOW.
+    estimated_cost: str = "UNKNOWN"
+    blast_radius: str = "UNKNOWN"
+    rollback_capability: RollbackCapability = RollbackCapability.NOT_APPLICABLE
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "taskId": self.task_id, "workPackageId": self.work_package_id,
@@ -272,6 +320,17 @@ class ImplementationTask:
             "derivedFrom": self.derived_from,
             "deliveryStage": self.delivery_stage.value if self.delivery_stage else None,
             "localValidatable": self.local_validatable,
+            "sourceNodeIds": self.source_node_ids, "sourceEdgeIds": self.source_edge_ids,
+            "provider": self.provider, "canonicalServiceId": self.canonical_service_id,
+            "runtimeMode": self.runtime_mode,
+            "requirementRefs": self.requirement_refs, "decisionRefs": self.decision_refs,
+            "providerIntelligenceRef": self.provider_intelligence_ref,
+            "providerIntelligenceVersion": self.provider_intelligence_version,
+            "targetFidelity": self.target_fidelity,
+            "executionClassification": self.execution_classification.value,
+            "blockingIssues": self.blocking_issues,
+            "estimatedCost": self.estimated_cost, "blastRadius": self.blast_radius,
+            "rollbackCapability": self.rollback_capability.value,
         }
 
 
@@ -288,16 +347,28 @@ class ImplementationWorkPackage:
     status: TaskStatus = TaskStatus.PLANNED
     estimated_effort: ImplementationEstimate = field(default_factory=ImplementationEstimate)
 
+    # Phase N3 — aggregate execution readiness for this package + why (never
+    # a bare percentage; blockers are named). Both computed from the
+    # package's own tasks, never asserted independently.
+    execution_readiness: str = "UNKNOWN"
+    blocking_issues: list[str] = field(default_factory=list)
+    estimated_cost: str = "UNKNOWN"
+    blast_radius: str = "UNKNOWN"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "packageId": self.package_id, "planId": self.plan_id,
             "title": self.title, "description": self.description,
             "packageType": self.package_type.value,
+            "taskIds": [t.task_id for t in self.tasks],
             "tasks": [t.to_dict() for t in self.tasks],
             "dependencies": self.dependencies,
             "parallelGroup": self.parallel_group,
             "status": self.status.value,
             "estimatedEffort": self.estimated_effort.to_dict(),
+            "executionReadiness": self.execution_readiness,
+            "blockingIssues": self.blocking_issues,
+            "estimatedCost": self.estimated_cost, "blastRadius": self.blast_radius,
         }
 
 
@@ -344,6 +415,33 @@ class ImplementationPlan:
     approved_by: str = ""
     approved_at: str = ""
 
+    # Phase N3 — plan identity/immutability + binding to the exact N1/N2
+    # state the plan was generated against (section 1/6/7/8 of the N3
+    # spec). architecture_id/architecture_revision alias design_id/
+    # design_revision in meaning (an "architecture" here IS the accepted
+    # design's canonical model) but are named explicitly for API clarity.
+    architecture_id: str = ""
+    architecture_revision: int = 0
+    plan_version: int = 1
+    plan_digest: str = ""
+    approved_plan_digest: str = ""
+    provider_intelligence_version: str = ""
+    feasibility_digest: str = ""
+    feasibility_assessment_id: str = ""
+    target_fidelity: str = ""
+    correlation_id: str = ""
+    created_by: str = ""
+    generation_method: str = "LEGACY_FLOW_HEURISTIC"
+
+    # Set only by a freshness check (see architecture_planner.check_plan_freshness) —
+    # never by plan generation itself, and never mutates plan content.
+    stale: bool = False
+    stale_reason: str = ""
+    superseded_by: str = ""
+
+    dependency_cycle_detected: bool = False
+    cycle_nodes: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "planId": self.plan_id, "designId": self.design_id,
@@ -364,6 +462,22 @@ class ImplementationPlan:
             "criticalPathDuration": self.critical_path_duration,
             "readiness": self.readiness.value,
             "approvedBy": self.approved_by, "approvedAt": self.approved_at,
+            "architectureId": self.architecture_id or self.design_id,
+            "architectureRevision": self.architecture_revision or self.design_revision,
+            "planVersion": self.plan_version,
+            "planDigest": self.plan_digest,
+            "approvedPlanDigest": self.approved_plan_digest,
+            "providerIntelligenceVersion": self.provider_intelligence_version,
+            "feasibilityDigest": self.feasibility_digest,
+            "feasibilityAssessmentId": self.feasibility_assessment_id,
+            "targetFidelity": self.target_fidelity,
+            "correlationId": self.correlation_id,
+            "createdBy": self.created_by,
+            "generationMethod": self.generation_method,
+            "stale": self.stale, "staleReason": self.stale_reason,
+            "supersededBy": self.superseded_by,
+            "dependencyCycleDetected": self.dependency_cycle_detected,
+            "cycleNodes": self.cycle_nodes,
         }
 
     def compute_checksum(self) -> str:
@@ -381,15 +495,65 @@ class ImplementationPlan:
         self.plan_checksum = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
         return self.plan_checksum
 
+    def compute_digest(self) -> str:
+        """Phase N3 — the authoritative execution-relevant plan digest.
+        Covers everything that changes what would actually be executed
+        (services, target fidelity, Provider Intelligence version, task
+        classification, dependency shape) and deliberately excludes
+        presentation-only fields (titles/descriptions/timestamps/summary)
+        so cosmetic edits don't churn the digest. Also folds into
+        plan_checksum so the existing downstream Gate 0 enforcement in
+        execution/api.py (PLAN_ID_MISMATCH / EXECUTION_PLAN_CHECKSUM_MISMATCH)
+        automatically starts catching PI/feasibility/fidelity drift too,
+        with no changes required there."""
+        import hashlib, json
+        data = {
+            "architectureId": self.architecture_id or self.design_id,
+            "architectureRevision": self.architecture_revision or self.design_revision,
+            "providerIntelligenceVersion": self.provider_intelligence_version,
+            "feasibilityDigest": self.feasibility_digest,
+            "targetFidelity": self.target_fidelity,
+            "tasks": sorted([
+                {
+                    "taskId": t.task_id,
+                    "provider": t.provider,
+                    "canonicalServiceId": t.canonical_service_id,
+                    "runtimeMode": t.runtime_mode,
+                    "executionClassification": t.execution_classification.value,
+                    "dependencies": sorted(t.dependencies),
+                }
+                for w in self.work_packages for t in w.tasks
+            ], key=lambda x: x["taskId"]),
+            "packages": sorted([
+                {"id": w.package_id, "type": w.package_type.value,
+                 "taskIds": sorted(t.task_id for t in w.tasks),
+                 "dependencies": sorted(w.dependencies)}
+                for w in self.work_packages
+            ], key=lambda x: x["id"]),
+            "planDependencies": sorted(
+                [{"from": d.from_package, "to": d.to_package} for d in self.dependencies],
+                key=lambda x: f"{x['from']}->{x['to']}"),
+        }
+        self.plan_digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+        # Keep the legacy checksum in lockstep so existing downstream
+        # consumers (execution/api.py Gate 0, phase9_api.py) that only know
+        # about plan_checksum still see execution-relevant drift.
+        self.plan_checksum = self.plan_digest
+        return self.plan_digest
+
     def approve(self, approved_by: str = "") -> None:
         self.status = PlanStatus.APPROVED_FOR_EXECUTION
         self.approved_by = approved_by
         self.approved_at = datetime.now(timezone.utc).isoformat()
-        self.compute_checksum()
+        if self.generation_method == "ARCHITECTURE_AWARE":
+            self.compute_digest()
+        else:
+            self.compute_checksum()
+        self.approved_plan_digest = self.plan_digest or self.plan_checksum
 
     def check_changed_after_approval(self) -> bool:
         if self.status != PlanStatus.APPROVED_FOR_EXECUTION:
             return False
         old_cs = self.plan_checksum
-        new_cs = self.compute_checksum()
+        new_cs = self.compute_checksum() if self.generation_method != "ARCHITECTURE_AWARE" else self.compute_digest()
         return old_cs != new_cs
