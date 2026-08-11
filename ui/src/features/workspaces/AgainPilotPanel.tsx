@@ -32,7 +32,7 @@ and separates public ingress from private data services.`,
   },
 ];
 
-type Stage = 'input' | 'generating' | 'review';
+type Stage = 'input' | 'generating' | 'review' | 'fallback';
 
 export default function AgainPilotPanel({ provider, platform, hasDesign, onApply, onClose }: Props) {
   const [stage, setStage] = useState<Stage>('input');
@@ -43,6 +43,8 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
   const [proposal, setProposal] = useState<any>(null);
   const [statusMsg, setStatusMsg] = useState('');
   const [error, setError] = useState('');
+  const [resultMode, setResultMode] = useState('');  // REAL_LLM / DETERMINISTIC_FALLBACK / FAILED
+  const [provenance, setProvenance] = useState<any>(null);
   const [aiStatus, setAiStatus] = useState<{ mode: string; provider: string; model?: string; available: boolean } | null>(null);
 
   useEffect(() => {
@@ -51,49 +53,49 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
 
   const statusLabel = aiStatus
     ? aiStatus.mode === 'REAL_LLM'
-      ? `AI: ${aiStatus.provider} / ${aiStatus.model || 'LLM'} READY`
+      ? `Local AI · ${aiStatus.model || 'LLM'} READY`
       : aiStatus.mode === 'AI_CONTROL_CENTER' ? `AI: Control Center`
-        : `AI: DETERMINISTIC FALLBACK`
+        : `DETERMINISTIC FALLBACK`
     : 'AI: ...';
 
   const generate = async () => {
     if (!brief.trim()) return;
     setStage('generating');
     setError('');
-    setStatusMsg('Understanding requirements…');
-    try {
-      // Simulated progress stages
-      const stages = [
-        'Understanding requirements…',
-        'Selecting architecture pattern…',
-        'Mapping provider services…',
-        'Building security model…',
-        'Preparing diagram…',
-      ];
-      for (let i = 0; i < stages.length; i++) {
-        setStatusMsg(stages[i]);
-        await new Promise(r => setTimeout(r, 300));
-      }
+    setResultMode('');
+    setProvenance(null);
 
+    const stages = ['Understanding architecture requirements…', 'Selecting relevant services…', 'Generating architecture…', 'Validating architecture…'];
+    for (const s of stages) { setStatusMsg(s); await new Promise(r => setTimeout(r, 400)); }
+
+    try {
       const result = await api.againpilotGenerate({
         brief: brief.trim(),
         providerPreference: providerPref,
         platformPreference: platformPref,
         generationDepth: depth,
       });
+      const rm = result.resultMode || result.generationMode || '';
       setProposal(result.proposal);
+      setResultMode(rm);
+      setProvenance(result.provenance || null);
+      // If backend returned fallback, show as fallback result, not AI
+      if (rm === 'DETERMINISTIC_FALLBACK' || rm === 'FALLBACK') {
+        setStage('fallback');
+        return;
+      }
       setStage('review');
     } catch (e: any) {
       setError(e.message || 'Generation failed');
-      setStage('input');
+      setStage('fallback');
     }
   };
 
+  const retryRealAI = () => { setStage('input'); generate(); };
+  const useFallback = () => { setStage('input'); generate(); };
+
   const applyToCanvas = () => {
-    if (proposal) {
-      onApply(proposal);
-      onClose();
-    }
+    if (proposal) { onApply(proposal); onClose(); }
   };
 
   const selectExample = (exampleBrief: string) => {
@@ -122,8 +124,25 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
         {stage === 'generating' && (
           <div style={{ textAlign: 'center', padding: '40px 20px' }}>
             <div className="loading" style={{ marginBottom: 16 }}>{statusMsg}</div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-              Generating architecture proposal…
+            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Generating architecture proposal…</div>
+            <div style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 8 }}>
+              {aiStatus?.mode === 'REAL_LLM' ? `Using: ${aiStatus.provider} · ${aiStatus.model}` : 'Deterministic mode'}
+            </div>
+          </div>
+        )}
+
+        {stage === 'fallback' && (
+          <div style={{ textAlign: 'center', padding: '20px' }}>
+            <div style={{ fontSize: 13, color: 'var(--warning)', fontWeight: 500, marginBottom: 12 }}>
+              Real AI generation failed or timed out.
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 16 }}>
+              You can retry with the real AI model or use the deterministic fallback.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <button className="btn btn-primary btn-sm" onClick={retryRealAI}>Retry Real AI</button>
+              <button className="btn btn-secondary btn-sm" onClick={useFallback}>Use Deterministic Fallback</button>
+              <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
             </div>
           </div>
         )}
@@ -196,7 +215,20 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
         {/* Review Stage */}
         {stage === 'review' && proposal && (
           <div>
-            <div className="badge badge-success mb-sm" style={{ fontSize: 10 }}>Architecture generated</div>
+            <div className="badge badge-success mb-sm" style={{ fontSize: 10 }}>
+              Architecture generated
+              {resultMode === 'REAL_LLM' || resultMode === 'REAL_LLM_CORRECTED'
+                ? ` by Local AI · ${aiStatus?.model || 'LLM'}`
+                : resultMode === 'DETERMINISTIC_FALLBACK'
+                  ? ' by Deterministic Fallback'
+                  : ''}
+            </div>
+            {provenance && (
+              <div style={{ fontSize: 8, color: 'var(--text-muted)', marginBottom: 8 }}>
+                Stage 1: {(provenance.stage1Ms / 1000).toFixed(1)}s · Stage 2: {(provenance.stage2Ms / 1000).toFixed(1)}s
+                {resultMode === 'REAL_LLM_CORRECTED' && ' (auto-corrected)'}
+              </div>
+            )}
 
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>
               {proposal.title}
