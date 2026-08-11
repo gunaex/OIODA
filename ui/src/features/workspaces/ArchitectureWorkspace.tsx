@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } fro
 import { api } from '../../lib/api';
 import {
   createExampleDesign, canonicalToDrawioXml, drawioXmlToCanonical,
-  generateMultiViewXmls, validateArchitectureProposal,
+  generateMultiViewXmls, validateArchitectureProposal, resolveDesignHydration,
   type CanonicalDesign, type ArchitectureNode, type ArchitectureProposal,
 } from '../../lib/drawioEngine';
 
@@ -41,70 +41,47 @@ export default function ArchitectureWorkspace(props: Props = {}) {
   const [drawioLoading, setDrawioLoading] = useState(true);
   const [drawioError, setDrawioError] = useState(false);
   const [drawioReady, setDrawioReady] = useState(false);
+  const [hydrationError, setHydrationError] = useState('');
 
   const loadDesigns = () => api.designs().then((d: any) => setDesigns(d.designs || [])).catch(() => { });
 
   useEffect(() => { loadDesigns(); }, []);
 
   // ── Load canonical + generate draw.io XML ──
+  //
+  // The actual hydration decision (fresh vs. persisted vs. malformed vs.
+  // provider-unresolved) lives in resolveDesignHydration — a pure function
+  // in drawioEngine.ts, independently unit-tested. This previously inlined
+  // that logic and got it wrong (read `d.flow` instead of `d.design.flow`,
+  // and `design.provider` — which the sidebar list never carries — instead
+  // of the persisted flow's own provider), so every reload of an
+  // already-persisted design silently discarded its real architecture for a
+  // generic 5-node ON_PREM template, with no error and no id change.
   const loadCanonicalFromDesign = useCallback((design: any) => {
-    if (!design) { setCanonical(null); setDrawioXml(''); return; }
+    if (!design) { setCanonical(null); setDrawioXml(''); setHydrationError(''); return; }
     const did = design.designId;
     setDrawioLoading(true);
     setDrawioError(false);
+    setHydrationError('');
     api.getDesign(did).then((d: any) => {
-      const flow = d.flow || d;
-
-      // If stored flow has canonical structure with nodes/edges
-      if (flow?.nodes && Array.isArray(flow.nodes) && flow.nodes.length > 0) {
-        const cd: CanonicalDesign = {
-          ...createExampleDesign(design.provider || 'ON_PREM'),
-          designId: did,
-          title: design.name || design.metadata?.name || '',
-          description: design.description || design.metadata?.description || '',
-          provider: design.provider || 'ON_PREM',
-          platform: design.platform || 'NATIVE_VM',
-          status: design.status || 'DRAFT',
-          nodes: flow.nodes,
-          edges: flow.edges || [],
-          views: flow.views || { architecture: [], dataFlow: [], operationFlow: [], securityFlow: [] },
-          diagramDocument: flow.diagramDocument || '',
-          diagramEngine: flow.diagramEngine || 'drawio',
-        };
-        setCanonical(cd);
-
-        // Generate draw.io XML or use stored
-        if (flow.diagramDocument && flow.diagramEngine === 'drawio') {
-          setDrawioXml(flow.diagramDocument);
-        } else {
-          const xml = canonicalToDrawioXml(cd, view);
-          setDrawioXml(xml);
-          // Also store for other views
-        }
+      const result = resolveDesignHydration(did, d);
+      if (!result.ok || !result.canonical) {
+        setHydrationError(result.error || 'DESIGN_HYDRATION_FAILED');
+        setCanonical(null); setDrawioXml(''); setDrawioLoading(false);
+        return;
+      }
+      const cd = result.canonical;
+      setCanonical(cd);
+      if (cd.diagramDocument && cd.diagramEngine === 'drawio') {
+        setDrawioXml(cd.diagramDocument);
       } else {
-        // Fresh design — create canonical from template
-        const cd = createExampleDesign(design.provider || 'ON_PREM');
-        cd.designId = did;
-        cd.title = design.name || design.metadata?.name || '';
-        cd.description = design.description || design.metadata?.description || '';
-        cd.provider = design.provider || 'ON_PREM';
-        cd.platform = design.platform || 'NATIVE_VM';
-        cd.status = design.status || 'DRAFT';
-        setCanonical(cd);
-        const xml = canonicalToDrawioXml(cd, 'architecture');
-        setDrawioXml(xml);
+        setDrawioXml(canonicalToDrawioXml(cd, view));
       }
       setDrawioLoading(false);
     }).catch((e) => {
       console.error('Failed to load design flow:', e);
-      // Create fresh canonical even on error
-      const cd = createExampleDesign(design.provider || 'ON_PREM');
-      cd.designId = did;
-      cd.status = design.status || 'DRAFT';
-      setCanonical(cd);
-      const xml = canonicalToDrawioXml(cd, 'architecture');
-      setDrawioXml(xml);
-      setDrawioLoading(false);
+      setHydrationError(`DESIGN_LOAD_FAILED: ${e?.message || e}`);
+      setCanonical(null); setDrawioXml(''); setDrawioLoading(false);
     });
   }, [view]);
 
@@ -236,7 +213,13 @@ export default function ArchitectureWorkspace(props: Props = {}) {
   };
 
   const isFrozen = currentDesign?.status === 'ACCEPTED' || currentDesign?.status === 'BASELINE_FROZEN';
-  const provider = canonical?.provider || currentDesign?.provider || 'ON_PREM';
+  // Authoritative provider comes ONLY from the hydrated canonical design.
+  // No silent 'ON_PREM' fallback while a design is selected but not yet
+  // (or not successfully) hydrated — that's exactly the substitution that
+  // caused refine requests to validate against the wrong provider. Only
+  // default to 'AWS' when there is no design context at all (nothing to
+  // misrepresent).
+  const provider = canonical?.provider || (currentDesign ? '' : 'AWS');
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 88px)', gap: 0, overflow: 'hidden' }}>
@@ -272,7 +255,7 @@ export default function ArchitectureWorkspace(props: Props = {}) {
         <div style={{ height: 36, minHeight: 36, background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-default)', display: 'flex', alignItems: 'center', padding: '0 12px', gap: 8 }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)' }}>{canonical?.title || 'No design'}</span>
           {currentDesign && <span className={`badge ${isFrozen ? 'badge-success' : 'badge-neutral'}`} style={{ fontSize: 9 }}>{currentDesign.status || 'DRAFT'}</span>}
-          <span className="badge badge-info" style={{ fontSize: 9 }}>{provider}</span>
+          <span className={`badge ${provider ? 'badge-info' : 'badge-danger'}`} style={{ fontSize: 9 }}>{provider || 'PROVIDER UNRESOLVED'}</span>
           <div style={{ flex: 1 }} />
           {VIEWS.map(v => (
             <button key={v} onClick={() => setView(v)} className={`btn btn-sm ${view === v ? 'btn-primary' : 'btn-ghost'}`} style={{ fontSize: 10, textTransform: 'capitalize' }}>
@@ -292,6 +275,13 @@ export default function ArchitectureWorkspace(props: Props = {}) {
           {!currentDesign ? (
             <div className="empty-state" style={{ height: '100%' }}>
               <div className="empty-state-title">Select or create a design</div>
+            </div>
+          ) : hydrationError ? (
+            <div className="empty-state" style={{ height: '100%', flexDirection: 'column', gap: 12 }}>
+              <div className="empty-state-title" style={{ color: 'var(--danger)' }}>Could not load this design's architecture</div>
+              <div className="text-muted mono" style={{ fontSize: 11, maxWidth: 480, textAlign: 'center' }}>{hydrationError}</div>
+              <div className="text-muted" style={{ fontSize: 10 }}>Refusing to substitute a generic template for a persisted design that failed to load.</div>
+              <button className="btn btn-secondary btn-sm" onClick={() => loadCanonicalFromDesign(currentDesign)}>Retry</button>
             </div>
           ) : engine === 'drawio' ? (
             drawioError ? (

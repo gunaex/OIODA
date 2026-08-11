@@ -360,6 +360,10 @@ def _provenance_dict(prov: dict, fallback_mode: str = "", fallback_result: str =
         "cloudLatencyMs": prov.get("cloudLatencyMs"),
         "finalResultMode": prov.get("finalResultMode"),
         "tokenUsage": prov.get("tokenUsage"),
+        # Deterministic validator output only (gate/result/detail; missing
+        # role names) — never the model's raw response or reasoning_content.
+        "qualityFailures": prov.get("qualityFailures"),
+        "missingRoles": prov.get("missingRoles"),
     }
     return out
 

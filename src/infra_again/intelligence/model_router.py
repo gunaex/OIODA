@@ -111,6 +111,12 @@ class RoutingProvenance:
     generation_timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     brief_hash: str = ""
 
+    # Why a QUALITY_FAIL/COMPLETENESS_FAIL result was rejected — deterministic
+    # validator output only (gate/result/detail from our own QualityReport/
+    # CompletenessReport), never the model's raw response or reasoning.
+    quality_failures: list[dict] = field(default_factory=list)
+    missing_roles: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         d = {
             "requestPolicy": self.request_policy,
@@ -135,6 +141,10 @@ class RoutingProvenance:
                 "inputTokens": self.cloud_input_tokens,
                 "outputTokens": self.cloud_output_tokens,
             }
+        if self.quality_failures:
+            d["qualityFailures"] = self.quality_failures
+        if self.missing_roles:
+            d["missingRoles"] = self.missing_roles
         return d
 
 
@@ -459,6 +469,10 @@ class HybridModelRouter:
                 prov.local_result = EscalationReason.CORRECTION_FAILED.value
             else:
                 prov.local_result = EscalationReason.QUALITY_GATE_FAILED.value if quality.overall.value == "FAIL" else EscalationReason.COMPLETENESS_GATE_FAILED.value
+            if quality.overall.value == "FAIL":
+                prov.quality_failures = [c for c in quality.checks if c["result"] == "FAIL"]
+            if completeness.overall.value == "FAIL":
+                prov.missing_roles = list(completeness.missing_roles)
 
         # Local failed — escalate if allowed
         if can_escalate:
@@ -493,6 +507,14 @@ class HybridModelRouter:
 
         prov.cloud_latency_ms = int((time.time() - t0) * 1000)
         prov.cloud_result = cloud_prov.get("result", "UNKNOWN") if cloud_prov else "CLOUD_UNAVAILABLE"
+        # Provider's own internal validation (if it rejected before returning
+        # a proposal) already computed these — deterministic gate/result/
+        # detail only, never model text.
+        if cloud_prov:
+            if cloud_prov.get("qualityFailures"):
+                prov.quality_failures = cloud_prov["qualityFailures"]
+            if cloud_prov.get("missingRoles"):
+                prov.missing_roles = cloud_prov["missingRoles"]
 
         # Capture token usage if available
         self._capture_token_usage(prov)
@@ -507,6 +529,8 @@ class HybridModelRouter:
         quality, completeness = _validate_proposal(proposal, provider_pref, req)
         if quality.overall.value == "FAIL" or completeness.overall.value == "FAIL":
             prov.cloud_result = EscalationReason.CLOUD_QUALITY_FAIL.value if quality.overall.value == "FAIL" else EscalationReason.CLOUD_COMPLETENESS_FAIL.value
+            prov.quality_failures = [c for c in quality.checks if c["result"] == "FAIL"]
+            prov.missing_roles = list(completeness.missing_roles)
             prov.final_result_mode = FinalResultMode.BLOCKED.value
             self._last_provenance = prov
             return None, prov
@@ -586,6 +610,10 @@ class HybridModelRouter:
                 prov.local_correction_used = refine_prov.get("correctionGenerator") == "REAL_LLM"
                 self._last_provenance = prov
                 return result, prov
+            if quality.overall.value == "FAIL":
+                prov.quality_failures = [c for c in quality.checks if c["result"] == "FAIL"]
+            if completeness.overall.value == "FAIL":
+                prov.missing_roles = list(completeness.missing_roles)
 
         if can_escalate:
             reason = EscalationReason.QUALITY_GATE_FAILED
@@ -619,6 +647,11 @@ class HybridModelRouter:
 
         prov.cloud_latency_ms = int((time.time() - t0) * 1000)
         prov.cloud_result = cloud_prov.get("result", "UNKNOWN") if cloud_prov else "CLOUD_UNAVAILABLE"
+        if cloud_prov:
+            if cloud_prov.get("qualityFailures"):
+                prov.quality_failures = cloud_prov["qualityFailures"]
+            if cloud_prov.get("missingRoles"):
+                prov.missing_roles = cloud_prov["missingRoles"]
 
         # Capture token usage if available
         self._capture_token_usage(prov)
@@ -633,6 +666,8 @@ class HybridModelRouter:
         quality, completeness = _validate_proposal(proposal, provider, base_req or _dummy_req())
         if quality.overall.value == "FAIL" or completeness.overall.value == "FAIL":
             prov.cloud_result = EscalationReason.CLOUD_QUALITY_FAIL.value if quality.overall.value == "FAIL" else EscalationReason.CLOUD_COMPLETENESS_FAIL.value
+            prov.quality_failures = [c for c in quality.checks if c["result"] == "FAIL"]
+            prov.missing_roles = list(completeness.missing_roles)
             prov.final_result_mode = FinalResultMode.BLOCKED.value
             self._last_provenance = prov
             return None, prov

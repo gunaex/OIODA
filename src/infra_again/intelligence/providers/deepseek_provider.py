@@ -52,6 +52,12 @@ class DeepSeekArchitectureProvider:
         self._model = model or _resolve_deepseek_model()
         self._api_key = api_key or _resolve_deepseek_api_key()
         self._last_usage: TokenUsage | None = None
+        # HTTP status code only (never the response body, never the key) —
+        # lets callers distinguish "DeepSeek rejected the request" (401/404/
+        # 400) from "the request never got a response" (network timeout),
+        # which the generic *_TIMEOUT result string previously collapsed
+        # into one indistinguishable failure mode.
+        self._last_error_code: int | None = None
 
     def __repr__(self) -> str:
         return f"DeepSeekArchitectureProvider(model={self._model!r}, has_key={bool(self._api_key)})"
@@ -74,6 +80,14 @@ class DeepSeekArchitectureProvider:
 
     def is_available(self) -> bool:
         return bool(self._api_key)
+
+    def _failure_result(self, default: str) -> str:
+        """Distinguish 'DeepSeek rejected the request' (HTTP 4xx/5xx — bad
+        key, bad model, bad request) from a genuine network timeout. Status
+        code only, never the response body."""
+        if self._last_error_code:
+            return f"{default.rsplit('_', 1)[0]}_HTTP_{self._last_error_code}"
+        return default
 
     # ── Internal: call DeepSeek ──────────────────────────────────
 
@@ -103,6 +117,7 @@ class DeepSeekArchitectureProvider:
             method="POST",
         )
 
+        self._last_error_code = None
         last_error = None
         for attempt in range(3):
             try:
@@ -125,6 +140,7 @@ class DeepSeekArchitectureProvider:
                 return content, usage
             except urllib.error.HTTPError as e:
                 last_error = e
+                self._last_error_code = e.code
                 body_text = ""
                 try:
                     body_text = e.read().decode("utf-8", errors="replace")[:500]
@@ -202,7 +218,7 @@ class DeepSeekArchitectureProvider:
             meta["usage"] = self._last_usage.to_dict()
 
         if not intent_raw:
-            meta["result"] = "STAGE1_TIMEOUT"
+            meta["result"] = self._failure_result("STAGE1_TIMEOUT")
             return None, meta
 
         intent = self._parse_json(intent_raw)
@@ -229,7 +245,7 @@ class DeepSeekArchitectureProvider:
             meta["usage"] = self._last_usage.to_dict()
 
         if not prop_raw:
-            meta["result"] = "STAGE2_TIMEOUT"
+            meta["result"] = self._failure_result("STAGE2_TIMEOUT")
             return None, meta
 
         compact = self._parse_json(prop_raw)
@@ -284,7 +300,7 @@ class DeepSeekArchitectureProvider:
             meta["usage"] = self._last_usage.to_dict()
 
         if not content:
-            meta["result"] = "CLOUD_TIMEOUT"
+            meta["result"] = self._failure_result("CLOUD_TIMEOUT")
             return None, meta
 
         delta_dict = self._parse_json(content)
@@ -305,16 +321,24 @@ class DeepSeekArchitectureProvider:
 
         merged_req = _merge_refine_requirements(base_req, instruction)
         quality, completeness = _validate_proposal(proposal, provider, merged_req)
+        # Deterministic validator output only — gate/result/detail come from
+        # our own QualityReport/CompletenessReport, never from the model's
+        # response. No reasoning_content, no raw provider payload, ever.
+        meta["qualityResult"] = quality.overall.value
+        meta["completenessResult"] = completeness.overall.value
         if quality.overall.value == "FAIL":
             meta["result"] = "CLOUD_QUALITY_FAIL"
+            meta["qualityFailures"] = [
+                {"gate": c["gate"], "result": c["result"], "detail": c["detail"]}
+                for c in quality.checks if c["result"] == "FAIL"
+            ]
             return None, meta
         if completeness.overall.value == "FAIL":
             meta["result"] = "CLOUD_COMPLETENESS_FAIL"
+            meta["missingRoles"] = list(completeness.missing_roles)
             return None, meta
 
         meta["result"] = "REAL_LLM_REFINE"
-        meta["qualityResult"] = quality.overall.value
-        meta["completenessResult"] = completeness.overall.value
         return (proposal, delta_obj), meta
 
     def explain(self, nodes: list[dict], edges: list[dict], provider: str) -> str | None:

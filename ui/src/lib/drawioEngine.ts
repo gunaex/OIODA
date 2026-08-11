@@ -424,3 +424,69 @@ export function createExampleDesign(provider: string = 'AWS'): CanonicalDesign {
     createdBy: 'poc', updatedBy: 'poc', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   };
 }
+
+// ── Design hydration ──────────────────────────────────────────────
+//
+// GET /api/v1/designs/{id} returns {design: {designId, status, metadata,
+// flow?: {provider, nodes, edges, groups, views, ...}}}. The canonical
+// architecture and its authoritative provider live at design.flow, not the
+// top level. Pulled out as a pure function (no React, no fetch) so the
+// hydration decision — genuinely fresh vs. persisted vs. malformed vs.
+// provider-unresolved — is independently testable and can't silently
+// regress into "just show the generic template" again.
+
+export interface DesignHydrationResult {
+  ok: boolean;
+  canonical?: CanonicalDesign;
+  error?: string;
+  isFreshDesign?: boolean;
+}
+
+export function resolveDesignHydration(requestedDesignId: string, apiResponse: any): DesignHydrationResult {
+  const authoritative = apiResponse?.design ?? apiResponse;
+
+  if (authoritative?.designId && authoritative.designId !== requestedDesignId) {
+    // Never hydrate a different design's data under this id.
+    return { ok: false, error: `DESIGN_ID_MISMATCH: requested ${requestedDesignId}, received ${authoritative.designId}` };
+  }
+
+  const flow = authoritative?.flow;
+
+  if (flow === undefined || flow === null) {
+    // Genuinely fresh — nothing has ever been persisted for this design.
+    const cd = createExampleDesign('AWS');
+    cd.designId = requestedDesignId;
+    cd.title = authoritative?.metadata?.name || '';
+    cd.description = authoritative?.metadata?.description || '';
+    cd.status = authoritative?.status || 'DRAFT';
+    return { ok: true, canonical: cd, isFreshDesign: true };
+  }
+
+  if (!Array.isArray(flow.nodes)) {
+    // Something WAS persisted, but it's not a valid canonical shape.
+    // Do not fabricate an architecture that was never actually there.
+    return { ok: false, error: 'MALFORMED_PERSISTED_DESIGN: stored flow has no valid nodes array' };
+  }
+
+  const resolvedProvider = flow.provider || authoritative?.provider;
+  if (!resolvedProvider) {
+    return { ok: false, error: 'DESIGN_PROVIDER_UNRESOLVED: persisted design has no provider' };
+  }
+
+  const cd: CanonicalDesign = {
+    ...createExampleDesign(resolvedProvider),
+    designId: requestedDesignId,
+    title: flow.title || authoritative?.metadata?.name || '',
+    description: flow.description || authoritative?.metadata?.description || '',
+    provider: resolvedProvider,
+    platform: flow.platform || authoritative?.platform || 'NATIVE_VM',
+    status: authoritative?.status || 'DRAFT',
+    nodes: flow.nodes,
+    edges: flow.edges || [],
+    groups: flow.groups || [],
+    views: flow.views || { architecture: [], dataFlow: [], operationFlow: [], securityFlow: [] },
+    diagramDocument: flow.diagramDocument || '',
+    diagramEngine: flow.diagramEngine || 'drawio',
+  };
+  return { ok: true, canonical: cd };
+}

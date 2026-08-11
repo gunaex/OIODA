@@ -75,6 +75,25 @@ function ExecutionPathView({ provenance }: { provenance: any }) {
   );
 }
 
+// Concise, deterministic "why rejected" list — gate/result/detail strings
+// from our own validators only. No model reasoning, no raw response.
+function WhyRejectedView({ provenance }: { provenance: any }) {
+  const failures: any[] = Array.isArray(provenance?.qualityFailures) ? provenance.qualityFailures : [];
+  const missingRoles: any[] = Array.isArray(provenance?.missingRoles) ? provenance.missingRoles : [];
+  if (failures.length === 0 && missingRoles.length === 0) return null;
+  return (
+    <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 8, textAlign: 'left' }}>
+      <div className="panel-title" style={{ fontSize: 9, marginBottom: 4 }}>Why rejected</div>
+      {failures.map((f: any, i: number) => (
+        <div key={`qf-${i}`} style={{ color: 'var(--danger)' }}>• {String(f?.gate ?? '?')}: {String(f?.detail ?? '')}</div>
+      ))}
+      {missingRoles.length > 0 && (
+        <div style={{ color: 'var(--danger)' }}>• Missing required roles: {missingRoles.map(String).join(', ')}</div>
+      )}
+    </div>
+  );
+}
+
 export default function AgainPilotPanel({
   provider, platform, hasDesign,
   designId, designName, designStatus,
@@ -139,7 +158,7 @@ export default function AgainPilotPanel({
   const applyToCanvas = () => { if (proposal) { onApply(proposal); onClose(); } };
 
   // ── Refine ──
-  const canRefine = hasDesign && designId && !isFrozen;
+  const canRefine = hasDesign && designId && !isFrozen && !!provider;
 
   const runRefine = async (forceMode?: string) => {
     if (!refineInstruction.trim() || !canRefine || refining) return;
@@ -252,6 +271,15 @@ export default function AgainPilotPanel({
           </div>
         )}
 
+        {/* ── Provider unresolved — refuse to refine against an unknown/
+            possibly-wrong provider rather than silently defaulting ── */}
+        {mode === 'refine' && designId && !isFrozen && !provider && (
+          <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)', fontSize: 11 }}>
+            <div style={{ color: 'var(--danger)', fontWeight: 500, marginBottom: 8 }}>DESIGN_PROVIDER_UNRESOLVED</div>
+            <div>This design's architecture could not be hydrated, so its cloud provider is unknown. Refining would validate against the wrong provider. Reload the design or check its persisted data before refining.</div>
+          </div>
+        )}
+
         {/* ═══════════ GENERATING ═══════════ */}
         {stage === 'generating' && (
           <div style={{ textAlign: 'center', padding: '40px 20px' }}>
@@ -271,6 +299,7 @@ export default function AgainPilotPanel({
               Reason: <span className="mono">{resultMode || 'UNKNOWN'}</span>
             </div>
             <ExecutionPathView provenance={provenance} />
+            <WhyRejectedView provenance={provenance} />
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 16 }}>No deterministic architecture has been generated yet. Choose how to proceed.</div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
               <button className="btn btn-primary btn-sm" onClick={() => generate()}>Retry Real AI</button>
@@ -286,6 +315,7 @@ export default function AgainPilotPanel({
             <div style={{ fontSize: 13, color: 'var(--warning)', fontWeight: 500, marginBottom: 12 }}>Real AI refinement failed or timed out.</div>
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 8 }}>Reason: <span className="mono">{refineResultMode || 'UNKNOWN'}</span></div>
             <ExecutionPathView provenance={refineProvenance} />
+            <WhyRejectedView provenance={refineProvenance} />
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 16 }}>The current architecture is unchanged.</div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
               <button className="btn btn-primary btn-sm" onClick={() => runRefine()}>Retry Real AI</button>
