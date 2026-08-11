@@ -94,7 +94,6 @@ def register_againpilot_routes(app: FastAPI) -> None:
 
         try:
             proposal = againpilot.generate(request)
-            # Run quality validation
             from .againpilot import validate_architecture_quality
             node_dicts = [n.to_dict() for n in proposal.nodes]
             edge_dicts = [e.to_dict() for e in proposal.edges]
@@ -103,14 +102,24 @@ def register_againpilot_routes(app: FastAPI) -> None:
                 node_dicts, edge_dicts, group_dicts,
                 proposal.detected_requirements.provider,
                 proposal.detected_requirements,
-                "LLM_GENERATED" if againpilot.mode.value == "REAL_LLM" else "DETERMINISTIC",
+                "LLM_TWO_STAGE" if againpilot.mode.value == "REAL_LLM" else "DETERMINISTIC",
             )
+            prov = againpilot.last_provenance
             return {
                 "proposal": proposal.to_dict(),
                 "quality": quality.to_dict(),
                 "generationMode": againpilot.mode.value,
                 "generationProvider": againpilot.provider_name,
                 "generationModel": againpilot.model_name,
+                "resultMode": againpilot.last_result_mode or prov.get("result", "UNKNOWN"),
+                "provenance": {
+                    "requestMode": againpilot.mode.value,
+                    "resultMode": againpilot.last_result_mode or prov.get("result", "UNKNOWN"),
+                    "provider": againpilot.provider_name,
+                    "model": againpilot.model_name,
+                    "stage1Ms": prov.get("stage1Ms", 0),
+                    "stage2Ms": prov.get("stage2Ms", 0),
+                },
             }
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
