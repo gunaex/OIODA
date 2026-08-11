@@ -15,6 +15,8 @@ from pydantic import BaseModel
 from .phase7_models import (
     ExecutionPackage, ExecutionTask, ExecutionTarget, ExecutionFidelity,
     ExecutionPackageStatus, ExecutionTaskStatus, ActionType,
+    ExecutionObservation, DriftClassification, VerifierDecision, EvidencePackage,
+    VerificationResult,
 )
 from .mapper import ImplementationExecutionMapper
 from .preflight import PreflightEngine
@@ -22,6 +24,7 @@ from .policy import ExecutionPolicyEngine
 from .registry import LocalExecutionTargetRegistry
 from .persistence import ExecutionPersistence
 from .instrumentation import ExecutionInstrumentation
+from .verifier import ExecutionValidator, ExecutionVerifier, classify_resource_drift, determine_verifier_decision
 
 _persistence = ExecutionPersistence()
 
@@ -354,12 +357,22 @@ def register_execution_routes(app: FastAPI) -> None:
         ExecutionInstrumentation.record_run_entered_executing()
 
         # Execute tasks (synchronous for local Phase 7)
+        # Phase N5: EXECUTOR_SUCCESS / OBSERVED / VALIDATED / VERIFIED are
+        # tracked as four DISTINCT signals, never collapsed into one
+        # boolean. A task only reaches COMPLETED after independent
+        # observation + validation + verification all agree — executor
+        # COMPLETED alone is never sufficient.
         passed = 0
         failed = 0
         blocked = 0
         all_observations: list[dict] = []
         all_validations: list[dict] = []
         all_evidence: list[str] = []
+        all_drift: list = []
+        task_verifications: list = []
+        executor_all_ok = True
+        observation_all_ok = True
+        validation_all_ok = True
 
         import tempfile
         for task in pkg.tasks:
@@ -386,62 +399,181 @@ def register_execution_routes(app: FastAPI) -> None:
                     # Record target mutation for APPLY actions
                     if task.action_type.value.startswith("APPLY") or task.action_type.value.startswith("CREATE"):
                         ExecutionInstrumentation.record_target_mutation()
-                    result = await executor.execute(task, pkg.target, work_dir, pkg.correlation_id)
+                    exec_result = await executor.execute(task, pkg.target, work_dir, pkg.correlation_id)
 
-                if result.get("status") == "COMPLETED":
-                    # Observe
-                    add_event("OBSERVATION_STARTED", task_id=task.execution_task_id)
-                    obs = await executor.observe(pkg.target)
-                    add_event("OBSERVATION_COMPLETED", task_id=task.execution_task_id, data=obs)
-                    all_observations.append(obs)
+                if exec_result.get("status") != "COMPLETED":
+                    executor_all_ok = False
+                    task.status = ExecutionTaskStatus.FAILED
+                    add_event("TASK_FAILED", task_id=task.execution_task_id,
+                              data={"error": exec_result.get("reason", exec_result.get("error", "Unknown"))})
+                    failed += 1
+                    continue
 
-                    # Validate
-                    add_event("VALIDATION_STARTED", task_id=task.execution_task_id)
-                    validations = []
-                    for crit in task.validation_criteria:
-                        validations.append({"criterion": crit, "expected": "pass", "observed": "completed", "status": "PASS"})
-                    add_event("VALIDATION_PASSED", task_id=task.execution_task_id)
-                    all_validations.extend(validations)
+                # ── OBSERVE — independent of executor return values ──
+                task.status = ExecutionTaskStatus.OBSERVING
+                add_event("OBSERVATION_STARTED", task_id=task.execution_task_id)
+                obs = await executor.observe(pkg.target)
+                add_event("OBSERVATION_COMPLETED", task_id=task.execution_task_id, data=obs)
+                all_observations.append(obs)
+                observation_ok = "error" not in obs and "error" not in obs.get("observed", {})
+                if not observation_ok:
+                    observation_all_ok = False
 
-                    # Evidence
-                    for ev in result.get("evidence", []):
-                        ev_id = f"EVD-{uuid.uuid4().hex[:8].upper()}"
-                        _persistence.persist_evidence({
-                            "evidenceId": ev_id, "runId": run_id,
-                            "evidenceType": ev.get("evidenceType", "COMMAND_OUTPUT"),
-                            "source": ev.get("source", "LOCAL_OBSERVED"),
-                            "capturedAt": _now(), "checksum": ev.get("checksum", ""),
-                            "pathRef": ev.get("pathRef", ""), "metadata": ev,
-                        })
-                        all_evidence.append(ev_id)
+                # ── Expected-vs-observed resource identity + drift ──
+                expected_ids: list[str] = []
+                observed_ids: list[str] = []
+                run_owned_prefix = ""
+                property_mismatches: dict[str, str] = {}
+                if pkg.target.target_type == "FAKECLOUD":
+                    from .executor import FakecloudExecutor
+                    expected_ids = [FakecloudExecutor._bucket_name(task, pkg.correlation_id)]
+                    observed_ids = obs.get("observed", {}).get("buckets", [])
+                    run_owned_prefix = f"infra-again-{pkg.correlation_id[:8]}-"
+                    if observation_ok:
+                        try:
+                            import boto3
+                            s3 = boto3.client("s3", endpoint_url="http://localhost:4566",
+                                aws_access_key_id="test", aws_secret_access_key="test", region_name="us-east-1")
+                            for bname in expected_ids:
+                                if bname in observed_ids:
+                                    try:
+                                        tags = s3.get_bucket_tagging(Bucket=bname).get("TagSet", [])
+                                        corr_tag = next((t["Value"] for t in tags if t["Key"] == "correlation"), "")
+                                        if corr_tag != pkg.correlation_id:
+                                            property_mismatches[bname] = (
+                                                f"correlation tag mismatch: expected {pkg.correlation_id}, found {corr_tag or 'none'}"
+                                            )
+                                    except Exception:
+                                        pass  # tagging check is best-effort
+                        except Exception:
+                            pass
+                elif pkg.target.target_type == "KIND":
+                    from .executor import KindExecutor
+                    ns_expected = KindExecutor._namespace_name(pkg.correlation_id)
+                    expected_ids = [ns_expected]
+                    observed_keys = obs.get("observed", {})
+                    observed_ids = [ns_expected] if any(ns_expected in k for k in observed_keys) else []
+                    run_owned_prefix = f"infra-again-{pkg.correlation_id[:8]}"
 
+                drift = classify_resource_drift(
+                    expected_ids, observed_ids, run_owned_prefix,
+                    observation_ok=observation_ok, property_mismatches=property_mismatches,
+                )
+                all_drift.extend(drift)
+                blocking_drift = [d for d in drift if d.classification in (
+                    DriftClassification.MISSING, DriftClassification.CHANGED, DriftClassification.UNKNOWN,
+                )]
+
+                # ── VALIDATE — real expected-vs-observed comparison ──
+                task.status = ExecutionTaskStatus.VALIDATING
+                add_event("VALIDATION_STARTED", task_id=task.execution_task_id)
+                if pkg.target.target_type == "FAKECLOUD":
+                    validations = ExecutionValidator.validate_fakecloud(obs)
+                elif pkg.target.target_type == "KIND":
+                    validations = ExecutionValidator.validate_kind(exec_result, obs)
+                else:
+                    validations = ExecutionValidator.validate(task, ExecutionObservation(
+                        task_id=task.execution_task_id, target_id=pkg.target.target_id,
+                        observed_state=obs.get("observed", {}), observed_at=_now(), source="LOCAL_OBSERVED",
+                    ))
+                validation_ok = observation_ok and not blocking_drift and all(v.status == "PASS" for v in validations)
+                if not validation_ok:
+                    validation_all_ok = False
+                add_event("VALIDATION_PASSED" if validation_ok else "VALIDATION_FAILED",
+                          task_id=task.execution_task_id,
+                          data={"validations": [v.to_dict() for v in validations], "drift": [d.to_dict() for d in drift]})
+                all_validations.extend([v.to_dict() for v in validations])
+
+                # ── Evidence (raw executor artifacts) ──
+                task_evidence_ids: list[str] = []
+                for ev in exec_result.get("evidence", []):
+                    ev_id = f"EVD-{uuid.uuid4().hex[:8].upper()}"
+                    _persistence.persist_evidence({
+                        "evidenceId": ev_id, "runId": run_id,
+                        "evidenceType": ev.get("evidenceType", "COMMAND_OUTPUT"),
+                        "source": ev.get("source", "LOCAL_OBSERVED"),
+                        "capturedAt": _now(), "checksum": ev.get("checksum", ""),
+                        "pathRef": ev.get("pathRef", ""), "metadata": ev,
+                    })
+                    task_evidence_ids.append(ev_id)
+                all_evidence.extend(task_evidence_ids)
+
+                # ── VERIFY — independent; executor status alone can never produce PASS ──
+                task.status = ExecutionTaskStatus.VERIFYING
+                task_verification = ExecutionVerifier.verify(
+                    validations, evidence_refs=task_evidence_ids, executor_status=exec_result.get("status", ""),
+                )
+                task_verifications.append(task_verification)
+                add_event("VERIFICATION_PASSED" if task_verification.result == VerificationResult.PASS else "VERIFICATION_FAILED",
+                          task_id=task.execution_task_id, data=task_verification.to_dict())
+
+                if task_verification.result == VerificationResult.PASS and validation_ok:
                     task.status = ExecutionTaskStatus.COMPLETED
                     add_event("TASK_COMPLETED", task_id=task.execution_task_id)
                     passed += 1
                 else:
                     task.status = ExecutionTaskStatus.FAILED
-                    add_event("TASK_FAILED", task_id=task.execution_task_id,
-                              data={"error": result.get("reason", result.get("error", "Unknown"))})
+                    add_event("TASK_VERIFICATION_FAILED", task_id=task.execution_task_id,
+                              data={"reason": task_verification.reason})
                     failed += 1
 
             except Exception as e:
+                executor_all_ok = False
                 task.status = ExecutionTaskStatus.FAILED
                 add_event("TASK_FAILED", task_id=task.execution_task_id, data={"error": str(e)})
                 failed += 1
 
-        # Verification (independent)
+        # ── Overall EXECUTOR_SUCCESS / OBSERVED / VALIDATED / VERIFIED ──
+        executor_result_str = "COMPLETED" if executor_all_ok and failed == 0 else ("FAILED" if passed == 0 else "PARTIAL")
+        observation_result_str = "OBSERVED" if observation_all_ok else "OBSERVATION_FAILED"
+        validation_result_str = "VALIDATED" if validation_all_ok else "VALIDATION_FAILED"
+
+        verifier_decision, verifier_reason = determine_verifier_decision(
+            executor_all_ok=executor_all_ok and failed == 0,
+            observation_all_ok=observation_all_ok,
+            validation_all_ok=validation_all_ok,
+            task_verifications=task_verifications,
+        )
+
         add_event("VERIFICATION_STARTED")
         verification = {
-            "verifierId": "phase7-local",
-            "result": "PASS" if failed == 0 else "FAIL",
-            "criteria": ["local-execution-completed"],
+            "verifierId": "phase7-independent-verifier",
+            "result": "PASS" if verifier_decision == VerifierDecision.VERIFIED_SUCCESS else "FAIL",
+            "criteria": [c for v in task_verifications for c in v.criteria],
             "evidenceRefs": all_evidence,
-            "reason": f"{passed} passed, {failed} failed, {blocked} blocked",
+            "reason": verifier_reason,
         }
-        add_event("VERIFICATION_PASSED" if failed == 0 else "VERIFICATION_FAILED", data=verification)
 
         pkg.status = ExecutionPackageStatus.COMPLETED if failed == 0 else ExecutionPackageStatus.FAILED
         pkg.updated_at = _now()
+
+        # ── Evidence Package — the final traceable N5 artifact ──
+        if pkg.preflight_checks:
+            _pf_summary = PreflightEngine.summary(pkg.preflight_checks)
+            airlock_result_str = "PREFLIGHT_PASSED" if _pf_summary.get("BLOCK", 0) == 0 and _pf_summary.get("FAIL", 0) == 0 else "PREFLIGHT_FAILED"
+        else:
+            airlock_result_str = "UNKNOWN"
+
+        evidence_package = EvidencePackage(
+            evidence_package_id=f"EVDP-{uuid.uuid4().hex[:8].upper()}",
+            correlation_id=pkg.correlation_id, run_id=run_id, execution_package_id=package_id,
+            plan_id=pkg.plan_id, plan_digest=pkg.plan_checksum,
+            design_id=pkg.design_id, design_revision=pkg.design_revision,
+            provider=pkg.target.provider, fidelity=pkg.fidelity.value,
+            airlock_result=airlock_result_str,
+            executor_result=executor_result_str, observation_result=observation_result_str,
+            validation_result=validation_result_str, verifier_result=verifier_decision.value,
+            verifier_reason=verifier_reason,
+            resource_ids=[t.execution_task_id for t in pkg.tasks],
+            drift_findings=all_drift, evidence_refs=all_evidence,
+            created_at=_now(),
+        )
+        _persistence.persist_evidence({
+            "evidenceId": evidence_package.evidence_package_id, "runId": run_id,
+            "evidenceType": "CONFIG_SNAPSHOT", "source": "LOCAL_OBSERVED",
+            "capturedAt": evidence_package.created_at, "checksum": "", "pathRef": "",
+            "metadata": evidence_package.to_dict(),
+        })
 
         result = {
             "runId": run_id,
@@ -455,12 +587,20 @@ def register_execution_routes(app: FastAPI) -> None:
             "tasksBlocked": blocked,
             "observations": all_observations,
             "validations": all_validations,
+            "driftFindings": [d.to_dict() for d in all_drift],
             "verification": verification,
             "evidenceRefs": all_evidence,
+            "executorResult": executor_result_str,
+            "observationResult": observation_result_str,
+            "validationResult": validation_result_str,
+            "verifierResult": verifier_decision.value,
+            "verifierReason": verifier_reason,
+            "evidencePackageId": evidence_package.evidence_package_id,
+            "evidencePackage": evidence_package.to_dict(),
         }
 
         _runs[run_id] = result
-        _persistence.persist_run(result)
+        _persistence.persist_run({**result, "summary": result})
         _persistence.persist_package(pkg.to_dict())
 
         return {"result": result, "events": events}
@@ -572,6 +712,16 @@ def register_execution_routes(app: FastAPI) -> None:
             "eventId": f"EVT-{uuid.uuid4().hex[:8].upper()}", "packageId": package_id, "taskId": "",
             "eventType": "CLEANUP_COMPLETED" if not failed else "CLEANUP_PARTIAL",
             "timestamp": _now(), "data": cleanup_result,
+        })
+        # Cleanup evidence is a NEW, separate, append-only record — it never
+        # mutates the EvidencePackage already persisted from execute(). A
+        # cleanup failure is visible here without erasing prior verification
+        # evidence.
+        _persistence.persist_evidence({
+            "evidenceId": f"EVDC-{uuid.uuid4().hex[:8].upper()}", "runId": run_id,
+            "evidenceType": "CONFIG_SNAPSHOT", "source": "LOCAL_OBSERVED",
+            "capturedAt": _now(), "checksum": "", "pathRef": "",
+            "metadata": {"kind": "CLEANUP_RESULT", **cleanup_result},
         })
         return cleanup_result
 

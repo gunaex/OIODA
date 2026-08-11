@@ -326,6 +326,109 @@ class ExecutionEvidence:
         }
 
 
+# ===========================================================================
+# Phase N5 — Observe / Validate / Verify / Evidence
+# ===========================================================================
+
+
+class DriftClassification(str, Enum):
+    """Result of comparing an EXPECTED resource identity against what the
+    Observer actually found on the target. Never invented speculatively —
+    only emitted when the underlying observation genuinely supports it."""
+    MISSING = "MISSING"      # expected resource not found in observation
+    EXTRA = "EXTRA"           # unexpected but run-owned resource present
+    CHANGED = "CHANGED"       # resource exists but an execution-relevant property differs
+    UNKNOWN = "UNKNOWN"       # state cannot be confidently determined (observation error/partial)
+    FOREIGN = "FOREIGN"       # resource exists but belongs to another run/owner — never touched
+    ORPHANED = "ORPHANED"     # run-owned but no longer traces to the active approved execution intent
+
+
+class VerifierDecision(str, Enum):
+    """The independent Verifier's final decision. VERIFIED_SUCCESS is the
+    ONLY status meaning 'independently confirmed' — every other value is a
+    distinct, honest way of NOT confirming it. Executor COMPLETED alone can
+    never produce this value."""
+    VERIFIED_SUCCESS = "VERIFIED_SUCCESS"
+    UNVERIFIED = "UNVERIFIED"
+    EVIDENCE_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    OBSERVATION_FAILED = "OBSERVATION_FAILED"
+
+
+@dataclass
+class ResourceDrift:
+    """One drift finding for one resource identity."""
+    resource_id: str
+    classification: DriftClassification
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "resourceId": self.resource_id,
+            "classification": self.classification.value,
+            "detail": self.detail,
+        }
+
+
+@dataclass
+class EvidencePackage:
+    """The final traceable N5 artifact — binds the complete Plan ->
+    AIRLOCK -> Execute -> Observe -> Validate -> Verify chain. Append-only:
+    once persisted, callers must create a NEW EvidencePackage rather than
+    mutate an existing one. Never carries secrets, raw credentials,
+    reasoning_content, or chain-of-thought — only structured, inspectable
+    facts about what was planned, executed, observed, and verified."""
+    evidence_package_id: str
+    correlation_id: str
+    run_id: str
+    execution_package_id: str
+    plan_id: str
+    plan_digest: str
+    design_id: str
+    design_revision: int
+    provider: str
+    fidelity: str
+
+    airlock_result: str = ""
+    executor_result: str = ""
+    observation_result: str = ""
+    validation_result: str = ""
+    verifier_result: str = ""
+    verifier_reason: str = ""
+
+    resource_ids: list[str] = field(default_factory=list)
+    drift_findings: list[ResourceDrift] = field(default_factory=list)
+    evidence_refs: list[str] = field(default_factory=list)
+    cleanup_result: dict[str, Any] = field(default_factory=dict)
+
+    created_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "evidencePackageId": self.evidence_package_id,
+            "correlationId": self.correlation_id,
+            "runId": self.run_id,
+            "executionPackageId": self.execution_package_id,
+            "planId": self.plan_id,
+            "planDigest": self.plan_digest,
+            "designId": self.design_id,
+            "designRevision": self.design_revision,
+            "provider": self.provider,
+            "fidelity": self.fidelity,
+            "airlockResult": self.airlock_result,
+            "executorResult": self.executor_result,
+            "observationResult": self.observation_result,
+            "validationResult": self.validation_result,
+            "verifierResult": self.verifier_result,
+            "verifierReason": self.verifier_reason,
+            "resourceIds": self.resource_ids,
+            "driftFindings": [d.to_dict() for d in self.drift_findings],
+            "evidenceRefs": self.evidence_refs,
+            "cleanupResult": self.cleanup_result,
+            "createdAt": self.created_at,
+        }
+
+
 @dataclass
 class ExecutionResult:
     """Final execution result summary."""

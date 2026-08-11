@@ -205,12 +205,53 @@ function ExecutionPanel({ planId }: { planId: string }) {
 
           {execResult && (
             <div style={{ marginTop: 8 }}>
-              <div>Execution Result: <span className={`badge ${execResult.status === 'COMPLETED' ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: 8 }}>{execResult.status}</span></div>
-              <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4 }}>
                 Run: <span className="mono">{execResult.runId}</span> · {execResult.tasksPassed} passed · {execResult.tasksFailed} failed
               </div>
-              <div style={{ fontSize: 8, color: 'var(--text-muted)', marginTop: 4 }}>
-                (Executor-reported result only — independent verification is a separate later phase, not claimed here.)
+              {/* Phase N5 — four DISTINCT stages, never collapsed into one
+                  boolean. VERIFIED only ever comes from the backend's
+                  independent verifier — this component never derives it. */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4, marginBottom: 6 }}>
+                <div>
+                  <div style={{ fontSize: 8, color: 'var(--text-muted)' }}>Executed</div>
+                  <span className={`badge ${execResult.executorResult === 'COMPLETED' ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: 8 }}>
+                    {execResult.executorResult}
+                  </span>
+                </div>
+                <div>
+                  <div style={{ fontSize: 8, color: 'var(--text-muted)' }}>Observed</div>
+                  <span className={`badge ${execResult.observationResult === 'OBSERVED' ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: 8 }}>
+                    {execResult.observationResult}
+                  </span>
+                </div>
+                <div>
+                  <div style={{ fontSize: 8, color: 'var(--text-muted)' }}>Validated</div>
+                  <span className={`badge ${execResult.validationResult === 'VALIDATED' ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: 8 }}>
+                    {execResult.validationResult}
+                  </span>
+                </div>
+                <div>
+                  <div style={{ fontSize: 8, color: 'var(--text-muted)' }}>Verified</div>
+                  <span className={`badge ${execResult.verifierResult === 'VERIFIED_SUCCESS' ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: 8 }}>
+                    {execResult.verifierResult}
+                  </span>
+                </div>
+              </div>
+              <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4 }}>{execResult.verifierReason}</div>
+
+              {(execResult.driftFindings || []).length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ color: 'var(--warning)', fontWeight: 500, fontSize: 9, marginBottom: 2 }}>Drift Findings</div>
+                  {execResult.driftFindings.map((d: any, i: number) => (
+                    <div key={i} style={{ fontSize: 9, color: 'var(--text-muted)', paddingLeft: 4 }}>
+                      • [{d.classification}] {d.resourceId} — {d.detail}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ fontSize: 8, color: 'var(--text-muted)' }}>
+                Evidence: <span className="mono">{execResult.evidencePackageId}</span>
               </div>
             </div>
           )}
