@@ -18,6 +18,8 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from .provider_resolver import enrich_nodes_with_provider_intelligence
+
 
 # ============================================================================
 # Enums
@@ -187,6 +189,17 @@ class GeneratedNode:
     properties: dict = field(default_factory=dict)
     service_verification: str = "KNOWN_UNVERIFIED"
 
+    # Phase N1 — Provider Intelligence enrichment. Populated exclusively by
+    # enrich_nodes_with_provider_intelligence() AFTER a proposal/delta already
+    # exists (generation or refine), from the authoritative catalog — never
+    # set by the LLM, never set at construction time by _make_node/
+    # _build_proposal_from_compact/_apply_refine_delta themselves. Defaults
+    # reflect "not yet resolved", not a verdict.
+    provider_lifecycle_state: str = "UNRESOLVED"
+    execution_support_state: str = "UNRESOLVED"
+    provider_intelligence_ref: str = ""
+    provider_intelligence_version: str = ""
+
     def to_dict(self) -> dict:
         return {
             "nodeId": self.node_id,
@@ -202,6 +215,10 @@ class GeneratedNode:
             "verificationState": self.verification_state,
             "properties": self.properties,
             "serviceVerification": self.service_verification,
+            "providerLifecycleState": self.provider_lifecycle_state,
+            "executionSupportState": self.execution_support_state,
+            "providerIntelligenceRef": self.provider_intelligence_ref,
+            "providerIntelligenceVersion": self.provider_intelligence_version,
         }
 
 
@@ -1231,6 +1248,12 @@ def generate_architecture(request: AgainPilotRequest) -> AgainPilotProposal:
     ]
 
     # ═══════════════════════════════════════════════════
+    # PROVIDER INTELLIGENCE — resolve execution support (Phase N1)
+    # ═══════════════════════════════════════════════════
+
+    enrich_nodes_with_provider_intelligence(nodes)
+
+    # ═══════════════════════════════════════════════════
     # VIEWS — Distinct semantic views
     # ═══════════════════════════════════════════════════
 
@@ -1380,20 +1403,22 @@ def refine_architecture(
     new_edges = [e for e in current_edges if e.get("edgeId") not in removed_edges]
     req = _merge_refine_requirements(base_req, instruction)
     views = _derive_views(new_nodes, new_edges)
+    refined_gen_nodes = [GeneratedNode(
+        node_id=n.get("nodeId", ""), name=n.get("name", ""),
+        category=n.get("category", "APPLICATION"), provider=n.get("provider", provider),
+        native_service=n.get("nativeService", ""), platform=n.get("platform", "NATIVE_VM"),
+        security_zone=n.get("securityZone", "private"),
+        data_classification=n.get("dataClassification", "internal"),
+        owner=n.get("owner", ""), source=n.get("source", "AI_REFINED"),
+        verification_state=n.get("verificationState", "UNVERIFIED"),
+        service_verification=n.get("serviceVerification", "KNOWN_UNVERIFIED"),
+    ) for n in new_nodes]
+    enrich_nodes_with_provider_intelligence(refined_gen_nodes)
     proposal = AgainPilotProposal(
         title="Refined Architecture",
         summary=f"Refined: {instruction[:100]}",
         detected_requirements=req,
-        nodes=[GeneratedNode(
-            node_id=n.get("nodeId", ""), name=n.get("name", ""),
-            category=n.get("category", "APPLICATION"), provider=n.get("provider", provider),
-            native_service=n.get("nativeService", ""), platform=n.get("platform", "NATIVE_VM"),
-            security_zone=n.get("securityZone", "private"),
-            data_classification=n.get("dataClassification", "internal"),
-            owner=n.get("owner", ""), source=n.get("source", "AI_REFINED"),
-            verification_state=n.get("verificationState", "UNVERIFIED"),
-            service_verification=n.get("serviceVerification", "KNOWN_UNVERIFIED"),
-        ) for n in new_nodes],
+        nodes=refined_gen_nodes,
         edges=[GeneratedEdge(
             edge_id=e.get("edgeId", ""), source_node_id=e.get("sourceNodeId", ""),
             target_node_id=e.get("targetNodeId", ""), edge_type=e.get("type", "request"),
@@ -1759,6 +1784,7 @@ def _build_proposal_from_compact(
                     ce.get("sec", "none"),
                     ce.get("label", ce.get("proto", "")) + " (HA)"))
 
+        enrich_nodes_with_provider_intelligence(nodes)
         views = _derive_views([n.to_dict() for n in nodes], [e.to_dict() for e in edges])
 
         return AgainPilotProposal(
@@ -2275,6 +2301,8 @@ def _apply_refine_delta(
         properties=n.get("properties", {}),
         service_verification=n.get("serviceVerification", "KNOWN_UNVERIFIED"),
     ) for n in new_nodes]
+
+    enrich_nodes_with_provider_intelligence(gen_nodes)
 
     eid_counter = 0
     gen_edges = []

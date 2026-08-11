@@ -94,6 +94,69 @@ function WhyRejectedView({ provenance }: { provenance: any }) {
   );
 }
 
+// Provider Intelligence — Phase N1.6. Distinguishes three separate axes so a
+// node the LLM proposed is never mistaken for a node Provider Intelligence
+// has actually verified: AI Recommendation (the node exists — always true
+// once proposed), Provider Verification (providerLifecycleState, from the
+// authoritative catalog, never set by the LLM), and Execution Support
+// (executionSupportState — whether anything can actually run/observe/verify
+// it). Read-only summary; does not gate Apply.
+const LIFECYCLE_TONE: Record<string, string> = {
+  UNKNOWN_SERVICE: 'badge-danger', DISCOVERED: 'badge-warning',
+  METADATA_COLLECTED: 'badge-warning', CAPABILITY_MAPPED: 'badge-warning',
+  SCHEMA_VALIDATED: 'badge-warning', EXECUTION_SUPPORT_CHECKED: 'badge-warning',
+  VERIFIED: 'badge-success', SUPPORTED: 'badge-success',
+  NOT_APPLICABLE: 'badge-neutral', UNRESOLVED: 'badge-neutral',
+};
+const EXEC_TONE: Record<string, string> = {
+  UNSUPPORTED: 'badge-neutral', PLAN_ONLY: 'badge-warning',
+  SIMULATED: 'badge-success', LOCAL_RUNTIME: 'badge-success',
+  SANDBOX: 'badge-success', CONTROLLED_REAL: 'badge-success', PRODUCTION: 'badge-success',
+  NOT_APPLICABLE: 'badge-neutral', UNRESOLVED: 'badge-neutral',
+};
+
+function ServiceIntelligenceView({ nodes }: { nodes: any[] }) {
+  const rows = (nodes || []).filter(
+    (n) => n.providerLifecycleState && n.providerLifecycleState !== 'NOT_APPLICABLE'
+  );
+  if (rows.length === 0) return null;
+  const unknownCount = rows.filter((n) => n.providerLifecycleState === 'UNKNOWN_SERVICE').length;
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div className="panel-title" style={{ fontSize: 10, marginBottom: 4 }}>
+        Provider Intelligence
+        {unknownCount > 0 && <span style={{ color: 'var(--danger)', fontWeight: 400 }}> — {unknownCount} unknown service{unknownCount > 1 ? 's' : ''}</span>}
+      </div>
+      <table style={{ width: '100%', fontSize: 9, borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ color: 'var(--text-muted)' }}>
+            <th style={{ textAlign: 'left', padding: 2 }}>Service (AI Recommendation)</th>
+            <th style={{ textAlign: 'left', padding: 2 }}>Provider Verification</th>
+            <th style={{ textAlign: 'left', padding: 2 }}>Execution Support</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((n: any, i: number) => (
+            <tr key={n.nodeId || i} style={{ borderTop: '1px solid var(--border)' }}>
+              <td style={{ padding: '3px 2px', color: 'var(--text-primary)' }}>{n.nativeService || n.name}</td>
+              <td style={{ padding: '3px 2px' }}>
+                <span className={`badge ${LIFECYCLE_TONE[n.providerLifecycleState] || 'badge-neutral'}`} style={{ fontSize: 8 }}>
+                  {n.providerLifecycleState}
+                </span>
+              </td>
+              <td style={{ padding: '3px 2px' }}>
+                <span className={`badge ${EXEC_TONE[n.executionSupportState] || 'badge-neutral'}`} style={{ fontSize: 8 }}>
+                  {n.executionSupportState}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function AgainPilotPanel({
   provider, platform, hasDesign,
   designId, designName, designStatus,
@@ -389,6 +452,8 @@ export default function AgainPilotPanel({
               </span>
             </div>
 
+            <ServiceIntelligenceView nodes={refineProposal.nodes || []} />
+
             {/* Change Preview */}
             <div style={{ marginBottom: 8 }}>
               <div className="panel-title" style={{ fontSize: 10, marginBottom: 6 }}>Change Preview</div>
@@ -555,6 +620,7 @@ export default function AgainPilotPanel({
               <div>Nodes: {proposal.nodes?.length || 0}</div>
               <div>Edges: {proposal.edges?.length || 0}</div>
             </div>
+            <ServiceIntelligenceView nodes={proposal.nodes || []} />
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-primary" onClick={applyToCanvas} style={{ flex: 1 }}>
                 {hasDesign ? 'Apply to Canvas' : 'Create Design & Apply'}

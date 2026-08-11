@@ -69,6 +69,10 @@ class CapabilityCategory(str, Enum):
     IAM = "IAM"
     CACHE = "CACHE"
     SERVERLESS = "SERVERLESS"
+    SECURITY = "SECURITY"
+    CDN = "CDN"
+    KEY_MANAGEMENT = "KEY_MANAGEMENT"
+    IDENTITY = "IDENTITY"
 
 
 class FreshnessStatus(str, Enum):
@@ -124,6 +128,14 @@ class ProviderService:
     category: str = ""
     lifecycle: CatalogLifecycle = CatalogLifecycle.DISCOVERED
     execution_support: list[str] = field(default_factory=list)
+    # Platforms this service is compatible with (NATIVE_VM/KUBERNETES/
+    # OPENSHIFT_OCP/BARE_METAL). Empty = not platform-specific (e.g. object
+    # storage, managed databases) rather than "no platforms supported" —
+    # platform compatibility is only meaningful for compute/container/
+    # orchestration-category services. Provider and platform are separate
+    # concepts (Phase N invariant); this field lets the resolver check
+    # platform fit without conflating it with provider identity.
+    platforms: list[str] = field(default_factory=list)
     regions: list[str] = field(default_factory=list)
     resource_types: list[str] = field(default_factory=list)
     capabilities: list[str] = field(default_factory=list)
@@ -153,6 +165,7 @@ class ProviderService:
             "displayName": self.display_name, "category": self.category,
             "lifecycle": self.lifecycle.value,
             "executionSupport": self.execution_support,
+            "platforms": self.platforms,
             "regions": self.regions, "resourceTypes": self.resource_types,
             "capabilities": self.capabilities,
             "sourceType": self.source_type.value, "sourceReference": self.source_reference,
@@ -356,13 +369,27 @@ class ProviderCatalog:
                 capabilities=["COMPUTE_VM"]),
             ProviderService(provider="AWS", service_id="eks", display_name="Amazon EKS",
                 category="KUBERNETES", lifecycle=CatalogLifecycle.DISCOVERED,
-                execution_support=["NOT_IMPLEMENTED"], capabilities=["KUBERNETES"]),
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["KUBERNETES"],
+                platforms=["KUBERNETES"]),
             ProviderService(provider="AWS", service_id="ecs", display_name="Amazon ECS",
                 category="CONTAINER_RUNTIME", lifecycle=CatalogLifecycle.DISCOVERED,
-                execution_support=["NOT_IMPLEMENTED"], capabilities=["CONTAINER_RUNTIME"]),
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["CONTAINER_RUNTIME"],
+                platforms=["KUBERNETES"]),
             ProviderService(provider="AWS", service_id="elb", display_name="Elastic Load Balancing",
                 category="LOAD_BALANCING", lifecycle=CatalogLifecycle.DISCOVERED,
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["LOAD_BALANCING"]),
+            ProviderService(provider="AWS", service_id="cloudfront", display_name="CloudFront",
+                category="CDN", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["CDN"]),
+            ProviderService(provider="AWS", service_id="waf", display_name="AWS WAF",
+                category="SECURITY", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["SECURITY"]),
+            ProviderService(provider="AWS", service_id="kms", display_name="AWS KMS",
+                category="KEY_MANAGEMENT", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["KEY_MANAGEMENT"]),
+            ProviderService(provider="AWS", service_id="cognito", display_name="Amazon Cognito",
+                category="IDENTITY", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["IDENTITY"]),
             ProviderService(provider="AWS", service_id="route53", display_name="Route 53",
                 category="DNS", lifecycle=CatalogLifecycle.DISCOVERED,
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["DNS"]),
@@ -403,10 +430,12 @@ class ProviderCatalog:
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["RELATIONAL_DATABASE"]),
             ProviderService(provider="GCP", service_id="gke", display_name="GKE",
                 category="KUBERNETES", lifecycle=CatalogLifecycle.DISCOVERED,
-                execution_support=["NOT_IMPLEMENTED"], capabilities=["KUBERNETES"]),
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["KUBERNETES"],
+                platforms=["KUBERNETES"]),
             ProviderService(provider="GCP", service_id="cloudrun", display_name="Cloud Run",
                 category="CONTAINER_RUNTIME", lifecycle=CatalogLifecycle.DISCOVERED,
-                execution_support=["NOT_IMPLEMENTED"], capabilities=["CONTAINER_RUNTIME"]),
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["CONTAINER_RUNTIME"],
+                platforms=["KUBERNETES"]),
             ProviderService(provider="GCP", service_id="vpc", display_name="VPC",
                 category="NETWORKING", lifecycle=CatalogLifecycle.DISCOVERED,
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["NETWORKING"]),
@@ -426,12 +455,74 @@ class ProviderCatalog:
                 category="DNS", lifecycle=CatalogLifecycle.DISCOVERED,
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["DNS"]),
         ]
+        # ON_PREM services — previously absent entirely from this catalog,
+        # meaning every on-prem AGAINPILOT node resolved as UNKNOWN_SERVICE
+        # regardless of how well-known the software actually is (nginx,
+        # postgresql, ...). kubernetes/docker are the two entries genuinely
+        # backed by real execution today (KindExecutor / KubernetesPlatformAdapter
+        # in platforms/kubernetes/runtime.py, kind-based, LOCAL_RUNTIME only —
+        # not SANDBOX/CONTROLLED_REAL). Everything else stays DISCOVERED/
+        # NOT_IMPLEMENTED — no fake green.
+        onprem_services = [
+            ProviderService(provider="ON_PREM", service_id="kubernetes", display_name="Kubernetes",
+                category="KUBERNETES", lifecycle=CatalogLifecycle.CAPABILITY_MAPPED,
+                execution_support=["LOCAL_RUNTIME"], capabilities=["KUBERNETES"],
+                platforms=["KUBERNETES"], source_type=SourceType.MANUAL_VERIFIED,
+                notes="LOCAL_RUNTIME only — verified via kind (KindExecutor / KubernetesPlatformAdapter)"),
+            ProviderService(provider="ON_PREM", service_id="docker", display_name="Docker",
+                category="CONTAINER_RUNTIME", lifecycle=CatalogLifecycle.CAPABILITY_MAPPED,
+                execution_support=["LOCAL_RUNTIME"], capabilities=["CONTAINER_RUNTIME"],
+                platforms=["KUBERNETES"], source_type=SourceType.MANUAL_VERIFIED,
+                notes="LOCAL_RUNTIME only — container runtime underlying kind"),
+            ProviderService(provider="ON_PREM", service_id="bind", display_name="BIND DNS",
+                category="DNS", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["DNS"]),
+            ProviderService(provider="ON_PREM", service_id="nginx", display_name="NGINX",
+                category="LOAD_BALANCING", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["LOAD_BALANCING"]),
+            ProviderService(provider="ON_PREM", service_id="haproxy", display_name="HAProxy",
+                category="LOAD_BALANCING", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["LOAD_BALANCING"]),
+            ProviderService(provider="ON_PREM", service_id="traefik", display_name="Traefik",
+                category="NETWORKING", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["NETWORKING"]),
+            ProviderService(provider="ON_PREM", service_id="vault", display_name="HashiCorp Vault",
+                category="SECRETS", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["SECRETS"]),
+            ProviderService(provider="ON_PREM", service_id="postgresql", display_name="PostgreSQL",
+                category="RELATIONAL_DATABASE", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["RELATIONAL_DATABASE"]),
+            ProviderService(provider="ON_PREM", service_id="mysql", display_name="MySQL",
+                category="RELATIONAL_DATABASE", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["RELATIONAL_DATABASE"]),
+            ProviderService(provider="ON_PREM", service_id="redis", display_name="Redis",
+                category="CACHE", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["CACHE"]),
+            ProviderService(provider="ON_PREM", service_id="minio", display_name="MinIO",
+                category="OBJECT_STORAGE", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["OBJECT_STORAGE"]),
+            ProviderService(provider="ON_PREM", service_id="rabbitmq", display_name="RabbitMQ",
+                category="MESSAGING", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["MESSAGING"]),
+            ProviderService(provider="ON_PREM", service_id="prometheus", display_name="Prometheus",
+                category="OBSERVABILITY", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["OBSERVABILITY"]),
+            ProviderService(provider="ON_PREM", service_id="grafana", display_name="Grafana",
+                category="OBSERVABILITY", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["OBSERVABILITY"]),
+            ProviderService(provider="ON_PREM", service_id="keycloak", display_name="Keycloak",
+                category="IDENTITY", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["IDENTITY"]),
+            ProviderService(provider="ON_PREM", service_id="openldap", display_name="OpenLDAP",
+                category="IDENTITY", lifecycle=CatalogLifecycle.DISCOVERED,
+                execution_support=["NOT_IMPLEMENTED"], capabilities=["IDENTITY"]),
+        ]
 
-        for s in aws_services + gcp_services:
+        for s in aws_services + gcp_services + onprem_services:
             self._services[f"{s.provider}:{s.service_id}"] = s
 
         # Create initial snapshots
-        for provider in ["AWS", "GCP"]:
+        for provider in ["AWS", "GCP", "ON_PREM"]:
             svcs = [s for s in self._services.values() if s.provider == provider]
             snap = CatalogSnapshot(provider=provider, freshness=FreshnessStatus.CURRENT)
             snap.services = svcs

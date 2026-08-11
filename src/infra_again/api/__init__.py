@@ -432,6 +432,13 @@ from ..intelligence.againpilot_api import register_againpilot_routes
 register_againpilot_routes(app)
 
 # ===========================================================================
+# Provider Intelligence Resolution API (Phase N1.5)
+# ===========================================================================
+
+from ..intelligence.provider_resolver_api import register_provider_resolver_routes
+register_provider_resolver_routes(app)
+
+# ===========================================================================
 # Implementation Planning API (Phase 6)
 # ===========================================================================
 
