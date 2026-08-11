@@ -1294,22 +1294,35 @@ RULES:
 
 ARCHITECTURE_PROPOSAL_PROMPT = """From ArchitectureIntent + filtered service catalog, produce ArchitectureProposal JSON.
 
+MANDATORY ROLES — you MUST include at minimum these semantic roles:
+- dns (route53/cloud_dns): DNS resolution
+- cdn (cloudfront/cloud_cdn): CDN/caching at edge
+- waf: web application firewall
+- lb (alb/cloud_lb): load balancer
+- app (ecs/cloud_run/kubernetes): application runtime (with ha=true for multi-AZ)
+- db (rds/cloud_sql/postgresql): database (with ha=true for multi-AZ, zone=private-data)
+- storage (s3/cloud_storage/minio): object storage
+- cache (elasticache/memorystore/redis): cache layer
+- kms: key management for encryption
+- secrets (secrets_manager/secret_manager/vault): secrets storage
+- observability (cloudwatch/cloud_monitoring/prometheus): monitoring
+- identity (cognito/keycloak): required if PDPA/compliance requested
+
 RULES:
 - Use ONLY services from the provided catalog
-- Private DB: no public route to database
-- HA: represent multi-AZ (2 app nodes, 2 db nodes)
-- Security services (kms, secrets_manager) are SUPPORTING — NOT in request path
+- Private DB: no public route to database (zone=private-data)
+- HA: set ha=true on app and db nodes (backend creates AZ pairs)
+- Security services (kms, secrets) are SUPPORTING — NOT in request path
 - Observability is TELEMETRY — NOT in request path
 - Use semantic edge types: request, data, auth, secret_access, key_usage, telemetry
-- Be CONCISE — target < 3KB output
 - Return ONLY valid JSON, no markdown
 
-COMPACT NODE: {"id":"app1","role":"APPLICATION","svc":"ecs","zone":"private-app","ha":true}
+COMPACT NODE: {"id":"app","role":"APPLICATION","svc":"ecs","zone":"private-app","ha":true}
 COMPACT EDGE: {"from":"user","to":"dns","type":"request","proto":"DNS","label":"DNS"}
 GROUP: {"id":"vpc","name":"VPC","type":"NETWORK_BOUNDARY","zone":"private"}
 
-Backend expands these into full canonical model. Do NOT generate positions, colors, layout coordinates, or verbose descriptions.
-Return JSON: {"title":"...","summary":"...","nodes":[...],"edges":[...],"groups":[...],"assumptions":[...],"risks":[...],"questions":[...],"rationale":"..."}"""
+Backend expands these into full canonical model. Do NOT generate positions, colors, layout coordinates.
+Include ALL mandatory roles. Return JSON with nodes, edges, groups, assumptions, risks, questions, rationale."""
 
 
 # ── Service catalog filter ──
