@@ -1212,16 +1212,232 @@ def analyze_security(nodes: list[dict], edges: list[dict], req: DetectedRequirem
 # ============================================================================
 
 
+# ═══════════════════════════════════════════════════════════════════
+# REAL AI PROVIDER — Ollama Integration
+# ═══════════════════════════════════════════════════════════════════
+
+import os as _os
+import urllib.request as _ur
+
+OLLAMA_BASE = _os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = _os.environ.get("AGAINPILOT_OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_TIMEOUT = int(_os.environ.get("AGAINPILOT_OLLAMA_TIMEOUT", "120"))
+
+
+def _ollama_available() -> bool:
+    """Check if Ollama is running and the configured model is available."""
+    try:
+        req = _ur.Request(f"{OLLAMA_BASE}/api/tags", method="GET")
+        with _ur.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+            models = [m["name"] for m in data.get("models", [])]
+            target = OLLAMA_MODEL.split(":")[0]  # qwen2.5:7b → qwen2.5
+            return any(target in m for m in models)
+    except Exception:
+        return False
+
+
+def _ollama_chat(system_prompt: str, user_message: str, max_tokens: int = 4096) -> str:
+    """Call Ollama chat API and return response text."""
+    payload = json.dumps({
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.3,
+            "num_predict": max_tokens,
+        },
+    }).encode("utf-8")
+    req = _ur.Request(f"{OLLAMA_BASE}/api/chat", data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    with _ur.urlopen(req, timeout=OLLAMA_TIMEOUT) as r:
+        resp = json.loads(r.read())
+        return resp.get("message", {}).get("content", "")
+
+
+ARCHITECTURE_SYSTEM_PROMPT = """You are an expert cloud infrastructure architect. Generate a valid ArchitectureProposal in JSON format.
+
+RULES:
+- Use ONLY provider-native services from the provided catalog.
+- Provider consistency: all primary nodes must use the specified provider.
+- Private database: if requested, database must have NO public path.
+- HA topology: represent multi-AZ deployment with explicit nodes.
+- Security services (KMS, Secrets Manager) are supporting services — NOT in the request path.
+- Observability is cross-cutting telemetry — NOT in the request path.
+- Separate Architecture, Data Flow, Operation Flow, and Security Flow views.
+- No duplicate service recommendations.
+- Return concise user-facing rationale only. No hidden chain-of-thought.
+- Output VALID JSON matching the ArchitectureProposal schema exactly.
+
+ARCHITECTURE_PROPOSAL_SCHEMA:
+{
+  "title": "string",
+  "summary": "string",
+  "detectedRequirements": {
+    "provider": "AWS|GCP|ON_PREM",
+    "platform": "NATIVE_VM|KUBERNETES|OPENSHIFT_OCP|BARE_METAL",
+    "expectedLoad": "string",
+    "availability": ["HIGH_AVAILABILITY", ...],
+    "compliance": ["PDPA", ...],
+    "security": ["PRIVATE_DATABASE", ...],
+    "dataSensitivity": ["PERSONAL_DATA", ...]
+  },
+  "nodes": [
+    {
+      "nodeId": "NODE-XXX-NNN",
+      "name": "Provider-Native Display Name",
+      "category": "USER|DNS|NETWORK|GATEWAY|APPLICATION|DATABASE|STORAGE|CACHE|SECURITY|IDENTITY|OBSERVABILITY|EXTERNAL",
+      "provider": "AWS",
+      "nativeService": "route53|cloudfront|waf|alb|ecs|rds|s3|kms|secrets_manager|cognito|cloudwatch|...",
+      "platform": "NATIVE_VM|KUBERNETES|WEB",
+      "securityZone": "public|dmz|private",
+      "dataClassification": "none|internal|pii",
+      "owner": "platform-team|data-team|security-team",
+      "source": "AI_GENERATED",
+      "verificationState": "UNVERIFIED"
+    }
+  ],
+  "edges": [
+    {
+      "edgeId": "EDGE-NNN",
+      "sourceNodeId": "NODE-XXX-NNN",
+      "targetNodeId": "NODE-XXX-NNN",
+      "type": "request|data|auth|secret_access|key_usage|telemetry|control",
+      "protocol": "HTTPS|HTTP|TCP|DNS",
+      "direction": "unidirectional|bidirectional",
+      "dataType": "SQL|blob|cache|",
+      "securityClassification": "none|internal|pii",
+      "label": "concise label"
+    }
+  ],
+  "groups": [
+    {
+      "groupId": "GRP-XXX",
+      "name": "Internet|AWS Cloud|VPC|Public Subnets|Private Application Subnets|Private Data Subnets|Security Services|Observability",
+      "type": "CLOUD_BOUNDARY|NETWORK_BOUNDARY|SUBNET_GROUP|SECURITY_ZONE|EXTERNAL_SYSTEM",
+      "parentGroupId": "",
+      "provider": "AWS",
+      "securityZone": "public|private|dmz"
+    }
+  ],
+  "views": {
+    "architecture": {"nodes": ["all"], "edges": ["all"]},
+    "dataFlow": {"nodes": ["DATABASE+STORAGE+CACHE"], "edges": ["data"]},
+    "operationFlow": {"nodes": ["USER+DNS+NETWORK+APPLICATION"], "edges": ["request"]},
+    "securityFlow": {"nodes": ["SECURITY+IDENTITY"], "edges": ["auth+secret_access+key_usage"]}
+  },
+  "nativeServiceRecommendations": [],
+  "assumptions": ["string"],
+  "risks": ["string"],
+  "clarifyingQuestions": ["string"],
+  "rationale": "string"
+}
+
+IMPORTANT: Return ONLY the JSON object, no markdown, no explanation, no code fences."""
+
+
+def _parse_llm_json(response_text: str) -> dict | None:
+    """Parse JSON from LLM response, handling markdown code fences."""
+    text = response_text.strip()
+    # Remove markdown code fences if present
+    if text.startswith("```"):
+        lines = text.split("\n")
+        # Remove first line (```json or ```) and last line (```)
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines)
+    # Find first { and last }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        text = text[start:end + 1]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _proposal_from_llm_dict(data: dict, req: DetectedRequirement, provider: str, model: str) -> AgainPilotProposal | None:
+    """Convert LLM dict to validated AgainPilotProposal."""
+    try:
+        nodes = []
+        for n in data.get("nodes", []):
+            nodes.append(GeneratedNode(
+                node_id=n.get("nodeId", f"NODE-{len(nodes)+1:03d}"),
+                name=n.get("name", "Unknown"),
+                category=n.get("category", "APPLICATION"),
+                provider=n.get("provider", provider),
+                native_service=n.get("nativeService", ""),
+                platform=n.get("platform", "NATIVE_VM"),
+                security_zone=n.get("securityZone", "private"),
+                data_classification=n.get("dataClassification", "internal"),
+                owner=n.get("owner", ""),
+                source=n.get("source", "AI_GENERATED"),
+                verification_state=n.get("verificationState", "UNVERIFIED"),
+                service_verification=validate_service(n.get("provider", provider), n.get("nativeService", "")).value,
+            ))
+        edges = []
+        for e in data.get("edges", []):
+            edges.append(GeneratedEdge(
+                edge_id=e.get("edgeId", f"EDGE-{len(edges)+1:03d}"),
+                source_node_id=e.get("sourceNodeId", ""),
+                target_node_id=e.get("targetNodeId", ""),
+                edge_type=e.get("type", "request"),
+                protocol=e.get("protocol", "TCP"),
+                direction=e.get("direction", "unidirectional"),
+                data_type=e.get("dataType", ""),
+                security_classification=e.get("securityClassification", "none"),
+                label=e.get("label", ""),
+            ))
+        groups = []
+        for g in data.get("groups", []):
+            groups.append(GeneratedGroup(
+                group_id=g.get("groupId", f"GRP-{len(groups)+1:03d}"),
+                name=g.get("name", ""),
+                group_type=g.get("type", "SUBNET_GROUP"),
+                parent_group_id=g.get("parentGroupId", ""),
+                provider=g.get("provider", provider),
+                security_zone=g.get("securityZone", "private"),
+            ))
+
+        return AgainPilotProposal(
+            title=data.get("title", "Architecture"),
+            summary=data.get("summary", ""),
+            detected_requirements=req,
+            nodes=nodes, edges=edges, groups=groups,
+            views=data.get("views", {}),
+            native_service_recommendations=data.get("nativeServiceRecommendations", []),
+            assumptions=data.get("assumptions", []),
+            risks=data.get("risks", []),
+            clarifying_questions=data.get("clarifyingQuestions", []),
+            rationale=data.get("rationale", ""),
+            generation_provider="LOCAL_LLM",
+            generation_model=model,
+            brief_hash=hashlib.sha256("llm".encode()).hexdigest()[:12],
+        )
+    except Exception:
+        return None
+
+
 class AgainPilotProviderRouter:
     """Routes architecture generation to the configured AI provider.
 
-    Current implementation: DETERMINISTIC_FALLBACK only.
-    Future: LOCAL_LLM (Ollama), OPENAI, CLAUDE, GEMINI, CLOUD_AI.
+    Auto-detects Ollama. Falls back to deterministic if unavailable.
     """
 
     def __init__(self):
-        self._mode = AIGenerationMode.DETERMINISTIC_FALLBACK
-        self._provider = AIProvider.NONE
+        self._ollama = _ollama_available()
+        if self._ollama:
+            self._mode = AIGenerationMode.REAL_LLM
+            self._provider = AIProvider.LOCAL_LLM
+        else:
+            self._mode = AIGenerationMode.DETERMINISTIC_FALLBACK
+            self._provider = AIProvider.NONE
 
     @property
     def mode(self) -> AIGenerationMode:
@@ -1231,38 +1447,87 @@ class AgainPilotProviderRouter:
     def provider_name(self) -> str:
         return self._provider.value
 
+    @property
+    def model_name(self) -> str:
+        return OLLAMA_MODEL if self._ollama else "againpilot-v2"
+
     def generate(self, request: AgainPilotRequest) -> AgainPilotProposal:
-        if self._mode == AIGenerationMode.DETERMINISTIC_FALLBACK:
+        req = extract_requirements(request.brief)
+        provider = request.provider_preference.value if request.provider_preference != ProviderPreference.AUTO else req.provider
+
+        # Try REAL LLM first
+        if self._ollama:
+            try:
+                # Build provider catalog context
+                catalog = get_provider_catalog(provider)
+                catalog_text = "\n".join([f"- {k}: {v['description']} (category: {v['category']})" for k, v in catalog.items()])
+
+                user_msg = f"""Provider catalog for {provider}:
+{catalog_text}
+
+Architecture brief:
+{request.brief}
+
+Provider preference: {request.provider_preference.value}
+Platform preference: {request.platform_preference.value}
+Generation depth: {request.generation_depth.value}
+
+Generate the ArchitectureProposal JSON."""
+                response = _ollama_chat(ARCHITECTURE_SYSTEM_PROMPT, user_msg)
+                if response:
+                    data = _parse_llm_json(response)
+                    if data:
+                        proposal = _proposal_from_llm_dict(data, req, provider, OLLAMA_MODEL)
+                        if proposal:
+                            # Run quality validator
+                            node_dicts = [n.to_dict() for n in proposal.nodes]
+                            edge_dicts = [e.to_dict() for e in proposal.edges]
+                            group_dicts = [g.to_dict() for g in proposal.groups]
+                            quality = validate_architecture_quality(node_dicts, edge_dicts, group_dicts, provider, req, "LLM_GENERATED")
+                            if quality.overall == QualityResult.FAIL:
+                                # One correction pass
+                                fail_msg = "\n".join([f"- {c['gate']}: {c['detail']}" for c in quality.checks if c['result'] == 'FAIL'])
+                                correction = _ollama_chat(
+                                    ARCHITECTURE_SYSTEM_PROMPT + f"\n\nPrevious quality failures:\n{fail_msg}\nReturn CORRECTED JSON only.",
+                                    f"Original brief: {request.brief}\n\nPrevious proposal had quality issues. Fix them and return corrected JSON.",
+                                    4096,
+                                )
+                                if correction:
+                                    data2 = _parse_llm_json(correction)
+                                    if data2:
+                                        proposal2 = _proposal_from_llm_dict(data2, req, provider, OLLAMA_MODEL)
+                                        if proposal2:
+                                            return proposal2
+                            return proposal
+            except Exception as e:
+                pass  # Fall through to deterministic
+
+        # DETERMINISTIC FALLBACK
+        proposal = generate_architecture(request)
+        node_dicts = [n.to_dict() for n in proposal.nodes]
+        edge_dicts = [e.to_dict() for e in proposal.edges]
+        group_dicts = [g.to_dict() for g in proposal.groups]
+        quality = validate_architecture_quality(node_dicts, edge_dicts, group_dicts, proposal.detected_requirements.provider, proposal.detected_requirements, "DETERMINISTIC")
+        if quality.overall == QualityResult.FAIL:
             proposal = generate_architecture(request)
-            # Attach quality report
-            node_dicts = [n.to_dict() for n in proposal.nodes]
-            edge_dicts = [e.to_dict() for e in proposal.edges]
-            group_dicts = [g.to_dict() for g in proposal.groups]
-            quality = validate_architecture_quality(
-                node_dicts, edge_dicts, group_dicts,
-                proposal.detected_requirements.provider,
-                proposal.detected_requirements,
-                "INTERNET_FACING_MULTI_AZ_WEB_APPLICATION",
-            )
-            # Reject if quality fails
-            if quality.overall == QualityResult.FAIL:
-                # One correction pass
-                proposal = generate_architecture(request)
-                quality = validate_architecture_quality(
-                    node_dicts, edge_dicts, group_dicts,
-                    proposal.detected_requirements.provider,
-                    proposal.detected_requirements,
-                    "INTERNET_FACING_MULTI_AZ_WEB_APPLICATION",
-                )
-            return proposal
-        if self._mode == AIGenerationMode.UNAVAILABLE:
-            raise RuntimeError("AI generation unavailable — no provider configured")
-        return generate_architecture(request)
+        return proposal
 
     def refine(self, nodes: list[dict], edges: list[dict], instruction: str, provider: str = "AWS") -> tuple[AgainPilotProposal, RefineDelta]:
         return refine_architecture(nodes, edges, instruction, provider)
 
     def explain(self, nodes: list[dict], edges: list[dict], provider: str) -> str:
+        if self._ollama:
+            try:
+                node_text = "\n".join([f"- {n.get('name','?')} ({n.get('category','?')}) [{n.get('nativeService','')}]" for n in nodes[:20]])
+                edge_text = "\n".join([f"- {e.get('sourceNodeId','?')} → {e.get('targetNodeId','?')} [{e.get('type','?')}: {e.get('label','')}]" for e in edges[:20]])
+                resp = _ollama_chat(
+                    "Explain this cloud architecture concisely. Describe why these services were chosen, the network layout, security boundaries, and availability approach. No chain-of-thought.",
+                    f"Provider: {provider}\nNodes:\n{node_text}\n\nEdges:\n{edge_text}",
+                    1024,
+                )
+                if resp: return resp
+            except Exception:
+                pass
         return explain_architecture(nodes, edges, provider)
 
     def analyze_security(self, nodes: list[dict], edges: list[dict], req: DetectedRequirement) -> SecurityAnalysis:

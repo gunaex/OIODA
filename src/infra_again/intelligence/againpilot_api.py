@@ -69,6 +69,7 @@ def register_againpilot_routes(app: FastAPI) -> None:
         return {
             "mode": againpilot.mode.value,
             "provider": againpilot.provider_name,
+            "model": againpilot.model_name,
             "available": againpilot.mode != AIGenerationMode.UNAVAILABLE,
         }
 
@@ -102,11 +103,14 @@ def register_againpilot_routes(app: FastAPI) -> None:
                 node_dicts, edge_dicts, group_dicts,
                 proposal.detected_requirements.provider,
                 proposal.detected_requirements,
-                "INTERNET_FACING_MULTI_AZ_WEB_APPLICATION",
+                "LLM_GENERATED" if againpilot.mode.value == "REAL_LLM" else "DETERMINISTIC",
             )
             return {
                 "proposal": proposal.to_dict(),
                 "quality": quality.to_dict(),
+                "generationMode": againpilot.mode.value,
+                "generationProvider": againpilot.provider_name,
+                "generationModel": againpilot.model_name,
             }
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))

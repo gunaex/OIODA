@@ -43,14 +43,15 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
   const [proposal, setProposal] = useState<any>(null);
   const [statusMsg, setStatusMsg] = useState('');
   const [error, setError] = useState('');
-  const [aiStatus, setAiStatus] = useState<{ mode: string; provider: string; available: boolean } | null>(null);
+  const [aiStatus, setAiStatus] = useState<{ mode: string; provider: string; model?: string; available: boolean } | null>(null);
 
   useEffect(() => {
     api.againpilotStatus().then(s => setAiStatus(s)).catch(() => { });
   }, []);
 
   const statusLabel = aiStatus
-    ? aiStatus.mode === 'REAL_LLM' ? `AI: ${aiStatus.provider} READY`
+    ? aiStatus.mode === 'REAL_LLM'
+      ? `AI: ${aiStatus.provider} / ${aiStatus.model || 'LLM'} READY`
       : aiStatus.mode === 'AI_CONTROL_CENTER' ? `AI: Control Center`
         : `AI: DETERMINISTIC FALLBACK`
     : 'AI: ...';
