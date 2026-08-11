@@ -43,8 +43,8 @@ export const api={
   updateDesignFlow: (id:string,flow:any) => api.post(`/api/v1/designs/${assertResourceId(id,'design')}/update-flow`,{flow}),
   // AGAINPILOT
   againpilotStatus:()=>api.get<{mode:string;provider:string;available:boolean}>('/api/v1/againpilot/status'),
-  againpilotGenerate:(b:any)=>api.post<{proposal:any;quality?:any;generationMode?:string;generationProvider?:string;generationModel?:string;resultMode?:string;provenance?:any}>('/api/v1/againpilot/generate',b),
-  againpilotRefine:(b:any)=>api.post<{proposal:any;delta:any}>('/api/v1/againpilot/refine',b),
+  againpilotGenerate:(b:any)=>api.post<{proposal:any;quality?:any;completeness?:any;generationMode?:string;generationProvider?:string;generationModel?:string;resultMode?:string;provenance?:any;needsFallbackConsent?:boolean}>('/api/v1/againpilot/generate',b),
+  againpilotRefine:(b:any)=>api.post<{proposal:any;delta:any;completeness?:any;resultMode?:string;provenance?:any;needsFallbackConsent?:boolean}>('/api/v1/againpilot/refine',b),
   againpilotExplain:(b:any)=>api.post<{explanation:string}>('/api/v1/againpilot/explain',b),
   againpilotSecurity:(b:any)=>api.post<{analysis:any}>('/api/v1/againpilot/security-analysis',b),
   // Plans

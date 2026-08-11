@@ -32,7 +32,7 @@ and separates public ingress from private data services.`,
   },
 ];
 
-type Stage = 'input' | 'generating' | 'review' | 'fallback';
+type Stage = 'input' | 'generating' | 'review' | 'fallback' | 'refine-input' | 'refining' | 'refine-fallback';
 
 export default function AgainPilotPanel({ provider, platform, hasDesign, onApply, onClose }: Props) {
   const [stage, setStage] = useState<Stage>('input');
@@ -45,7 +45,11 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
   const [error, setError] = useState('');
   const [resultMode, setResultMode] = useState('');  // REAL_LLM / DETERMINISTIC_FALLBACK / FAILED
   const [provenance, setProvenance] = useState<any>(null);
+  const [completeness, setCompleteness] = useState<any>(null);
   const [aiStatus, setAiStatus] = useState<{ mode: string; provider: string; model?: string; available: boolean } | null>(null);
+  const [refineInstruction, setRefineInstruction] = useState('');
+  const [refineDelta, setRefineDelta] = useState<any>(null);
+  const [refineResultMode, setRefineResultMode] = useState('');
 
   useEffect(() => {
     api.againpilotStatus().then(s => setAiStatus(s)).catch(() => { });
@@ -58,14 +62,21 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
         : `DETERMINISTIC FALLBACK`
     : 'AI: ...';
 
-  const generate = async () => {
+  // forceMode: pass 'DETERMINISTIC_FALLBACK' only when the user has explicitly
+  // chosen it (the "Use Deterministic Fallback" button below). Any other call
+  // tries real AI; if real AI genuinely fails, the backend returns
+  // needsFallbackConsent instead of silently generating a deterministic
+  // result — that consent decision belongs to the user, not this function.
+  const generate = async (forceMode?: string) => {
     if (!brief.trim()) return;
     setStage('generating');
     setError('');
     setResultMode('');
     setProvenance(null);
 
-    const stages = ['Understanding architecture requirements…', 'Selecting relevant services…', 'Generating architecture…', 'Validating architecture…'];
+    const stages = forceMode === 'DETERMINISTIC_FALLBACK'
+      ? ['Generating deterministic architecture…', 'Validating architecture…']
+      : ['Understanding architecture requirements…', 'Selecting relevant services…', 'Generating architecture…', 'Validating architecture…'];
     for (const s of stages) { setStatusMsg(s); await new Promise(r => setTimeout(r, 400)); }
 
     try {
@@ -74,25 +85,31 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
         providerPreference: providerPref,
         platformPreference: platformPref,
         generationDepth: depth,
+        forceMode: forceMode || '',
       });
+      if (result.needsFallbackConsent) {
+        // Real AI failed. Nothing was generated — no deterministic proposal
+        // is silently sitting behind this screen. The user picks what
+        // happens next.
+        setResultMode(result.resultMode || 'FAILED');
+        setProvenance(result.provenance || null);
+        setStage('fallback');
+        return;
+      }
       const rm = result.resultMode || result.generationMode || '';
       setProposal(result.proposal);
       setResultMode(rm);
       setProvenance(result.provenance || null);
-      // If backend returned fallback, show as fallback result, not AI
-      if (rm === 'DETERMINISTIC_FALLBACK' || rm === 'FALLBACK') {
-        setStage('fallback');
-        return;
-      }
+      setCompleteness(result.completeness || null);
       setStage('review');
     } catch (e: any) {
       setError(e.message || 'Generation failed');
-      setStage('fallback');
+      setStage('input');
     }
   };
 
-  const retryRealAI = () => { setStage('input'); generate(); };
-  const useFallback = () => { setStage('input'); generate(); };
+  const retryRealAI = () => generate();
+  const useFallback = () => generate('DETERMINISTIC_FALLBACK');
 
   const applyToCanvas = () => {
     if (proposal) { onApply(proposal); onClose(); }
@@ -101,6 +118,51 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
   const selectExample = (exampleBrief: string) => {
     setBrief(exampleBrief);
   };
+
+  const openRefine = () => {
+    setRefineInstruction('');
+    setStage('refine-input');
+  };
+
+  const runRefine = async (forceMode?: string) => {
+    if (!refineInstruction.trim() || !proposal) return;
+    setStage('refining');
+    setError('');
+    try {
+      const result = await api.againpilotRefine({
+        instruction: refineInstruction.trim(),
+        nodes: proposal.nodes || [],
+        edges: proposal.edges || [],
+        provider: proposal.detectedRequirements?.provider || providerPref,
+        forceMode: forceMode || '',
+        // Carries the original brief's HA/compliance/security signals so the
+        // post-refine validation doesn't lose them (see
+        // _merge_refine_requirements on the backend).
+        detectedRequirements: proposal.detectedRequirements || {},
+      });
+      if (result.needsFallbackConsent) {
+        setRefineResultMode(result.resultMode || 'FAILED');
+        setProvenance(result.provenance || null);
+        setStage('refine-fallback');
+        return;
+      }
+      // Refine returns the FULL updated canonical model, not just UI text —
+      // replace the proposal outright so the delta preview and the eventual
+      // Apply both operate on the real updated architecture.
+      setProposal(result.proposal);
+      setRefineDelta(result.delta || null);
+      setCompleteness(result.completeness || null);
+      setResultMode(result.resultMode || '');
+      setProvenance(result.provenance || null);
+      setStage('review');
+    } catch (e: any) {
+      setError(e.message || 'Refinement failed');
+      setStage('refine-input');
+    }
+  };
+
+  const retryRefineRealAI = () => runRefine();
+  const useRefineFallback = () => runRefine('DETERMINISTIC_FALLBACK');
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -136,13 +198,73 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
             <div style={{ fontSize: 13, color: 'var(--warning)', fontWeight: 500, marginBottom: 12 }}>
               Real AI generation failed or timed out.
             </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 8 }}>
+              Reason: <span className="mono">{resultMode || 'UNKNOWN'}</span>
+              {provenance?.completenessResult === 'FAIL' && ' — the proposal was missing required architecture roles'}
+              {provenance?.qualityResult === 'FAIL' && provenance?.completenessResult !== 'FAIL' && ' — the proposal failed architecture quality checks'}
+            </div>
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 16 }}>
-              You can retry with the real AI model or use the deterministic fallback.
+              No deterministic architecture has been generated yet. Choose how to proceed.
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
               <button className="btn btn-primary btn-sm" onClick={retryRealAI}>Retry Real AI</button>
               <button className="btn btn-secondary btn-sm" onClick={useFallback}>Use Deterministic Fallback</button>
               <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {stage === 'refine-fallback' && (
+          <div style={{ textAlign: 'center', padding: '20px' }}>
+            <div style={{ fontSize: 13, color: 'var(--warning)', fontWeight: 500, marginBottom: 12 }}>
+              Real AI refinement failed or timed out.
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 8 }}>
+              Reason: <span className="mono">{refineResultMode || 'UNKNOWN'}</span>
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 16 }}>
+              The current architecture is unchanged. Choose how to proceed with your refinement instruction.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <button className="btn btn-primary btn-sm" onClick={retryRefineRealAI}>Retry Real AI</button>
+              <button className="btn btn-secondary btn-sm" onClick={useRefineFallback}>Use Deterministic Fallback</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setStage('review')}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {stage === 'refining' && (
+          <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+            <div className="loading" style={{ marginBottom: 16 }}>Applying refinement…</div>
+            <div style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 8 }}>
+              {aiStatus?.mode === 'REAL_LLM' ? `Using: ${aiStatus.provider} · ${aiStatus.model}` : 'Deterministic mode'}
+            </div>
+          </div>
+        )}
+
+        {stage === 'refine-input' && (
+          <div>
+            <div className="panel-title" style={{ fontSize: 10, marginBottom: 6 }}>Refine Architecture</div>
+            <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 8 }}>
+              Describe the change. This updates the actual architecture (nodes/edges), not just this panel's text.
+            </div>
+            <textarea
+              className="form-input"
+              placeholder="Use ECS Fargate for the application tier and ensure the database has no public route…"
+              value={refineInstruction}
+              onChange={e => setRefineInstruction(e.target.value)}
+              style={{ minHeight: 80, resize: 'vertical', fontSize: 12, lineHeight: 1.5 }}
+            />
+            {error && (
+              <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--bg-elevated)', border: '1px solid var(--danger)', borderRadius: 4, fontSize: 10, color: 'var(--danger)' }}>
+                {error}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button className="btn btn-primary" onClick={() => runRefine()} disabled={!refineInstruction.trim()} style={{ flex: 1 }}>
+                Preview Refinement
+              </button>
+              <button className="btn btn-ghost" onClick={() => setStage('review')}>Cancel</button>
             </div>
           </div>
         )}
@@ -196,7 +318,7 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
               <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--bg-elevated)', border: '1px solid var(--danger)', borderRadius: 4, fontSize: 10, color: 'var(--danger)' }}>
                 {error}
                 <div style={{ marginTop: 4, display: 'flex', gap: 4 }}>
-                  <button className="btn btn-ghost btn-sm" onClick={generate}>Retry</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => generate()}>Retry</button>
                   <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
                 </div>
               </div>
@@ -204,7 +326,7 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
 
             <button
               className="btn btn-primary"
-              onClick={generate}
+              onClick={() => generate()}
               disabled={!brief.trim()}
               style={{ width: '100%', marginTop: 12 }}>
               Generate Architecture
@@ -217,16 +339,34 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
           <div>
             <div className="badge badge-success mb-sm" style={{ fontSize: 10 }}>
               Architecture generated
-              {resultMode === 'REAL_LLM' || resultMode === 'REAL_LLM_CORRECTED'
+              {resultMode === 'REAL_LLM' || resultMode === 'REAL_LLM_WITH_LLM_CORRECTION'
                 ? ` by Local AI · ${aiStatus?.model || 'LLM'}`
                 : resultMode === 'DETERMINISTIC_FALLBACK'
                   ? ' by Deterministic Fallback'
                   : ''}
             </div>
             {provenance && (
-              <div style={{ fontSize: 8, color: 'var(--text-muted)', marginBottom: 8 }}>
-                Stage 1: {(provenance.stage1Ms / 1000).toFixed(1)}s · Stage 2: {(provenance.stage2Ms / 1000).toFixed(1)}s
-                {resultMode === 'REAL_LLM_CORRECTED' && ' (auto-corrected)'}
+              <div style={{ fontSize: 8, color: 'var(--text-muted)', marginBottom: 4 }}>
+                Stage 1: {((provenance.stage1LatencyMs ?? provenance.stage1Ms ?? 0) / 1000).toFixed(1)}s ·
+                {' '}Stage 2: {((provenance.stage2LatencyMs ?? provenance.stage2Ms ?? 0) / 1000).toFixed(1)}s
+                {resultMode === 'REAL_LLM_WITH_LLM_CORRECTION' && ` (auto-corrected in ${((provenance.correctionLatencyMs ?? 0) / 1000).toFixed(1)}s)`}
+              </div>
+            )}
+            {completeness && (
+              <div style={{ fontSize: 9, marginBottom: 8, color: completeness.overall === 'FAIL' ? 'var(--danger)' : completeness.overall === 'WARN' ? 'var(--warning)' : 'var(--text-muted)' }}>
+                Completeness: {completeness.overall}
+                {(completeness.missingRoles || []).length > 0 && ` — missing: ${completeness.missingRoles.join(', ')}`}
+              </div>
+            )}
+            {refineDelta && (
+              <div style={{ marginBottom: 8, padding: 8, background: 'var(--bg-elevated)', borderRadius: 4 }}>
+                <div className="panel-title" style={{ fontSize: 9, marginBottom: 4 }}>Last Refinement Applied</div>
+                <div style={{ fontSize: 9, color: 'var(--text-secondary)' }}>{refineDelta.summary}</div>
+                <div style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 2 }}>
+                  +{(refineDelta.addedNodes || []).length} nodes · -{(refineDelta.removedNodes || []).length} nodes ·
+                  {' '}~{(refineDelta.changedNodes || []).length} changed ·
+                  {' '}+{(refineDelta.addedEdges || []).length} edges · -{(refineDelta.removedEdges || []).length} edges
+                </div>
               </div>
             )}
 
@@ -310,7 +450,7 @@ export default function AgainPilotPanel({ provider, platform, hasDesign, onApply
               <button className="btn btn-primary" onClick={applyToCanvas} style={{ flex: 1 }}>
                 {hasDesign ? 'Apply to Canvas' : 'Create Design & Apply'}
               </button>
-              <button className="btn btn-secondary" onClick={() => setStage('input')}>
+              <button className="btn btn-secondary" onClick={openRefine}>
                 Refine
               </button>
               <button className="btn btn-ghost" onClick={onClose}>

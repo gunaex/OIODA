@@ -13,9 +13,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from .againpilot import (
-    AgainPilotRequest, AgainPilotProposal, AgainPilotProviderRouter,
+    AgainPilotRequest, DetectedRequirement,
     ProviderPreference, PlatformPreference, GenerationDepth,
-    AIGenerationMode, get_againpilot, extract_requirements,
+    AIGenerationMode, RealAIGenerationFailed, get_againpilot, extract_requirements,
+    validate_architecture_completeness,
 )
 
 
@@ -30,6 +31,10 @@ class GenerateRequest(BaseModel):
     platformPreference: str = "AUTO"
     generationDepth: str = "HIGH_LEVEL"
     constraints: dict[str, list[str]] = {}
+    # Explicit user consent to skip real AI and use the deterministic
+    # generator. Only "DETERMINISTIC_FALLBACK" has any effect; anything else
+    # (including empty) means "try real AI, ask me before falling back".
+    forceMode: str = ""
 
 
 class RefineRequest(BaseModel):
@@ -37,6 +42,12 @@ class RefineRequest(BaseModel):
     nodes: list[dict] = []
     edges: list[dict] = []
     provider: str = "AWS"
+    forceMode: str = ""
+    # The generating proposal's detectedRequirements (camelCase, as returned
+    # by /generate). Used so refine's post-change quality/completeness
+    # re-check doesn't lose the original brief's HA/compliance/security
+    # signals — see _merge_refine_requirements.
+    detectedRequirements: dict[str, Any] = {}
 
 
 class ExplainRequest(BaseModel):
@@ -93,7 +104,19 @@ def register_againpilot_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=400, detail=f"Invalid request: {e}")
 
         try:
-            proposal = againpilot.generate(request)
+            try:
+                proposal = againpilot.generate(request, force_mode=body.forceMode or None)
+            except RealAIGenerationFailed as fail:
+                # Real AI failed and the caller did not pass forceMode —
+                # this is NOT a server error. Return 200 with an explicit
+                # consent request; the deterministic generator has NOT run.
+                prov = fail.provenance
+                return {
+                    "needsFallbackConsent": True,
+                    "resultMode": prov.get("result", "FAILED"),
+                    "provenance": _provenance_dict(prov),
+                }
+
             from .againpilot import validate_architecture_quality
             node_dicts = [n.to_dict() for n in proposal.nodes]
             edge_dicts = [e.to_dict() for e in proposal.edges]
@@ -104,22 +127,19 @@ def register_againpilot_routes(app: FastAPI) -> None:
                 proposal.detected_requirements,
                 "LLM_TWO_STAGE" if againpilot.mode.value == "REAL_LLM" else "DETERMINISTIC",
             )
+            completeness = validate_architecture_completeness(
+                node_dicts, edge_dicts, proposal.detected_requirements,
+            )
             prov = againpilot.last_provenance
             return {
                 "proposal": proposal.to_dict(),
                 "quality": quality.to_dict(),
+                "completeness": completeness.to_dict(),
                 "generationMode": againpilot.mode.value,
                 "generationProvider": againpilot.provider_name,
                 "generationModel": againpilot.model_name,
                 "resultMode": againpilot.last_result_mode or prov.get("result", "UNKNOWN"),
-                "provenance": {
-                    "requestMode": againpilot.mode.value,
-                    "resultMode": againpilot.last_result_mode or prov.get("result", "UNKNOWN"),
-                    "provider": againpilot.provider_name,
-                    "model": againpilot.model_name,
-                    "stage1Ms": prov.get("stage1Ms", 0),
-                    "stage2Ms": prov.get("stage2Ms", 0),
-                },
+                "provenance": _provenance_dict(prov, fallback_mode=againpilot.mode.value, fallback_result=againpilot.last_result_mode),
             }
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
@@ -132,10 +152,29 @@ def register_againpilot_routes(app: FastAPI) -> None:
     async def againpilot_refine(body: RefineRequest):
         """Refine existing architecture with natural language instruction."""
         try:
-            proposal, delta = againpilot.refine(body.nodes, body.edges, body.instruction, body.provider)
+            base_req = _parse_detected_requirements(body.detectedRequirements)
+            try:
+                proposal, delta = againpilot.refine(
+                    body.nodes, body.edges, body.instruction, body.provider,
+                    force_mode=body.forceMode or None, base_req=base_req,
+                )
+            except RealAIGenerationFailed as fail:
+                prov = fail.provenance
+                return {
+                    "needsFallbackConsent": True,
+                    "resultMode": prov.get("result", "FAILED"),
+                    "provenance": _provenance_dict(prov),
+                }
+            node_dicts = [n.to_dict() for n in proposal.nodes]
+            edge_dicts = [e.to_dict() for e in proposal.edges]
+            completeness = validate_architecture_completeness(node_dicts, edge_dicts, proposal.detected_requirements)
+            prov = againpilot.last_provenance
             return {
                 "proposal": proposal.to_dict(),
                 "delta": delta.to_dict(),
+                "completeness": completeness.to_dict(),
+                "resultMode": againpilot.last_result_mode or prov.get("result", "UNKNOWN"),
+                "provenance": _provenance_dict(prov),
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Refinement failed: {e}")
@@ -174,30 +213,57 @@ def register_againpilot_routes(app: FastAPI) -> None:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Extraction failed: {e}")
 
-    # ── Legacy: Keep old endpoint for backward compat ──
-    # (Redirects to new AGAINPILOT generate)
+    # NOTE: there is intentionally no duplicate "/api/v1/designs/{design_id}/ai-generate"
+    # registration here. flow/api.py registers that exact path first (see
+    # register_flow_routes in api/__init__.py, called before
+    # register_againpilot_routes), so FastAPI/Starlette always dispatches to
+    # that handler — a second registration of the same path here was dead
+    # code that could never run, despite its docstring claiming it "delegates
+    # to AGAINPILOT". The real AGAINPILOT engine is reachable only via
+    # POST /api/v1/againpilot/generate, which is what the UI actually calls.
 
-    @app.post("/api/v1/designs/{design_id}/ai-generate")
-    async def ai_generate_design_legacy(design_id: str, body: dict[str, Any] | None = None):
-        """Legacy endpoint — delegates to AGAINPILOT."""
-        brief = (body or {}).get("brief", {})
-        brief_text = brief.get("objective", "") + " " + brief.get("components", "")
-        provider = brief.get("provider", "AWS")
-        platform = brief.get("platform", "KUBERNETES")
 
-        request = AgainPilotRequest(
-            brief=brief_text or f"Generate architecture on {provider} using {platform}",
-            provider_preference=_parse_enum(provider, ProviderPreference),
-            platform_preference=_parse_enum(platform, PlatformPreference),
-        )
-        proposal = againpilot.generate(request)
-        return {
-            "designId": design_id,
-            "proposal": proposal.to_dict(),
-            "provider": provider,
-            "platform": platform,
-            "status": "AI_GENERATED",
-        }
+def _parse_detected_requirements(d: dict[str, Any]) -> DetectedRequirement | None:
+    """Parse the camelCase detectedRequirements dict (as returned by
+    /generate's proposal.detectedRequirements) back into a DetectedRequirement.
+    Returns None if the frontend didn't send one (e.g. refining a hand-built
+    canvas with no prior AGAINPILOT proposal)."""
+    if not d:
+        return None
+    return DetectedRequirement(
+        provider=d.get("provider", "ON_PREM"),
+        platform=d.get("platform", "NATIVE_VM"),
+        expected_load=d.get("expectedLoad", "UNKNOWN"),
+        availability=list(d.get("availability", [])),
+        compliance=list(d.get("compliance", [])),
+        security=list(d.get("security", [])),
+        data_sensitivity=list(d.get("dataSensitivity", [])),
+    )
+
+
+def _provenance_dict(prov: dict, fallback_mode: str = "", fallback_result: str = "") -> dict:
+    """Normalize the internal provenance dict into the canonical field set.
+
+    Distinct fields for requested vs. actual result mode, and for which
+    generator produced the first pass vs. any correction pass, so the
+    frontend never has to infer provenance from a single ambiguous string.
+    """
+    return {
+        "generationRequestedMode": prov.get("generationRequestedMode", fallback_mode or prov.get("mode", "")),
+        "generationResultMode": prov.get("result", fallback_result or "UNKNOWN"),
+        "generationProvider": prov.get("provider", ""),
+        "generationModel": prov.get("model", ""),
+        "firstPassGenerator": prov.get("firstPassGenerator"),
+        "correctionGenerator": prov.get("correctionGenerator"),
+        "stage1LatencyMs": prov.get("stage1Ms", 0),
+        "stage2LatencyMs": prov.get("stage2Ms", 0),
+        "correctionLatencyMs": prov.get("correctionMs", 0),
+        "briefHash": prov.get("briefHash", ""),
+        "generationTimestamp": prov.get("generationTimestamp", ""),
+        "qualityResult": prov.get("qualityResult"),
+        "completenessResult": prov.get("completenessResult"),
+        "userConsented": prov.get("userConsented"),
+    }
 
 
 def _parse_enum(value: str, enum_cls: type) -> Any:

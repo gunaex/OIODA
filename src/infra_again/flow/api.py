@@ -237,9 +237,12 @@ def register_flow_routes(app: FastAPI) -> None:
 
     @app.post("/api/v1/designs")
     async def create_design(name: str = "", description: str = ""):
-        design = DesignBaseline(
-            design_id=f"DESIGN-{len(_designs)+1:06d}",
-        )
+        # DesignBaseline's default factory mints a uuid4-based id. The
+        # previous `f"DESIGN-{len(_designs)+1:06d}"` counter was not atomic —
+        # two concurrent creates can compute the same id, and _persist_design
+        # uses INSERT OR REPLACE, so the second create would silently
+        # overwrite the first design's row instead of erroring.
+        design = DesignBaseline()
         design.metadata = {"name": name, "description": description}
         _designs[design.design_id] = design
         _persist_design(design)
@@ -266,6 +269,11 @@ def register_flow_routes(app: FastAPI) -> None:
         d = _designs.get(design_id)
         if not d:
             raise HTTPException(status_code=404, detail="Design not found")
+        if d.status.value in ("ACCEPTED", "BASELINE_FROZEN"):
+            raise HTTPException(status_code=400, detail={
+                "error": "Cannot regenerate an accepted/frozen design",
+                "status": d.status.value,
+            })
 
         # Create demo flow for this design
         flow = create_demo_flow()
@@ -374,6 +382,11 @@ def register_flow_routes(app: FastAPI) -> None:
         d = _designs.get(design_id)
         if not d:
             raise HTTPException(status_code=404, detail="Design not found")
+        if d.status.value in ("ACCEPTED", "BASELINE_FROZEN"):
+            raise HTTPException(status_code=400, detail={
+                "error": "Cannot regenerate an accepted/frozen design",
+                "status": d.status.value,
+            })
         brief = (body or {}).get("brief", {})
         provider = brief.get("provider", "AWS")
         platform = brief.get("platform", "KUBERNETES")

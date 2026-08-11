@@ -111,6 +111,18 @@ class ServiceVerification(str, Enum):
     UNKNOWN_SERVICE = "UNKNOWN_SERVICE"
 
 
+class RealAIGenerationFailed(Exception):
+    """Raised when real-AI generation fails and no fallback consent was given.
+
+    Carries the provenance dict so the API layer can surface exactly what
+    failed (STAGE1_TIMEOUT, QUALITY_FAIL, COMPLETENESS_FAIL, ...) without the
+    caller having to silently substitute the deterministic generator.
+    """
+    def __init__(self, provenance: dict):
+        self.provenance = provenance
+        super().__init__(provenance.get("result", "REAL_AI_FAILED"))
+
+
 # ============================================================================
 # Schemas
 # ============================================================================
@@ -521,6 +533,35 @@ def extract_requirements(brief: str) -> DetectedRequirement:
     )
 
 
+def _merge_refine_requirements(base: DetectedRequirement | None, instruction: str) -> DetectedRequirement:
+    """Requirements to validate a refine against.
+
+    A refine instruction like "Use ECS Fargate for the application tier" is
+    short and does not restate the brief. Re-deriving requirements from the
+    instruction ALONE (as refine previously did) would silently drop the
+    original brief's HA/PDPA/compliance signals for the purpose of the
+    post-refine quality/completeness re-check — e.g. a PDPA architecture
+    refined with an unrelated instruction would suddenly validate as if PDPA
+    had never been requested. Union the instruction's signals onto the
+    original profile instead of replacing it; provider/platform stay pinned
+    to the original since a refine instruction essentially never re-asserts
+    those and extract_requirements() defaults them when absent, which would
+    otherwise silently flip e.g. ON_PREM back on.
+    """
+    delta = extract_requirements(instruction)
+    if base is None:
+        return delta
+    return DetectedRequirement(
+        provider=base.provider,
+        platform=base.platform,
+        expected_load=delta.expected_load if delta.expected_load != "UNKNOWN" else base.expected_load,
+        availability=sorted(set(base.availability) | set(delta.availability)),
+        compliance=sorted(set(base.compliance) | set(delta.compliance)),
+        security=sorted(set(base.security) | set(delta.security)),
+        data_sensitivity=sorted(set(base.data_sensitivity) | set(delta.data_sensitivity)),
+    )
+
+
 # ============================================================================
 # Provider-Native Naming
 # ============================================================================
@@ -623,15 +664,32 @@ def validate_architecture_quality(
         QualityResult.FAIL if dupes else QualityResult.PASS,
         f"Duplicates >2: {list(dupes.keys())}" if dupes else "No excessive duplicates")
 
-    # HA check (look for multi-AZ patterns: AZ-B in name or >1 app/db node)
+    # HA check — raw node *count* is not evidence of redundancy. Two identical
+    # app nodes with no AZ/replica/standby distinction are one tier duplicated,
+    # not a multi-AZ topology. Require an explicit distinguishing signal.
     app_nodes = [n for n in nodes if n.get("category") == "APPLICATION"]
     db_nodes = [n for n in nodes if n.get("category") == "DATABASE"]
-    az_patterns = [n for n in nodes if "AZ-" in n.get("name", "") or "AZ-" in n.get("nodeId", "")
-                   or "Standby" in n.get("name", "") or "Replica" in n.get("name", "")]
-    has_multi_az = len(app_nodes) >= 2 or len(db_nodes) >= 2 or len(az_patterns) >= 2
+
+    def _node_has_az_signal(n: dict) -> bool:
+        name, nid = n.get("name", ""), n.get("nodeId", "")
+        return (
+            "AZ-" in name or "AZ-" in nid
+            or nid.lower().endswith("-b") or nid.lower().endswith("-b2")
+            or "Standby" in name or "Replica" in name
+            or bool(n.get("properties", {}).get("availabilityZone"))
+        )
+
+    def _has_az_signal(group: list[dict]) -> bool:
+        # At least one node in the group must carry a distinguishing signal —
+        # otherwise it's N copies of the same thing, not redundancy.
+        return len(group) >= 2 and any(_node_has_az_signal(n) for n in group)
+
+    has_multi_az = _has_az_signal(app_nodes) or _has_az_signal(db_nodes)
+    ha_requested = "HIGH_AVAILABILITY" in req.availability
     report.add("HA_REQUIREMENT_SATISFIED",
-        QualityResult.PASS if not ("HIGH_AVAILABILITY" in req.availability) or has_multi_az else QualityResult.FAIL,
-        f"HA requested: {'HIGH_AVAILABILITY' in req.availability}, multi-AZ: {has_multi_az}")
+        QualityResult.PASS if not ha_requested or has_multi_az else QualityResult.FAIL,
+        f"HA requested: {ha_requested}, distinct-AZ signal present: {has_multi_az} "
+        f"(app nodes: {len(app_nodes)}, db nodes: {len(db_nodes)})")
 
     # Container check
     container_requested = "KUBERNETES" in req.platform
@@ -644,9 +702,16 @@ def validate_architecture_quality(
     has_waf = any("waf" in n.get("nativeService", "").lower() for n in nodes)
     has_kms = any("kms" in n.get("nativeService", "").lower() for n in nodes)
     has_secrets = any("secret" in n.get("nativeService", "").lower() or "vault" in n.get("nativeService", "").lower() for n in nodes)
+    # Missing secrets/key management is only a WARN in general, but escalates to
+    # FAIL when the brief carries compliance/PII obligations (PDPA/GDPR/HIPAA/etc.)
+    # — an unmanaged-secrets architecture cannot satisfy those requirements.
+    security_ok = has_waf and has_kms and has_secrets
+    compliance_at_stake = bool(req.compliance) or "PERSONAL_DATA" in req.data_sensitivity
     report.add("SECURITY_BOUNDARIES",
-        QualityResult.WARN if not (has_waf and has_kms and has_secrets) else QualityResult.PASS,
-        f"WAF:{has_waf} KMS:{has_kms} Secrets:{has_secrets}")
+        QualityResult.PASS if security_ok
+        else QualityResult.FAIL if compliance_at_stake and not (has_kms and has_secrets)
+        else QualityResult.WARN,
+        f"WAF:{has_waf} KMS:{has_kms} Secrets:{has_secrets} compliance:{req.compliance or 'none'}")
 
     # Monitoring not in request path
     obs_nodes = [n for n in nodes if n.get("category") == "OBSERVABILITY"]
@@ -669,6 +734,21 @@ def validate_architecture_quality(
     report.add("NO_KMS_IN_REQUEST_PATH",
         QualityResult.FAIL if kms_in_path else QualityResult.PASS,
         f"KMS in request path" if kms_in_path else "KMS as supporting service")
+
+    # No direct Internet -> Database path. A DB should only ever be reached
+    # through the application tier — a direct edge from a USER/EXTERNAL node
+    # (or an edge chain of length 1 hop) straight into a DATABASE node means
+    # the "private database" story is fiction regardless of what securityZone
+    # says.
+    db_ids = {n.get("nodeId") for n in nodes if n.get("category") == "DATABASE"}
+    external_ids = {n.get("nodeId") for n in nodes if n.get("category") in ("USER", "EXTERNAL")}
+    direct_internet_to_db = [
+        e for e in edges
+        if e.get("sourceNodeId") in external_ids and e.get("targetNodeId") in db_ids
+    ]
+    report.add("NO_DIRECT_INTERNET_TO_DATABASE",
+        QualityResult.FAIL if direct_internet_to_db else QualityResult.PASS,
+        f"Direct edges: {[e.get('edgeId') for e in direct_internet_to_db]}" if direct_internet_to_db else "Database only reachable via application tier")
 
     # No orphan nodes
     referenced = set()
@@ -701,6 +781,145 @@ def validate_architecture_quality(
     return report
 
 
+# ============================================================================
+# Architecture Completeness Validator
+# ============================================================================
+#
+# validate_architecture_quality (above) checks *internal consistency* of
+# whatever graph it is handed — it cannot fail a structurally-consistent but
+# semantically-shallow proposal (e.g. User -> App -> DB, 3 nodes / 2 edges,
+# for an AWS HA/PDPA patient portal). That gap let the real-AI two-stage
+# pipeline accept minimal graphs that never exercised the "MANDATORY ROLES"
+# section of its own prompt, because nothing after generation re-checked
+# whether those roles actually showed up in the output.
+#
+# This validator checks *semantic role coverage*: for a given detected-
+# requirement profile, which architectural capabilities (not exact service
+# names) are expected, and whether the proposal actually has a node that
+# plausibly fulfills each one.
+
+REQUIRED_ROLE_ORDER = [
+    "EDGE_INGRESS", "APPLICATION_ENTRY", "CONTAINER_RUNTIME", "PRIVATE_DATABASE",
+    "IDENTITY_AUTH", "SECRET_MANAGEMENT", "ENCRYPTION_KEY_MANAGEMENT", "OBSERVABILITY",
+]
+OPTIONAL_ROLE_ORDER = ["OBJECT_STORAGE", "CACHE", "QUEUE"]
+
+
+@dataclass
+class CompletenessReport:
+    overall: QualityResult = QualityResult.PASS
+    missing_roles: list[str] = field(default_factory=list)
+    weak_roles: list[str] = field(default_factory=list)
+    reasoning_summary: str = ""
+    role_evidence: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "overall": self.overall.value,
+            "missingRoles": self.missing_roles,
+            "weakRoles": self.weak_roles,
+            "reasoningSummary": self.reasoning_summary,
+            "roleEvidence": self.role_evidence,
+        }
+
+
+def validate_architecture_completeness(
+    nodes: list[dict], edges: list[dict], req: DetectedRequirement,
+) -> CompletenessReport:
+    """Check semantic role coverage against the requirements actually detected
+    in the brief. Roles, not exact provider services — this must not hardcode
+    AWS/GCP service names so it stays provider-neutral.
+    """
+    report = CompletenessReport()
+
+    def has_cat(*cats: str) -> bool:
+        return any(n.get("category") in cats for n in nodes)
+
+    def node_svc_contains(*needles: str) -> bool:
+        return any(
+            any(needle in n.get("nativeService", "").lower() for needle in needles)
+            for n in nodes
+        )
+
+    has_db = has_cat("DATABASE")
+    has_app = has_cat("APPLICATION")
+    container_requested = req.platform in ("KUBERNETES", "OPENSHIFT_OCP")
+    compliance_sensitive = bool(req.compliance) or any(
+        s in req.data_sensitivity for s in ("PERSONAL_DATA", "PII", "PHI", "FINANCIAL")
+    )
+    auth_edge_present = any(e.get("type") == EdgeType.AUTH.value for e in edges)
+
+    # role -> (applicable, present, evidence)
+    checks: dict[str, tuple[bool, bool, str]] = {
+        "EDGE_INGRESS": (
+            True,
+            has_cat("NETWORK", "GATEWAY") or node_svc_contains("waf", "firewall", "armor"),
+            "load balancer / API gateway / WAF node",
+        ),
+        "APPLICATION_ENTRY": (True, has_app, "an APPLICATION node"),
+        "CONTAINER_RUNTIME": (
+            container_requested,
+            any(n.get("category") == "APPLICATION" and n.get("platform") in ("KUBERNETES", "OPENSHIFT_OCP") for n in nodes),
+            "application node with container platform",
+        ),
+        "PRIVATE_DATABASE": (
+            has_db,
+            any(n.get("category") == "DATABASE" and n.get("securityZone", "").lower() in ("private",) for n in nodes),
+            "database node in a private security zone",
+        ),
+        "IDENTITY_AUTH": (
+            compliance_sensitive,
+            has_cat("IDENTITY") or auth_edge_present,
+            "identity provider node or auth edge",
+        ),
+        "SECRET_MANAGEMENT": (
+            has_db or compliance_sensitive,
+            node_svc_contains("secret", "vault"),
+            "secrets manager / vault node",
+        ),
+        "ENCRYPTION_KEY_MANAGEMENT": (
+            has_db or compliance_sensitive,
+            node_svc_contains("kms", "key"),
+            "key management node",
+        ),
+        "OBSERVABILITY": (True, has_cat("OBSERVABILITY"), "monitoring/observability node"),
+    }
+
+    for role in REQUIRED_ROLE_ORDER:
+        applicable, present, evidence = checks[role]
+        if not applicable:
+            report.role_evidence[role] = "N/A — not required by detected brief"
+            continue
+        report.role_evidence[role] = ("present: " if present else "MISSING: ") + evidence
+        if not present:
+            report.missing_roles.append(role)
+
+    optional_checks = {
+        "OBJECT_STORAGE": has_cat("STORAGE"),
+        "CACHE": has_cat("CACHE"),
+        "QUEUE": has_cat("QUEUE"),
+    }
+    for role in OPTIONAL_ROLE_ORDER:
+        if not optional_checks[role]:
+            report.weak_roles.append(role)
+
+    # OBJECT_STORAGE/CACHE/QUEUE are reported in weak_roles for visibility but
+    # do not affect `overall`. DetectedRequirement carries no signal for
+    # "this system needs a queue/cache/blob store" (unlike the hard-required
+    # roles, which are each gated on an actual detected requirement) — the
+    # brief never asked for one, so treating its absence as a completeness
+    # defect would fail architectures for infrastructure nobody requested.
+    # Downgrading only happens for roles this validator can actually justify.
+    report.overall = QualityResult.FAIL if report.missing_roles else QualityResult.PASS
+
+    report.reasoning_summary = (
+        f"{len(nodes)} nodes / {len(edges)} edges. "
+        f"Missing required roles: {report.missing_roles or 'none'}. "
+        f"Optional roles not present: {report.weak_roles or 'none'}."
+    )
+    return report
+
+
 def _make_node(
     node_id: str, name: str, category: str, provider: str,
     native_service: str, platform: str = "NATIVE_VM",
@@ -708,17 +927,57 @@ def _make_node(
     owner: str = "", source: str = "AI_GENERATED",
 ) -> GeneratedNode:
     sv = validate_service(provider, native_service)
-    # Use provider-native display name
+    # Use provider-native display name, but preserve any HA/redundancy-
+    # distinguishing suffix from the caller's name (AZ-B, Standby, Replica).
+    # Dropping it collapses both members of an AZ pair to the identical
+    # display name ("ECS Fargate" / "ECS Fargate"), which then makes any
+    # name-based HA/redundancy check unable to tell "two AZ-distinct copies"
+    # apart from "two copies of the same thing" — silently defeating the
+    # exact signal the HA quality gate looks for.
     display = get_display_name(provider, native_service) if native_service else name
+    final_name = display
+    if native_service and name:
+        for marker in ("(AZ-", "Standby", "Replica"):
+            if marker in name and marker not in display:
+                suffix = name[name.index(marker):] if marker.startswith("(") else marker
+                final_name = f"{display} {suffix}".strip()
+                break
     return GeneratedNode(
         node_id=node_id,
-        name=display if native_service else name,  # Provider-native label
+        name=final_name,
         category=category,
         provider=provider, native_service=native_service, platform=platform,
         security_zone=security_zone, data_classification=data_classification,
         owner=owner, source=source,
         service_verification=sv.value,
     )
+
+
+def _derive_views(nodes: list[dict], edges: list[dict]) -> dict[str, dict]:
+    """Derive the four semantic views from canonical nodes/edges.
+
+    Deterministic derivation from category/edge-type — not something an LLM
+    should invent per generation, and not something that should be
+    hand-rolled again at every call site (generate, LLM-compact-expansion,
+    and refine previously each had their own slightly-different copy of this
+    logic; refine's copy simply returned empty views).
+    """
+    all_nids = [n.get("nodeId", "") for n in nodes]
+    all_eids = [e.get("edgeId", "") for e in edges]
+    data_nids = [n.get("nodeId", "") for n in nodes if n.get("category") in ("DATABASE", "STORAGE", "CACHE")]
+    data_eids = [e.get("edgeId", "") for e in edges if e.get("type") == EdgeType.DATA.value]
+    ops_nids = [n.get("nodeId", "") for n in nodes if n.get("category") in ("USER", "DNS", "NETWORK", "APPLICATION")]
+    ops_eids = [e.get("edgeId", "") for e in edges if e.get("type") == EdgeType.REQUEST.value]
+    sec_nids = [n.get("nodeId", "") for n in nodes if n.get("category") in ("SECURITY", "IDENTITY")]
+    sec_eids = [e.get("edgeId", "") for e in edges if e.get("type") in (
+        EdgeType.AUTH.value, EdgeType.SECRET_ACCESS.value, EdgeType.KEY_USAGE.value,
+    )]
+    return {
+        "architecture": {"nodes": all_nids, "edges": all_eids},
+        "dataFlow": {"nodes": data_nids, "edges": data_eids},
+        "operationFlow": {"nodes": ops_nids, "edges": ops_eids},
+        "securityFlow": {"nodes": sec_nids, "edges": sec_eids},
+    }
 
 
 def select_pattern(req: DetectedRequirement, is_ha: bool, has_pdpa: bool) -> ArchitecturePattern:
@@ -958,37 +1217,15 @@ def generate_architecture(request: AgainPilotRequest) -> AgainPilotProposal:
     # VIEWS — Distinct semantic views
     # ═══════════════════════════════════════════════════
 
-    all_nids = [n.node_id for n in nodes]
-    all_eids = [e.edge_id for e in edges]
-
-    # Data Flow: data + storage nodes, data edges only
-    data_nids = [n.node_id for n in nodes if n.category in ("DATABASE", "STORAGE", "CACHE")]
-    data_eids = [e.edge_id for e in edges if e.edge_type == EdgeType.DATA.value]
-
-    # Operation Flow: request-path nodes + request edges
-    ops_nids = [n.node_id for n in nodes if n.category in ("USER", "DNS", "NETWORK", "APPLICATION")]
-    ops_eids = [e.edge_id for e in edges if e.edge_type == EdgeType.REQUEST.value]
-
-    # Security Flow: security/identity nodes + auth/secret/key edges
-    sec_nids = [n.node_id for n in nodes if n.category in ("SECURITY", "IDENTITY")]
-    sec_eids = [e.edge_id for e in edges if e.edge_type in (
-        EdgeType.AUTH.value, EdgeType.SECRET_ACCESS.value, EdgeType.KEY_USAGE.value,
-    )]
-
-    views = {
-        "architecture": {"nodes": all_nids, "edges": all_eids},
-        "dataFlow": {"nodes": data_nids, "edges": data_eids},
-        "operationFlow": {"nodes": ops_nids, "edges": ops_eids},
-        "securityFlow": {"nodes": sec_nids, "edges": sec_eids},
-    }
+    node_dicts = [n.to_dict() for n in nodes]
+    edge_dicts = [e.to_dict() for e in edges]
+    group_dicts = [g.to_dict() for g in groups]
+    views = _derive_views(node_dicts, edge_dicts)
 
     # ═══════════════════════════════════════════════════
     # QUALITY — Validate before returning
     # ═══════════════════════════════════════════════════
 
-    node_dicts = [n.to_dict() for n in nodes]
-    edge_dicts = [e.to_dict() for e in edges]
-    group_dicts = [g.to_dict() for g in groups]
     quality = validate_architecture_quality(node_dicts, edge_dicts, group_dicts, provider, req, pattern.value)
 
     # If quality fails, attempt one correction pass
@@ -1035,6 +1272,7 @@ def refine_architecture(
     current_edges: list[dict],
     instruction: str,
     provider: str = "AWS",
+    base_req: DetectedRequirement | None = None,
 ) -> tuple[AgainPilotProposal, RefineDelta]:
     """Apply a refinement instruction to existing architecture.
 
@@ -1052,9 +1290,13 @@ def refine_architecture(
     if replace_match:
         new_svc = replace_match.group(1).strip()
         old_svc = replace_match.group(2).strip()
+        new_svc_key = new_svc.lower().replace(" ", "_").replace("-", "_")
         for n in current_nodes:
             if old_svc.lower() in n.get("nativeService", "").lower() or old_svc.lower() in n.get("name", "").lower():
-                changed_nodes.append({"nodeId": n["nodeId"], "oldService": old_svc, "newService": new_svc, "change": "REPLACE_SERVICE"})
+                changed_nodes.append({
+                    "nodeId": n["nodeId"], "field": "nativeService", "oldValue": n.get("nativeService", ""),
+                    "newValue": new_svc_key, "oldService": old_svc, "newService": new_svc, "change": "REPLACE_SERVICE",
+                })
 
     # Detect "Add X"
     add_match = re.findall(r'add\s+(?:a\s+)?(\S+(?:\s+\S+)?(?:service|node|instance|cluster|replica|zone))', lower)
@@ -1069,11 +1311,18 @@ def refine_architecture(
             if rm_name.lower() in n.get("name", "").lower() or rm_name.lower() in n.get("nativeService", "").lower():
                 removed_nodes.append(n["nodeId"])
 
-    # Detect "no public route" / "private"
-    if re.search(r'no\s+public|not?\s+public|private\s+(?:route|access)', lower):
-        for e in current_edges:
-            if e.get("securityClassification") != "pii":
-                pass  # mark edges for review
+    # Detect "no public route" / "private database" instructions — actually
+    # apply the change (this used to be a no-op `pass`, silently discarding
+    # an instruction the regex correctly matched: the DB stayed exactly as
+    # public/private as it started, with the user never told nothing happened).
+    if re.search(r'no\s+public|not?\s+public|private\s+(?:route|access|database)', lower):
+        for n in current_nodes:
+            if n.get("category") == "DATABASE" and n.get("securityZone", "").lower() != "private":
+                changed_nodes.append({
+                    "nodeId": n["nodeId"], "field": "securityZone",
+                    "oldValue": n.get("securityZone", ""), "newValue": "private",
+                    "change": "ENFORCE_PRIVATE_DATABASE",
+                })
 
     # Detect "separate X and Y into different private subnets"
     sep_match = re.search(r'separate\s+(\S+)\s+and\s+(\S+)\s+into\s+different', lower)
@@ -1089,13 +1338,31 @@ def refine_architecture(
         summary=f"Refinement: {instruction[:80]}",
     )
 
-    # Apply delta to create new proposal
+    # Apply delta to create new proposal. Previously `changed_nodes` was
+    # populated as a record of intended changes but never actually applied
+    # to the returned nodes — REPLACE_SERVICE / private-DB / subnet-separation
+    # instructions showed up in the delta summary while the canonical model
+    # silently kept its old values. Apply every field-level change here so
+    # the delta the caller sees matches the proposal the caller gets.
+    changes_by_node: dict[str, list[dict]] = {}
+    for c in changed_nodes:
+        if c.get("nodeId") and c.get("field"):
+            changes_by_node.setdefault(c["nodeId"], []).append(c)
+
     new_nodes = [n for n in current_nodes if n.get("nodeId") not in removed_nodes]
+    for n in new_nodes:
+        for c in changes_by_node.get(n.get("nodeId", ""), []):
+            n[c["field"]] = c["newValue"]
+            if c["field"] == "nativeService":
+                n["name"] = get_display_name(n.get("provider", provider), c["newValue"])
+                n["serviceVerification"] = validate_service(n.get("provider", provider), c["newValue"]).value
     # Add new nodes
     for an in added_nodes:
         new_nodes.append(an.to_dict())
 
-    req = extract_requirements(instruction)
+    new_edges = [e for e in current_edges if e.get("edgeId") not in removed_edges]
+    req = _merge_refine_requirements(base_req, instruction)
+    views = _derive_views(new_nodes, new_edges)
     proposal = AgainPilotProposal(
         title="Refined Architecture",
         summary=f"Refined: {instruction[:100]}",
@@ -1116,10 +1383,9 @@ def refine_architecture(
             protocol=e.get("protocol", "TCP"), direction=e.get("direction", "unidirectional"),
             data_type=e.get("dataType", ""), security_classification=e.get("securityClassification", "none"),
             label=e.get("label", ""),
-        ) for e in current_edges if e.get("edgeId") not in removed_edges],
+        ) for e in new_edges],
         groups=[],
-        views={"architecture": {"nodes": [], "edges": []}, "dataFlow": {"nodes": [], "edges": []},
-               "operationFlow": {"nodes": [], "edges": []}, "securityFlow": {"nodes": [], "edges": []}},
+        views=views,
         native_service_recommendations=[],
         assumptions=[], risks=[], clarifying_questions=[],
         rationale=f"Refinement applied: {instruction[:200]}",
@@ -1349,7 +1615,7 @@ def _filter_catalog(provider: str, intent_components: list[str]) -> str:
 
 def _build_proposal_from_compact(
     compact: dict, req: DetectedRequirement, provider: str, model: str,
-    stage1_ms: int, stage2_ms: int,
+    stage1_ms: int, stage2_ms: int, brief_hash: str = "",
 ) -> AgainPilotProposal | None:
     """Expand compact LLM output into full ArchitectureProposal."""
     try:
@@ -1402,31 +1668,20 @@ def _build_proposal_from_compact(
                 ce.get("dir", "unidirectional"), ce.get("dataType", ""),
                 ce.get("sec", "none"), ce.get("label", ce.get("proto", ""))))
 
-        # Build views from edge types
-        all_nids = [n.node_id for n in nodes]
-        all_eids = [e.edge_id for e in edges]
-        data_nids = [n.node_id for n in nodes if n.category in ("DATABASE", "STORAGE", "CACHE")]
-        data_eids = [e.edge_id for e in edges if e.edge_type == "data"]
-        ops_nids = [n.node_id for n in nodes if n.category in ("USER", "DNS", "NETWORK", "APPLICATION")]
-        ops_eids = [e.edge_id for e in edges if e.edge_type == "request"]
-        sec_nids = [n.node_id for n in nodes if n.category in ("SECURITY", "IDENTITY")]
-        sec_eids = [e.edge_id for e in edges if e.edge_type in ("auth", "secret_access", "key_usage")]
+        views = _derive_views([n.to_dict() for n in nodes], [e.to_dict() for e in edges])
 
         return AgainPilotProposal(
             title=compact.get("title", f"{provider} Architecture"),
             summary=compact.get("summary", ""), detected_requirements=req,
             nodes=nodes, edges=edges, groups=groups,
-            views={"architecture": {"nodes": all_nids, "edges": all_eids},
-                   "dataFlow": {"nodes": data_nids, "edges": data_eids},
-                   "operationFlow": {"nodes": ops_nids, "edges": ops_eids},
-                   "securityFlow": {"nodes": sec_nids, "edges": sec_eids}},
+            views=views,
             native_service_recommendations=[],
             assumptions=compact.get("assumptions", []),
             risks=compact.get("risks", []),
             clarifying_questions=compact.get("questions", []),
             rationale=compact.get("rationale", ""),
             generation_provider="LOCAL_LLM", generation_model=model,
-            brief_hash=hashlib.sha256(str(stage1_ms).encode()).hexdigest()[:12],
+            brief_hash=brief_hash,
         )
     except Exception:
         return None
@@ -1436,13 +1691,34 @@ def _build_proposal_from_compact(
 # REAL AI GENERATION — Two-Stage Pipeline
 # ═══════════════════════════════════════════════════════════════════
 
+def _validate_proposal(
+    p: AgainPilotProposal, provider: str, req: DetectedRequirement,
+) -> tuple[QualityReport, CompletenessReport]:
+    """Shared quality + completeness validation, used by both real-AI
+    generation and real-AI refine so the two pipelines can't silently drift
+    apart on what "valid" means."""
+    nd = [n.to_dict() for n in p.nodes]
+    ed = [e.to_dict() for e in p.edges]
+    gd = [g.to_dict() for g in p.groups]
+    return (
+        validate_architecture_quality(nd, ed, gd, provider, req, "LLM_TWO_STAGE"),
+        validate_architecture_completeness(nd, ed, req),
+    )
+
+
 def _generate_real_ai(
     brief: str, provider_pref: str, platform_pref: str,
     req: DetectedRequirement, provider: str,
 ) -> tuple[AgainPilotProposal | None, dict]:
     """Two-stage real AI generation. Returns (proposal, provenance_dict)."""
-    prov = {"mode": "REAL_LLM", "provider": "LOCAL_LLM", "model": OLLAMA_MODEL,
-            "stage1Ms": 0, "stage2Ms": 0, "result": "FAILED"}
+    prov = {
+        "mode": "REAL_LLM", "provider": "LOCAL_LLM", "model": OLLAMA_MODEL,
+        "stage1Ms": 0, "stage2Ms": 0, "correctionMs": 0, "result": "FAILED",
+        "generationRequestedMode": "REAL_LLM",
+        "briefHash": hashlib.sha256(brief.encode()).hexdigest()[:12],
+        "generationTimestamp": datetime.now(timezone.utc).isoformat(),
+        "firstPassGenerator": "REAL_LLM", "correctionGenerator": None,
+    }
 
     if not _ollama_available():
         prov["result"] = "FALLBACK_LLM_UNAVAILABLE"
@@ -1488,38 +1764,217 @@ def _generate_real_ai(
         prov["result"] = "STAGE2_INVALID_JSON"
         return None, prov
 
-    proposal = _build_proposal_from_compact(compact, req, provider, OLLAMA_MODEL, prov["stage1Ms"], prov["stage2Ms"])
+    proposal = _build_proposal_from_compact(compact, req, provider, OLLAMA_MODEL, prov["stage1Ms"], prov["stage2Ms"], prov["briefHash"])
     if not proposal:
         prov["result"] = "BUILD_FAILED"
         return None, prov
 
-    # Quality validation
-    node_dicts = [n.to_dict() for n in proposal.nodes]
-    edge_dicts = [e.to_dict() for e in proposal.edges]
-    group_dicts = [g.to_dict() for g in proposal.groups]
-    quality = validate_architecture_quality(node_dicts, edge_dicts, group_dicts, provider, req, "LLM_TWO_STAGE")
-    if quality.overall == QualityResult.FAIL:
-        prov["result"] = "QUALITY_FAIL"
-        # One correction attempt
+    # ═══ Validation: quality (internal consistency) + completeness (semantic
+    # role coverage). A structurally-clean 3-node chain can still be a
+    # semantically-shallow architecture that quality alone would never catch —
+    # that gap is exactly how minimal AWS "patient portal" graphs previously
+    # slipped through as REAL_LLM with no correction attempt at all.
+    quality, completeness = _validate_proposal(proposal, provider, req)
+
+    if quality.overall == QualityResult.FAIL or completeness.overall == QualityResult.FAIL:
+        # One correction attempt — feed both failure sets back to the LLM.
+        fail_msg = "\n".join([f"- {c['gate']}: {c['detail']}" for c in quality.checks if c["result"] == "FAIL"])
+        if completeness.missing_roles:
+            fail_msg += "\nMissing required semantic roles (architecture is too shallow):\n"
+            fail_msg += "\n".join(f"- {r}: {completeness.role_evidence.get(r, '')}" for r in completeness.missing_roles)
+
+        tc = time.time()
         try:
-            fail_msg = "\n".join([f"- {c['gate']}: {c['detail']}" for c in quality.checks if c['result'] == 'FAIL'])
             correction = _ollama_chat(
-                ARCHITECTURE_PROPOSAL_PROMPT + f"\n\nFix quality failures:\n{fail_msg}\nReturn corrected JSON.",
-                f"Previous output: {json.dumps(compact)}\nFix quality issues.",
+                ARCHITECTURE_PROPOSAL_PROMPT + f"\n\nFix these failures — the previous output was rejected:\n{fail_msg}\nReturn corrected, complete JSON.",
+                f"Previous output: {json.dumps(compact)}\nFix quality/completeness issues.",
                 2048, STAGE2_TIMEOUT,
             )
-            compact2 = _parse_json(correction)
-            if compact2:
-                proposal2 = _build_proposal_from_compact(compact2, req, provider, OLLAMA_MODEL, prov["stage1Ms"], prov["stage2Ms"])
-                if proposal2:
-                    prov["result"] = "REAL_LLM_CORRECTED"
-                    return proposal2, prov
         except Exception:
-            pass
+            correction = ""
+        prov["correctionMs"] = int((time.time() - tc) * 1000)
+
+        compact2 = _parse_json(correction) if correction else None
+        proposal2 = (
+            _build_proposal_from_compact(compact2, req, provider, OLLAMA_MODEL, prov["stage1Ms"], prov["stage2Ms"], prov["briefHash"])
+            if compact2 else None
+        )
+        if proposal2:
+            prov["correctionGenerator"] = "REAL_LLM"
+            quality2, completeness2 = _validate_proposal(proposal2, provider, req)
+            if quality2.overall != QualityResult.FAIL and completeness2.overall != QualityResult.FAIL:
+                prov["result"] = "REAL_LLM_WITH_LLM_CORRECTION"
+                prov["qualityResult"] = quality2.overall.value
+                prov["completenessResult"] = completeness2.overall.value
+                return proposal2, prov
+
+        # Correction did not resolve the failure(s) — reject rather than
+        # silently returning a proposal that never actually passed. Whether
+        # to fall back to the deterministic generator is the caller's
+        # decision, not this function's (see fallback-consent policy).
+        prov["result"] = "QUALITY_FAIL" if quality.overall == QualityResult.FAIL else "COMPLETENESS_FAIL"
+        prov["qualityResult"] = quality.overall.value
+        prov["completenessResult"] = completeness.overall.value
+        prov["missingRoles"] = completeness.missing_roles
         return None, prov
 
     prov["result"] = "REAL_LLM"
+    prov["qualityResult"] = quality.overall.value
+    prov["completenessResult"] = completeness.overall.value
     return proposal, prov
+
+
+# ═══════════════════════════════════════════════════════════════════
+# REAL AI REFINE — canonical-model delta, not text-only
+# ═══════════════════════════════════════════════════════════════════
+#
+# Previously `refine()` on the router unconditionally called the deterministic
+# regex-based refine_architecture(), even when Ollama was available — "real AI
+# refine" did not exist. Worse, one of the regex branches (private-DB
+# detection) matched the instruction and then did nothing with it (`pass`).
+# This function asks the LLM for the FULL updated compact architecture (not a
+# hand-rolled sparse diff format, which small local models produce unreliably)
+# and reuses the same expansion/validation path as generation, then computes
+# a genuine before/after RefineDelta for the caller.
+
+REFINE_PROMPT = """You are refining an EXISTING cloud architecture per a user instruction.
+
+You will get the CURRENT architecture (compact nodes/edges) and an INSTRUCTION.
+Return the FULL UPDATED compact architecture as JSON — same compact format used
+for architecture generation (nodes with id/role/svc/zone/ha, edges with
+from/to/type/proto/label, groups). Preserve every node/edge the instruction does
+not ask you to change; apply the instruction precisely (e.g. swap a service id,
+change a database's zone to a private one, add/remove a specific node).
+
+Use ONLY services from the provided catalog. Return ONLY valid JSON, no markdown."""
+
+
+def _compact_current_architecture(nodes: list[dict], edges: list[dict]) -> dict:
+    return {
+        "nodes": [
+            {"id": n.get("nodeId", ""), "role": n.get("category", ""), "svc": n.get("nativeService", ""),
+             "zone": n.get("securityZone", "private"), "name": n.get("name", "")}
+            for n in nodes
+        ],
+        "edges": [
+            {"from": e.get("sourceNodeId", ""), "to": e.get("targetNodeId", ""),
+             "type": e.get("type", "request"), "proto": e.get("protocol", ""), "label": e.get("label", "")}
+            for e in edges
+        ],
+    }
+
+
+def _diff_delta(current_nodes: list[dict], current_edges: list[dict], proposal: AgainPilotProposal) -> RefineDelta:
+    old_node_ids = {n.get("nodeId", "") for n in current_nodes}
+    old_edge_ids = {e.get("edgeId", "") for e in current_edges}
+    old_by_id = {n.get("nodeId", ""): n for n in current_nodes}
+
+    added_nodes = [n for n in proposal.nodes if n.node_id not in old_node_ids]
+    new_node_ids = {n.node_id for n in proposal.nodes}
+    removed_nodes = [nid for nid in old_node_ids if nid not in new_node_ids]
+
+    changed_nodes: list[dict] = []
+    for n in proposal.nodes:
+        old = old_by_id.get(n.node_id)
+        if not old:
+            continue
+        if old.get("nativeService", "") != n.native_service:
+            changed_nodes.append({"nodeId": n.node_id, "field": "nativeService",
+                                   "oldValue": old.get("nativeService", ""), "newValue": n.native_service})
+        if old.get("securityZone", "") != n.security_zone:
+            changed_nodes.append({"nodeId": n.node_id, "field": "securityZone",
+                                   "oldValue": old.get("securityZone", ""), "newValue": n.security_zone})
+
+    added_edges = [e for e in proposal.edges if e.edge_id not in old_edge_ids]
+    new_edge_ids = {e.edge_id for e in proposal.edges}
+    removed_edges = [eid for eid in old_edge_ids if eid not in new_edge_ids]
+
+    return RefineDelta(
+        added_nodes=added_nodes, removed_nodes=removed_nodes, changed_nodes=changed_nodes,
+        added_edges=added_edges, removed_edges=removed_edges,
+    )
+
+
+def _generate_real_refine(
+    current_nodes: list[dict], current_edges: list[dict], instruction: str, provider: str,
+    base_req: DetectedRequirement | None = None,
+) -> tuple[tuple[AgainPilotProposal, RefineDelta] | None, dict]:
+    """Two-stage-style real AI refine: LLM proposes the updated architecture,
+    backend validates and diffs it into a canonical-model delta."""
+    prov = {
+        "mode": "REAL_LLM", "provider": "LOCAL_LLM", "model": OLLAMA_MODEL,
+        "stage1Ms": 0, "stage2Ms": 0, "correctionMs": 0, "result": "FAILED",
+        "generationRequestedMode": "REAL_LLM",
+        "briefHash": hashlib.sha256(instruction.encode()).hexdigest()[:12],
+        "generationTimestamp": datetime.now(timezone.utc).isoformat(),
+        "firstPassGenerator": "REAL_LLM", "correctionGenerator": None,
+    }
+    if not _ollama_available():
+        prov["result"] = "FALLBACK_LLM_UNAVAILABLE"
+        return None, prov
+
+    req = _merge_refine_requirements(base_req, instruction)
+    compact_current = _compact_current_architecture(current_nodes, current_edges)
+    all_services = "\n".join(f"{k}: {v['category']} — {v['description']}" for k, v in get_provider_catalog(provider).items())
+
+    import time
+    t0 = time.time()
+    try:
+        raw = _ollama_chat(
+            REFINE_PROMPT,
+            f"Current architecture:\n{json.dumps(compact_current)}\n\nInstruction: {instruction}\n\nService catalog ({provider}):\n{all_services}",
+            max_tokens=2048, timeout=STAGE2_TIMEOUT,
+        )
+    except Exception:
+        prov["result"] = "REFINE_TIMEOUT"
+        return None, prov
+    prov["stage1Ms"] = int((time.time() - t0) * 1000)
+
+    compact = _parse_json(raw)
+    if not compact:
+        prov["result"] = "REFINE_INVALID_JSON"
+        return None, prov
+
+    proposal = _build_proposal_from_compact(compact, req, provider, OLLAMA_MODEL, prov["stage1Ms"], 0, prov["briefHash"])
+    if not proposal:
+        prov["result"] = "BUILD_FAILED"
+        return None, prov
+
+    quality, completeness = _validate_proposal(proposal, provider, req)
+    if quality.overall == QualityResult.FAIL or completeness.overall == QualityResult.FAIL:
+        fail_msg = "\n".join(f"- {c['gate']}: {c['detail']}" for c in quality.checks if c["result"] == "FAIL")
+        if completeness.missing_roles:
+            fail_msg += "\nMissing required roles: " + ", ".join(completeness.missing_roles)
+        tc = time.time()
+        try:
+            correction = _ollama_chat(
+                REFINE_PROMPT + f"\n\nFix these failures in your previous answer:\n{fail_msg}",
+                f"Previous output: {json.dumps(compact)}\nInstruction: {instruction}\nFix quality/completeness issues.",
+                2048, STAGE2_TIMEOUT,
+            )
+        except Exception:
+            correction = ""
+        prov["correctionMs"] = int((time.time() - tc) * 1000)
+        compact2 = _parse_json(correction) if correction else None
+        proposal2 = (
+            _build_proposal_from_compact(compact2, req, provider, OLLAMA_MODEL, prov["stage1Ms"], 0, prov["briefHash"])
+            if compact2 else None
+        )
+        if proposal2:
+            quality2, completeness2 = _validate_proposal(proposal2, provider, req)
+            if quality2.overall != QualityResult.FAIL and completeness2.overall != QualityResult.FAIL:
+                prov["correctionGenerator"] = "REAL_LLM"
+                prov["result"] = "REAL_LLM_WITH_LLM_CORRECTION"
+                delta = _diff_delta(current_nodes, current_edges, proposal2)
+                delta.summary = compact2.get("summary", f"Refinement: {instruction[:80]}")
+                return (proposal2, delta), prov
+        prov["result"] = "QUALITY_FAIL" if quality.overall == QualityResult.FAIL else "COMPLETENESS_FAIL"
+        return None, prov
+
+    prov["result"] = "REAL_LLM"
+    delta = _diff_delta(current_nodes, current_edges, proposal)
+    delta.summary = compact.get("summary", f"Refinement: {instruction[:80]}")
+    return (proposal, delta), prov
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1549,29 +2004,103 @@ class AgainPilotProviderRouter:
     @property
     def last_provenance(self) -> dict: return dict(self._last_provenance)
 
-    def generate(self, request: AgainPilotRequest) -> AgainPilotProposal:
+    def generate(self, request: AgainPilotRequest, force_mode: str | None = None) -> AgainPilotProposal:
+        """Generate an architecture proposal.
+
+        Fallback-safety policy: deterministic generation only ever runs here
+        when (a) the caller explicitly passes force_mode="DETERMINISTIC_FALLBACK"
+        (the user clicked "Use Deterministic Fallback" after being shown that
+        real AI failed), or (b) real AI was never available for this whole
+        process (disclosed up front via /againpilot/status, so there is
+        nothing to silently swap underneath the user mid-request). Any other
+        real-AI failure raises RealAIGenerationFailed instead of silently
+        substituting a different generator — the API layer turns that into an
+        explicit consent prompt, never a silent DETERMINISTIC_FALLABACK result.
+        """
         req = extract_requirements(request.brief)
         provider = request.provider_preference.value if request.provider_preference != ProviderPreference.AUTO else req.provider
         self._last_result_mode = ""
         self._last_provenance = {}
 
-        # Try REAL LLM
+        if force_mode == "DETERMINISTIC_FALLBACK":
+            proposal = generate_architecture(request)
+            self._last_result_mode = "DETERMINISTIC_FALLBACK"
+            self._last_provenance = {
+                "mode": "DETERMINISTIC_FALLBACK", "result": "DETERMINISTIC_FALLBACK",
+                "generationRequestedMode": "DETERMINISTIC_FALLBACK", "userConsented": True,
+                "briefHash": hashlib.sha256(request.brief.encode()).hexdigest()[:12],
+                "generationTimestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            return proposal
+
         if self._ollama:
             proposal, prov = _generate_real_ai(
                 request.brief, request.provider_preference.value,
                 request.platform_preference.value, req, provider)
             self._last_provenance = prov
+            self._last_result_mode = prov["result"]
             if proposal:
-                self._last_result_mode = prov["result"]
                 return proposal
+            # Real AI failed (timeout / invalid JSON / quality or completeness
+            # FAIL that survived correction). Do NOT silently substitute the
+            # deterministic generator — surface the failure for explicit
+            # user consent instead.
+            raise RealAIGenerationFailed(prov)
 
-        # DETERMINISTIC FALLBACK — only if explicitly allowed or LLM unavailable
+        # Real AI was never available this session — status endpoint already
+        # discloses DETERMINISTIC_FALLBACK mode before the user generates.
+        proposal = generate_architecture(request)
         self._last_result_mode = "DETERMINISTIC_FALLBACK"
-        self._last_provenance = {"mode": "DETERMINISTIC_FALLBACK", "result": "FALLBACK"}
-        return generate_architecture(request)
+        self._last_provenance = {
+            "mode": "DETERMINISTIC_FALLBACK", "result": "DETERMINISTIC_FALLBACK",
+            "generationRequestedMode": "DETERMINISTIC_FALLBACK", "userConsented": False,
+            "reason": "REAL_AI_NEVER_AVAILABLE",
+            "briefHash": hashlib.sha256(request.brief.encode()).hexdigest()[:12],
+            "generationTimestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        return proposal
 
-    def refine(self, nodes: list[dict], edges: list[dict], instruction: str, provider: str = "AWS") -> tuple[AgainPilotProposal, RefineDelta]:
-        return refine_architecture(nodes, edges, instruction, provider)
+    def refine(
+        self, nodes: list[dict], edges: list[dict], instruction: str, provider: str = "AWS",
+        force_mode: str | None = None, base_req: DetectedRequirement | None = None,
+    ) -> tuple[AgainPilotProposal, RefineDelta]:
+        """Refine an existing architecture. Same fallback-consent policy as
+        generate(): the deterministic regex-based refine only runs on
+        explicit force_mode="DETERMINISTIC_FALLBACK" or when real AI was
+        never available this session; any other real-AI refine failure
+        raises RealAIGenerationFailed instead of silently substituting it.
+
+        base_req carries the ORIGINAL brief's detected requirements (HA,
+        compliance, ...) so the post-refine quality/completeness re-check
+        doesn't lose them — see _merge_refine_requirements."""
+        self._last_result_mode = ""
+        self._last_provenance = {}
+
+        if force_mode == "DETERMINISTIC_FALLBACK":
+            proposal, delta = refine_architecture(nodes, edges, instruction, provider, base_req=base_req)
+            self._last_result_mode = "DETERMINISTIC_FALLBACK"
+            self._last_provenance = {
+                "mode": "DETERMINISTIC_FALLBACK", "result": "DETERMINISTIC_FALLBACK",
+                "generationRequestedMode": "DETERMINISTIC_FALLBACK", "userConsented": True,
+            }
+            return proposal, delta
+
+        if self._ollama:
+            result, prov = _generate_real_refine(nodes, edges, instruction, provider, base_req=base_req)
+            self._last_provenance = prov
+            self._last_result_mode = prov["result"]
+            if result:
+                return result
+            raise RealAIGenerationFailed(prov)
+
+        proposal, delta = refine_architecture(nodes, edges, instruction, provider, base_req=base_req)
+        self._last_result_mode = "DETERMINISTIC_FALLBACK"
+        self._last_provenance = {
+            "mode": "DETERMINISTIC_FALLBACK", "result": "DETERMINISTIC_FALLBACK",
+            "generationRequestedMode": "DETERMINISTIC_FALLBACK", "userConsented": False,
+            "reason": "REAL_AI_NEVER_AVAILABLE",
+        }
+        return proposal, delta
 
     def explain(self, nodes: list[dict], edges: list[dict], provider: str) -> str:
         if self._ollama:
