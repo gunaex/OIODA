@@ -206,22 +206,35 @@ class ExecutionValidator:
 
         return results
 
+    # Phase N6 — canonical_service_id -> (observed dict key, human label)
+    _FAKECLOUD_RESOURCE_KINDS: dict[str, tuple[str, str]] = {
+        "elb": ("loadBalancers", "load balancer"),
+        "lambda": ("functions", "function"),
+        "cloudwatch": ("logGroups", "log group"),
+    }
+
     @staticmethod
-    def validate_fakecloud(observation: dict[str, Any]) -> list[ExecutionValidation]:
-        """Fakecloud-specific validation from boto3 observation."""
+    def validate_fakecloud(observation: dict[str, Any], canonical_service_id: str = "") -> list[ExecutionValidation]:
+        """Fakecloud-specific validation from boto3 observation.
+        canonical_service_id selects which observed resource list to check
+        (defaults to S3 buckets — the original Phase 7 behavior — when not
+        given, so every pre-N6 caller/test is unaffected)."""
         results: list[ExecutionValidation] = []
         observed = observation.get("observed", {})
-        buckets = observed.get("buckets", [])
+        key, label = ExecutionValidator._FAKECLOUD_RESOURCE_KINDS.get(
+            (canonical_service_id or "").lower(), ("buckets", "bucket"),
+        )
+        items = observed.get(key, [])
 
         results.append(ExecutionValidation(
-            criterion="Bucket exists",
-            expected="at least 1 bucket",
-            observed=f"{len(buckets)} buckets",
-            status="PASS" if len(buckets) > 0 else "FAIL",
+            criterion=f"{label.capitalize()} exists",
+            expected=f"at least 1 {label}",
+            observed=f"{len(items)} {label}(s)",
+            status="PASS" if len(items) > 0 else "FAIL",
         ))
 
         results.append(ExecutionValidation(
-            criterion="Bucket accessible via provider API",
+            criterion=f"{label.capitalize()} accessible via provider API",
             expected="accessible",
             observed="observed via boto3",
             status="PASS",

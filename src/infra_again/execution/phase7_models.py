@@ -485,6 +485,13 @@ class ExecutionTask:
     evidence_requirements: list[str] = field(default_factory=list)
     status: ExecutionTaskStatus = ExecutionTaskStatus.PLANNED
     derived_from: list[dict[str, str]] = field(default_factory=list)
+    # Phase N6 — exact service identity, carried through from N3's
+    # ImplementationTask so the executor knows precisely which resource
+    # type to apply/observe/destroy instead of guessing from a title
+    # string. Empty defaults to FakecloudExecutor's original S3-only
+    # behavior, so every pre-N6 caller/test is unaffected.
+    canonical_service_id: str = ""
+    provider: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -504,6 +511,8 @@ class ExecutionTask:
             "evidenceRequirements": self.evidence_requirements,
             "status": self.status.value,
             "derivedFrom": self.derived_from,
+            "canonicalServiceId": self.canonical_service_id,
+            "provider": self.provider,
         }
 
 

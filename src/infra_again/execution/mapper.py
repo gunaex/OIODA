@@ -137,6 +137,8 @@ class ImplementationExecutionMapper:
                     evidence_requirements=task.evidence_requirements or [],
                     status=ExecutionTaskStatus.PLANNED,
                     derived_from=task.derived_from if hasattr(task, 'derived_from') else [],
+                    canonical_service_id=getattr(task, 'canonical_service_id', '') or '',
+                    provider=getattr(task, 'provider', '') or '',
                 )
                 exec_tasks.append(exec_task)
 

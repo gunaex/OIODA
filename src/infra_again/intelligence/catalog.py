@@ -412,8 +412,12 @@ class ProviderCatalog:
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["CONTAINER_RUNTIME"],
                 platforms=["KUBERNETES"]),
             ProviderService(provider="AWS", service_id="elb", display_name="Elastic Load Balancing",
-                category="LOAD_BALANCING", lifecycle=CatalogLifecycle.DISCOVERED,
-                execution_support=["NOT_IMPLEMENTED"], capabilities=["LOAD_BALANCING"]),
+                category="LOAD_BALANCING", lifecycle=CatalogLifecycle.VERIFIED,
+                execution_support=["SIMULATED"], capabilities=["LOAD_BALANCING"],
+                source_type=SourceType.MANUAL_VERIFIED,
+                notes="Phase N6 — SIMULATED via aws_lb (ALB) against fakecloud, verified: real "
+                      "tofu apply/destroy, describe_load_balancers observation. Classic aws_elb "
+                      "was tried first and rejected by fakecloud (MissingParameter); ALB works."),
             ProviderService(provider="AWS", service_id="cloudfront", display_name="CloudFront",
                 category="CDN", lifecycle=CatalogLifecycle.DISCOVERED,
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["CDN"]),
@@ -439,8 +443,11 @@ class ProviderCatalog:
                 category="MESSAGING", lifecycle=CatalogLifecycle.DISCOVERED,
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["MESSAGING"]),
             ProviderService(provider="AWS", service_id="cloudwatch", display_name="CloudWatch",
-                category="OBSERVABILITY", lifecycle=CatalogLifecycle.DISCOVERED,
-                execution_support=["NOT_IMPLEMENTED"], capabilities=["OBSERVABILITY"]),
+                category="OBSERVABILITY", lifecycle=CatalogLifecycle.VERIFIED,
+                execution_support=["SIMULATED"], capabilities=["OBSERVABILITY"],
+                source_type=SourceType.MANUAL_VERIFIED,
+                notes="Phase N6 — SIMULATED via aws_cloudwatch_log_group against fakecloud, "
+                      "verified: real tofu apply/destroy, describe_log_groups observation."),
             ProviderService(provider="AWS", service_id="iam", display_name="IAM",
                 category="IAM", lifecycle=CatalogLifecycle.DISCOVERED,
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["IAM"]),
@@ -448,8 +455,11 @@ class ProviderCatalog:
                 category="CACHE", lifecycle=CatalogLifecycle.DISCOVERED,
                 execution_support=["NOT_IMPLEMENTED"], capabilities=["CACHE"]),
             ProviderService(provider="AWS", service_id="lambda", display_name="Lambda",
-                category="SERVERLESS", lifecycle=CatalogLifecycle.DISCOVERED,
-                execution_support=["NOT_IMPLEMENTED"], capabilities=["SERVERLESS"]),
+                category="SERVERLESS", lifecycle=CatalogLifecycle.VERIFIED,
+                execution_support=["SIMULATED"], capabilities=["SERVERLESS"],
+                source_type=SourceType.MANUAL_VERIFIED,
+                notes="Phase N6 — SIMULATED via aws_lambda_function + aws_iam_role against "
+                      "fakecloud, verified: real tofu apply/destroy, list_functions observation."),
         ]
         # GCP services
         gcp_services = [

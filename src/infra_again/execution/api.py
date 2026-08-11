@@ -426,10 +426,18 @@ def register_execution_routes(app: FastAPI) -> None:
                 property_mismatches: dict[str, str] = {}
                 if pkg.target.target_type == "FAKECLOUD":
                     from .executor import FakecloudExecutor
-                    expected_ids = [FakecloudExecutor._bucket_name(task, pkg.correlation_id)]
-                    observed_ids = obs.get("observed", {}).get("buckets", [])
-                    run_owned_prefix = f"infra-again-{pkg.correlation_id[:8]}-"
-                    if observation_ok:
+                    svc = (task.canonical_service_id or "").lower()
+                    expected_ids = [FakecloudExecutor.resource_name(task, pkg.correlation_id)]
+                    observed_ids = FakecloudExecutor.observed_ids_for(task, obs)
+                    run_owned_prefix = {
+                        "elb": f"ia-{pkg.correlation_id[:8]}-",
+                        "lambda": f"infra-again-{pkg.correlation_id[:8]}-",
+                        "cloudwatch": f"/infra-again/{pkg.correlation_id[:8]}/",
+                    }.get(svc, f"infra-again-{pkg.correlation_id[:8]}-")  # default: s3
+                    # Property-level (tag) drift check — currently only
+                    # implemented for S3, where get_bucket_tagging is cheap
+                    # and well-supported; best-effort for the other types.
+                    if observation_ok and svc not in ("elb", "lambda", "cloudwatch"):
                         try:
                             import boto3
                             s3 = boto3.client("s3", endpoint_url="http://localhost:4566",
@@ -468,7 +476,7 @@ def register_execution_routes(app: FastAPI) -> None:
                 task.status = ExecutionTaskStatus.VALIDATING
                 add_event("VALIDATION_STARTED", task_id=task.execution_task_id)
                 if pkg.target.target_type == "FAKECLOUD":
-                    validations = ExecutionValidator.validate_fakecloud(obs)
+                    validations = ExecutionValidator.validate_fakecloud(obs, task.canonical_service_id)
                 elif pkg.target.target_type == "KIND":
                     validations = ExecutionValidator.validate_kind(exec_result, obs)
                 else:
@@ -684,6 +692,8 @@ def register_execution_routes(app: FastAPI) -> None:
                     implementation_task_id=t_data.get("implementationTaskId", ""),
                     work_package_id=t_data.get("workPackageId", ""), title=t_data.get("title", ""),
                     action_type=ActionType(t_data.get("actionType", "VALIDATE_RESOURCE")),
+                    canonical_service_id=t_data.get("canonicalServiceId", ""),
+                    provider=t_data.get("provider", ""),
                 ))
 
         from .executor import PlanOnlyExecutor, FakecloudExecutor, KindExecutor
