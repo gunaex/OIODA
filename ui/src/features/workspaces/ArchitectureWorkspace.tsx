@@ -365,6 +365,45 @@ export default function ArchitectureWorkspace(props: Props = {}) {
             provider={provider}
             platform={canonical?.platform || 'KUBERNETES'}
             hasDesign={!!currentDesign}
+            designId={currentDesign?.designId}
+            designName={currentDesign?.name || currentDesign?.metadata?.name}
+            designStatus={currentDesign?.status}
+            onRefineApply={async (designId: string, refinedProposal: any) => {
+              // Build canonical from refined proposal
+              const cd = createExampleDesign(provider);
+              cd.title = refinedProposal.title || 'Refined Architecture';
+              cd.description = refinedProposal.summary || '';
+              cd.nodes = (refinedProposal.nodes || []).map((n: any) => ({
+                nodeId: n.nodeId, name: n.name, category: n.category,
+                provider: n.provider || provider, nativeService: n.nativeService || '',
+                platform: n.platform || 'NATIVE_VM',
+                properties: n.properties || {},
+                securityZone: n.securityZone || 'private',
+                dataClassification: n.dataClassification || 'internal',
+                owner: n.owner || '', source: n.source || 'AI_GENERATED',
+                verificationState: n.verificationState || 'UNVERIFIED',
+              }));
+              cd.edges = (refinedProposal.edges || []).map((e: any) => ({
+                edgeId: e.edgeId, sourceNodeId: e.sourceNodeId, targetNodeId: e.targetNodeId,
+                type: e.type || 'request', protocol: e.protocol || 'TCP',
+                direction: e.direction || 'unidirectional',
+                dataType: e.dataType || '', securityClassification: e.securityClassification || 'none',
+                label: e.label || '',
+              }));
+              cd.groups = (refinedProposal.groups || []).map((g: any) => ({
+                groupId: g.groupId, name: g.name, type: g.type || 'SUBNET',
+                parentGroupId: g.parentGroupId || '',
+                provider: g.provider || provider, securityZone: g.securityZone || 'private',
+              }));
+              cd.designId = designId;
+              await api.updateDesignFlow(designId, cd);
+              // Reload authoritative design + refresh draw.io
+              setCanonical(cd);
+              const xml = canonicalToDrawioXml(cd, 'architecture');
+              setDrawioXml(xml);
+              setMsg('AGAINPILOT refine applied');
+              loadDesigns();
+            }}
             onApply={(proposal: any) => {
               // Convert AGAINPILOT proposal → canonical → persist → draw.io
               const cd = createExampleDesign(provider);

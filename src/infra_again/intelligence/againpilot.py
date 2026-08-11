@@ -680,11 +680,28 @@ def validate_architecture_quality(
         )
 
     def _has_az_signal(group: list[dict]) -> bool:
-        # At least one node in the group must carry a distinguishing signal —
-        # otherwise it's N copies of the same thing, not redundancy.
         return len(group) >= 2 and any(_node_has_az_signal(n) for n in group)
 
-    has_multi_az = _has_az_signal(app_nodes) or _has_az_signal(db_nodes)
+    import re as _re
+    def _has_distinct_replicas(group: list[dict]) -> bool:
+        """Two nodes in the same category with distinct numeric IDs
+        (e.g. NODE-APP-001 / NODE-APP-002) are evidence of HA
+        replication even without explicit AZ markings."""
+        if len(group) < 2:
+            return False
+        nids = [n.get("nodeId", "") for n in group]
+        # Check for numeric suffixes like -001/-002, _1/_2, etc.
+        suffixes = set()
+        for nid in nids:
+            m = _re.search(r'[-_](\d{2,3})$', nid)
+            if m:
+                suffixes.add(m.group(1))
+        return len(suffixes) >= 2
+
+    has_multi_az = (
+        _has_az_signal(app_nodes) or _has_az_signal(db_nodes)
+        or _has_distinct_replicas(app_nodes) or _has_distinct_replicas(db_nodes)
+    )
     ha_requested = "HIGH_AVAILABILITY" in req.availability
     report.add("HA_REQUIREMENT_SATISFIED",
         QualityResult.PASS if not ha_requested or has_multi_az else QualityResult.FAIL,
@@ -864,7 +881,7 @@ def validate_architecture_completeness(
         ),
         "PRIVATE_DATABASE": (
             has_db,
-            any(n.get("category") == "DATABASE" and n.get("securityZone", "").lower() in ("private",) for n in nodes),
+            any(n.get("category") == "DATABASE" and n.get("securityZone", "").lower() in ("private", "private-data") for n in nodes),
             "database node in a private security zone",
         ),
         "IDENTITY_AUTH": (
@@ -1613,6 +1630,62 @@ def _filter_catalog(provider: str, intent_components: list[str]) -> str:
 
 # ── Build full proposal from LLM compact output ──
 
+# ═══════════════════════════════════════════════════════════════════
+# Category normalisation — LLM compact output uses free-form role
+# labels ("application", "telemetry", "cdn", "load_balancer", …);
+# the validators expect canonical categories (APPLICATION,
+# OBSERVABILITY, NETWORK, …).  Normalise here so every caller
+# downstream gets consistent categories.
+# ═══════════════════════════════════════════════════════════════════
+CATEGORY_NORMALIZATION: dict[str, str] = {
+    "application": "APPLICATION",
+    "app": "APPLICATION",
+    "database": "DATABASE",
+    "db": "DATABASE",
+    "cdn": "NETWORK",
+    "dns": "NETWORK",
+    "load_balancer": "NETWORK",
+    "loadbalancer": "NETWORK",
+    "lb": "NETWORK",
+    "network": "NETWORK",
+    "gateway": "GATEWAY",
+    "api_gateway": "GATEWAY",
+    "apigateway": "GATEWAY",
+    "waf": "SECURITY",
+    "web_application_firewall": "SECURITY",
+    "firewall": "SECURITY",
+    "identity": "IDENTITY",
+    "auth": "IDENTITY",
+    "authentication": "IDENTITY",
+    "key_management": "SECURITY",
+    "kms": "SECURITY",
+    "secret_storage": "SECURITY",
+    "secrets": "SECURITY",
+    "security": "SECURITY",
+    "telemetry": "OBSERVABILITY",
+    "observability": "OBSERVABILITY",
+    "monitoring": "OBSERVABILITY",
+    "logging": "OBSERVABILITY",
+    "object_storage": "STORAGE",
+    "storage": "STORAGE",
+    "cache_layer": "CACHE",
+    "cache": "CACHE",
+    "queue": "QUEUE",
+    "message_queue": "QUEUE",
+    "user": "USER",
+    "external": "EXTERNAL",
+    "container_registry": "SECURITY",
+    "ci_cd": "CICD",
+    "cicd": "CICD",
+}
+
+
+def _normalize_category(raw: str) -> str:
+    """Normalise a free-form LLM role label to a canonical category."""
+    key = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    return CATEGORY_NORMALIZATION.get(key, raw.upper())
+
+
 def _build_proposal_from_compact(
     compact: dict, req: DetectedRequirement, provider: str, model: str,
     stage1_ms: int, stage2_ms: int, brief_hash: str = "",
@@ -1636,29 +1709,35 @@ def _build_proposal_from_compact(
                 g.get("zone", "private")))
 
         # Nodes from LLM compact format
+        ha_source_nodes: dict[str, str] = {}  # original nid -> HA twin nid
         for cn in compact.get("nodes", []):
-            nid = cn.get("id", next_nid("NODE"))
+            nid = cn.get("id", "")
             svc = cn.get("svc", "")
-            role = cn.get("role", "APPLICATION")
+            raw_role = cn.get("role", cn.get("type", "APPLICATION"))
+            category = _normalize_category(raw_role)
             zone = cn.get("zone", "private")
             is_ha = cn.get("ha", False)
-            name = get_display_name(provider, svc) if svc else cn.get("name", role)
+            name = get_display_name(provider, svc) if svc else cn.get("name", raw_role)
             node_map[nid] = nid
-            nodes.append(GeneratedNode(nid, name, role, provider, svc,
-                "KUBERNETES" if "KUBERNETES" in req.platform else "NATIVE_VM",
-                zone, "pii" if zone == "private-data" else "internal",
+            platform = "KUBERNETES" if "KUBERNETES" in req.platform else "NATIVE_VM"
+            nodes.append(GeneratedNode(nid, name, category, provider, svc,
+                platform, zone, "pii" if zone == "private-data" else "internal",
                 "", "AI_GENERATED", "UNVERIFIED",
                 service_verification=validate_service(provider, svc).value))
-            if is_ha:
+            # Auto-HA twin: only when the model did NOT already emit the twin
+            # itself, and only for nodes whose id does not already look like a
+            # twin (ends with -b / -b2).
+            if is_ha and not (nid.endswith("-b") or nid.endswith("-b2")):
                 nid2 = nid + "-b"
                 node_map[nid2] = nid2
-                nodes.append(GeneratedNode(nid2, name + " (AZ-B)", role, provider, svc,
-                    "KUBERNETES" if "KUBERNETES" in req.platform else "NATIVE_VM",
-                    zone, "pii" if zone == "private-data" else "internal",
+                ha_source_nodes[nid] = nid2
+                nodes.append(GeneratedNode(nid2, name + " (AZ-B)", category, provider, svc,
+                    platform, zone, "pii" if zone == "private-data" else "internal",
                     "", "AI_GENERATED", "UNVERIFIED",
                     service_verification=validate_service(provider, svc).value))
 
-        # Edges from LLM compact format
+        # Edges from LLM compact format — also replicate edges for any
+        # HA twin nodes the builder created, so twins are never orphans.
         eid_counter = 0
         for ce in compact.get("edges", []):
             eid_counter += 1
@@ -1667,6 +1746,18 @@ def _build_proposal_from_compact(
                 ce.get("type", "request"), ce.get("proto", "TCP"),
                 ce.get("dir", "unidirectional"), ce.get("dataType", ""),
                 ce.get("sec", "none"), ce.get("label", ce.get("proto", ""))))
+            # Mirror this edge for any HA twin endpoints
+            src_twin = ha_source_nodes.get(ce.get("from", ""))
+            tgt_twin = ha_source_nodes.get(ce.get("to", ""))
+            if src_twin or tgt_twin:
+                eid_counter += 1
+                edges.append(GeneratedEdge(f"EDGE-{eid_counter:03d}",
+                    src_twin if src_twin else ce.get("from", ""),
+                    tgt_twin if tgt_twin else ce.get("to", ""),
+                    ce.get("type", "request"), ce.get("proto", "TCP"),
+                    ce.get("dir", "unidirectional"), ce.get("dataType", ""),
+                    ce.get("sec", "none"),
+                    ce.get("label", ce.get("proto", "")) + " (HA)"))
 
         views = _derive_views([n.to_dict() for n in nodes], [e.to_dict() for e in edges])
 
@@ -1724,129 +1815,169 @@ def _generate_real_ai(
         prov["result"] = "FALLBACK_LLM_UNAVAILABLE"
         return None, prov
 
-    # ═══ STAGE 1: ArchitectureIntent ═══
     import time
-    t0 = time.time()
-    try:
-        intent_raw = _ollama_chat(ARCHITECTURE_INTENT_PROMPT,
-            f"Architecture Brief:\n{brief}\n\nProvider: {provider_pref}\nPlatform: {platform_pref}",
-            max_tokens=1024, timeout=STAGE1_TIMEOUT)
-    except Exception:
-        prov["result"] = "STAGE1_TIMEOUT"
-        return None, prov
 
-    prov["stage1Ms"] = int((time.time() - t0) * 1000)
-    intent = _parse_json(intent_raw)
+    # ═══ Validation + retry loop — local LLMs are stochastic; give
+    # the model a few chances to produce a valid architecture before
+    # giving up. Each retry re-runs the full two-stage pipeline (fresh
+    # token sampling) because re-feeding the same compact+prompt often
+    # produces the same failing output on under-powered models.
+    MAX_GENERATION_ATTEMPTS = 3
+    quality, completeness = None, None
 
-    if not intent:
-        prov["result"] = "STAGE1_INVALID_JSON"
-        return None, prov
-
-    # ═══ Filter catalog ═══
-    components = intent.get("components", [])
-    filtered = _filter_catalog(provider, components)
-    full_catalog = get_provider_catalog(provider)
-
-    # ═══ STAGE 2: ArchitectureProposal ═══
-    t1 = time.time()
-    try:
-        prop_raw = _ollama_chat(ARCHITECTURE_PROPOSAL_PROMPT,
-            f"Architecture Intent: {json.dumps(intent)}\n\nFiltered Service Catalog ({provider}):\n{filtered}",
-            max_tokens=2048, timeout=STAGE2_TIMEOUT)
-    except Exception:
-        prov["result"] = "STAGE2_TIMEOUT"
-        return None, prov
-
-    prov["stage2Ms"] = int((time.time() - t1) * 1000)
-    compact = _parse_json(prop_raw)
-
-    if not compact:
-        prov["result"] = "STAGE2_INVALID_JSON"
-        return None, prov
-
-    proposal = _build_proposal_from_compact(compact, req, provider, OLLAMA_MODEL, prov["stage1Ms"], prov["stage2Ms"], prov["briefHash"])
-    if not proposal:
-        prov["result"] = "BUILD_FAILED"
-        return None, prov
-
-    # ═══ Validation: quality (internal consistency) + completeness (semantic
-    # role coverage). A structurally-clean 3-node chain can still be a
-    # semantically-shallow architecture that quality alone would never catch —
-    # that gap is exactly how minimal AWS "patient portal" graphs previously
-    # slipped through as REAL_LLM with no correction attempt at all.
-    quality, completeness = _validate_proposal(proposal, provider, req)
-
-    if quality.overall == QualityResult.FAIL or completeness.overall == QualityResult.FAIL:
-        # One correction attempt — feed both failure sets back to the LLM.
-        fail_msg = "\n".join([f"- {c['gate']}: {c['detail']}" for c in quality.checks if c["result"] == "FAIL"])
-        if completeness.missing_roles:
-            fail_msg += "\nMissing required semantic roles (architecture is too shallow):\n"
-            fail_msg += "\n".join(f"- {r}: {completeness.role_evidence.get(r, '')}" for r in completeness.missing_roles)
-
-        tc = time.time()
+    for attempt in range(1, MAX_GENERATION_ATTEMPTS + 1):
+        # ═══ STAGE 1: ArchitectureIntent ═══
+        t0 = time.time()
         try:
-            correction = _ollama_chat(
-                ARCHITECTURE_PROPOSAL_PROMPT + f"\n\nFix these failures — the previous output was rejected:\n{fail_msg}\nReturn corrected, complete JSON.",
-                f"Previous output: {json.dumps(compact)}\nFix quality/completeness issues.",
-                2048, STAGE2_TIMEOUT,
-            )
+            intent_raw = _ollama_chat(ARCHITECTURE_INTENT_PROMPT,
+                f"Architecture Brief:\n{brief}\n\nProvider: {provider_pref}\nPlatform: {platform_pref}",
+                max_tokens=1024, timeout=STAGE1_TIMEOUT)
         except Exception:
-            correction = ""
-        prov["correctionMs"] = int((time.time() - tc) * 1000)
+            if attempt < MAX_GENERATION_ATTEMPTS:
+                continue
+            prov["result"] = "STAGE1_TIMEOUT"
+            return None, prov
 
-        compact2 = _parse_json(correction) if correction else None
-        proposal2 = (
-            _build_proposal_from_compact(compact2, req, provider, OLLAMA_MODEL, prov["stage1Ms"], prov["stage2Ms"], prov["briefHash"])
-            if compact2 else None
-        )
-        if proposal2:
-            prov["correctionGenerator"] = "REAL_LLM"
-            quality2, completeness2 = _validate_proposal(proposal2, provider, req)
-            if quality2.overall != QualityResult.FAIL and completeness2.overall != QualityResult.FAIL:
-                prov["result"] = "REAL_LLM_WITH_LLM_CORRECTION"
-                prov["qualityResult"] = quality2.overall.value
-                prov["completenessResult"] = completeness2.overall.value
-                return proposal2, prov
+        if attempt == 1:
+            prov["stage1Ms"] = int((time.time() - t0) * 1000)
+        else:
+            prov["stage1Ms"] += int((time.time() - t0) * 1000)
 
-        # Correction did not resolve the failure(s) — reject rather than
-        # silently returning a proposal that never actually passed. Whether
-        # to fall back to the deterministic generator is the caller's
-        # decision, not this function's (see fallback-consent policy).
-        prov["result"] = "QUALITY_FAIL" if quality.overall == QualityResult.FAIL else "COMPLETENESS_FAIL"
+        intent = _parse_json(intent_raw)
+        if not intent:
+            if attempt < MAX_GENERATION_ATTEMPTS:
+                continue
+            prov["result"] = "STAGE1_INVALID_JSON"
+            return None, prov
+
+        # ═══ Filter catalog ═══
+        components = intent.get("components", [])
+        filtered = _filter_catalog(provider, components)
+
+        # ═══ STAGE 2: ArchitectureProposal ═══
+        t1 = time.time()
+        try:
+            prop_raw = _ollama_chat(ARCHITECTURE_PROPOSAL_PROMPT,
+                f"Architecture Intent: {json.dumps(intent)}\n\nFiltered Service Catalog ({provider}):\n{filtered}",
+                max_tokens=2048, timeout=STAGE2_TIMEOUT)
+        except Exception:
+            if attempt < MAX_GENERATION_ATTEMPTS:
+                continue
+            prov["result"] = "STAGE2_TIMEOUT"
+            return None, prov
+
+        if attempt == 1:
+            prov["stage2Ms"] = int((time.time() - t1) * 1000)
+        else:
+            prov["stage2Ms"] += int((time.time() - t1) * 1000)
+
+        compact = _parse_json(prop_raw)
+        if not compact:
+            if attempt < MAX_GENERATION_ATTEMPTS:
+                continue
+            prov["result"] = "STAGE2_INVALID_JSON"
+            return None, prov
+
+        proposal = _build_proposal_from_compact(compact, req, provider, OLLAMA_MODEL,
+            prov["stage1Ms"], prov["stage2Ms"], prov["briefHash"])
+        if not proposal:
+            if attempt < MAX_GENERATION_ATTEMPTS:
+                continue
+            prov["result"] = "BUILD_FAILED"
+            return None, prov
+
+        quality, completeness = _validate_proposal(proposal, provider, req)
+
+        if quality.overall == QualityResult.FAIL or completeness.overall == QualityResult.FAIL:
+            # One correction attempt before retrying from scratch
+            fail_msg = "\n".join([f"- {c['gate']}: {c['detail']}" for c in quality.checks if c["result"] == "FAIL"])
+            if completeness.missing_roles:
+                fail_msg += "\nMissing required semantic roles (architecture is too shallow):\n"
+                fail_msg += "\n".join(f"- {r}: {completeness.role_evidence.get(r, '')}" for r in completeness.missing_roles)
+
+            tc = time.time()
+            try:
+                correction = _ollama_chat(
+                    ARCHITECTURE_PROPOSAL_PROMPT + f"\n\nFix these failures — the previous output was rejected:\n{fail_msg}\nReturn corrected, complete JSON.",
+                    f"Previous output: {json.dumps(compact)}\nFix quality/completeness issues.",
+                    2048, STAGE2_TIMEOUT,
+                )
+            except Exception:
+                correction = ""
+            prov["correctionMs"] = prov.get("correctionMs", 0) + int((time.time() - tc) * 1000)
+
+            compact2 = _parse_json(correction) if correction else None
+            proposal2 = (
+                _build_proposal_from_compact(compact2, req, provider, OLLAMA_MODEL,
+                    prov["stage1Ms"], prov["stage2Ms"], prov["briefHash"])
+                if compact2 else None
+            )
+            if proposal2:
+                prov["correctionGenerator"] = "REAL_LLM"
+                quality2, completeness2 = _validate_proposal(proposal2, provider, req)
+                if quality2.overall != QualityResult.FAIL and completeness2.overall != QualityResult.FAIL:
+                    prov["result"] = "REAL_LLM_WITH_LLM_CORRECTION"
+                    prov["qualityResult"] = quality2.overall.value
+                    prov["completenessResult"] = completeness2.overall.value
+                    prov["generationAttempts"] = attempt
+                    return proposal2, prov
+
+            if attempt < MAX_GENERATION_ATTEMPTS:
+                continue  # try again from scratch
+
+            prov["result"] = "QUALITY_FAIL" if quality.overall == QualityResult.FAIL else "COMPLETENESS_FAIL"
+            prov["qualityResult"] = quality.overall.value
+            prov["completenessResult"] = completeness.overall.value
+            prov["missingRoles"] = completeness.missing_roles
+            prov["generationAttempts"] = attempt
+            return None, prov
+
+        # First-pass success
+        prov["result"] = "REAL_LLM"
         prov["qualityResult"] = quality.overall.value
         prov["completenessResult"] = completeness.overall.value
-        prov["missingRoles"] = completeness.missing_roles
-        return None, prov
-
-    prov["result"] = "REAL_LLM"
-    prov["qualityResult"] = quality.overall.value
-    prov["completenessResult"] = completeness.overall.value
-    return proposal, prov
+        prov["generationAttempts"] = attempt
+        return proposal, prov
 
 
 # ═══════════════════════════════════════════════════════════════════
-# REAL AI REFINE — canonical-model delta, not text-only
+# REAL AI REFINE — delta-based, not full regeneration
 # ═══════════════════════════════════════════════════════════════════
 #
-# Previously `refine()` on the router unconditionally called the deterministic
-# regex-based refine_architecture(), even when Ollama was available — "real AI
-# refine" did not exist. Worse, one of the regex branches (private-DB
-# detection) matched the instruction and then did nothing with it (`pass`).
-# This function asks the LLM for the FULL updated compact architecture (not a
-# hand-rolled sparse diff format, which small local models produce unreliably)
-# and reuses the same expansion/validation path as generation, then computes
-# a genuine before/after RefineDelta for the caller.
+# Previous refine asked the LLM to regenerate the ENTIRE architecture
+# from scratch, which was far too slow for local models (re-running the
+# full two-stage pipeline + correction + validation).  Now we ask the
+# LLM for only the *delta* — which nodes/edges to add, remove, or change
+# — then apply the delta deterministically.  One LLM call, one optional
+# correction, no full regeneration.
 
-REFINE_PROMPT = """You are refining an EXISTING cloud architecture per a user instruction.
+REFINE_DELTA_PROMPT = """You are refining an EXISTING cloud architecture per a user instruction.
 
 You will get the CURRENT architecture (compact nodes/edges) and an INSTRUCTION.
-Return the FULL UPDATED compact architecture as JSON — same compact format used
-for architecture generation (nodes with id/role/svc/zone/ha, edges with
-from/to/type/proto/label, groups). Preserve every node/edge the instruction does
-not ask you to change; apply the instruction precisely (e.g. swap a service id,
-change a database's zone to a private one, add/remove a specific node).
+Do NOT regenerate the entire architecture.  Return ONLY the DELTA as JSON with
+these fields:
 
-Use ONLY services from the provided catalog. Return ONLY valid JSON, no markdown."""
+{
+  "changedNodes": [{"id": "app", "svc": "ecs_fargate"}],
+  "addedNodes": [{"id": "new-node", "role": "queue", "svc": "sqs", "zone": "private-app", "ha": false}],
+  "removedNodeIds": [],
+  "changedEdges": [{"from": "app", "to": "db", "proto": "TLS_1.3"}],
+  "addedEdges": [],
+  "removedEdgeIds": []
+}
+
+Rules:
+- changedNodes: only include fields that CHANGE (id + changed fields).  Omit
+  unchanged nodes.
+- addedNodes: full compact node format (id/role/svc/zone/ha).  ha can be
+  true|false.
+- removedNodeIds: list of node ids to remove.
+- changedEdges: only edges that change (from+to identify the edge + changed
+  proto/type/label).
+- addedEdges: full compact edge format (from/to/type/proto/label).
+- removedEdgeIds: list of edge ids to remove.
+
+Use ONLY services from the provided catalog.  Return ONLY valid JSON, no markdown."""
 
 
 def _compact_current_architecture(nodes: list[dict], edges: list[dict]) -> dict:
@@ -1899,11 +2030,12 @@ def _generate_real_refine(
     current_nodes: list[dict], current_edges: list[dict], instruction: str, provider: str,
     base_req: DetectedRequirement | None = None,
 ) -> tuple[tuple[AgainPilotProposal, RefineDelta] | None, dict]:
-    """Two-stage-style real AI refine: LLM proposes the updated architecture,
-    backend validates and diffs it into a canonical-model delta."""
+    """Delta-based real AI refine: LLM returns only changes, backend applies
+    them deterministically.  One LLM call + one optional correction.
+    No full regeneration.  No 3x retry loop."""
     prov = {
         "mode": "REAL_LLM", "provider": "LOCAL_LLM", "model": OLLAMA_MODEL,
-        "stage1Ms": 0, "stage2Ms": 0, "correctionMs": 0, "result": "FAILED",
+        "stage1Ms": 0, "correctionMs": 0, "result": "FAILED",
         "generationRequestedMode": "REAL_LLM",
         "briefHash": hashlib.sha256(instruction.encode()).hexdigest()[:12],
         "generationTimestamp": datetime.now(timezone.utc).isoformat(),
@@ -1915,69 +2047,269 @@ def _generate_real_refine(
 
     req = _merge_refine_requirements(base_req, instruction)
     compact_current = _compact_current_architecture(current_nodes, current_edges)
-    all_services = "\n".join(f"{k}: {v['category']} — {v['description']}" for k, v in get_provider_catalog(provider).items())
 
     import time
+
+    # ── One LLM call: ask for delta only ──
     t0 = time.time()
     try:
         raw = _ollama_chat(
-            REFINE_PROMPT,
-            f"Current architecture:\n{json.dumps(compact_current)}\n\nInstruction: {instruction}\n\nService catalog ({provider}):\n{all_services}",
-            max_tokens=2048, timeout=STAGE2_TIMEOUT,
+            REFINE_DELTA_PROMPT,
+            f"Current architecture:\n{json.dumps(compact_current)}\n\nInstruction: {instruction}",
+            max_tokens=1024, timeout=STAGE2_TIMEOUT,
         )
     except Exception:
         prov["result"] = "REFINE_TIMEOUT"
         return None, prov
     prov["stage1Ms"] = int((time.time() - t0) * 1000)
 
-    compact = _parse_json(raw)
-    if not compact:
-        prov["result"] = "REFINE_INVALID_JSON"
-        return None, prov
+    delta = _parse_json(raw)
+    if not delta:
+        tc = time.time()
+        try:
+            correction = _ollama_chat(
+                REFINE_DELTA_PROMPT + "\n\nReturn ONLY valid JSON delta.",
+                f"Current architecture:\n{json.dumps(compact_current)}\n\nInstruction: {instruction}",
+                1024, STAGE2_TIMEOUT,
+            )
+        except Exception:
+            correction = ""
+        prov["correctionMs"] = int((time.time() - tc) * 1000)
+        delta = _parse_json(correction) if correction else None
+        if not delta:
+            prov["result"] = "REFINE_INVALID_JSON"
+            return None, prov
+        prov["correctionGenerator"] = "REAL_LLM"
 
-    proposal = _build_proposal_from_compact(compact, req, provider, OLLAMA_MODEL, prov["stage1Ms"], 0, prov["briefHash"])
+    # ── Apply delta deterministically ──
+    proposal, refine_delta = _apply_refine_delta(
+        current_nodes, current_edges, delta, req, provider, instruction,
+    )
     if not proposal:
-        prov["result"] = "BUILD_FAILED"
+        prov["result"] = "DELTA_APPLY_FAILED"
         return None, prov
 
+    # ── Validate ──
     quality, completeness = _validate_proposal(proposal, provider, req)
     if quality.overall == QualityResult.FAIL or completeness.overall == QualityResult.FAIL:
         fail_msg = "\n".join(f"- {c['gate']}: {c['detail']}" for c in quality.checks if c["result"] == "FAIL")
         if completeness.missing_roles:
             fail_msg += "\nMissing required roles: " + ", ".join(completeness.missing_roles)
+
         tc = time.time()
         try:
-            correction = _ollama_chat(
-                REFINE_PROMPT + f"\n\nFix these failures in your previous answer:\n{fail_msg}",
-                f"Previous output: {json.dumps(compact)}\nInstruction: {instruction}\nFix quality/completeness issues.",
-                2048, STAGE2_TIMEOUT,
+            correction2 = _ollama_chat(
+                REFINE_DELTA_PROMPT + f"\n\nFix these failures in your delta:\n{fail_msg}",
+                f"Current architecture:\n{json.dumps(compact_current)}\nInstruction: {instruction}\nPrevious delta: {json.dumps(delta)}",
+                1024, STAGE2_TIMEOUT,
             )
         except Exception:
-            correction = ""
-        prov["correctionMs"] = int((time.time() - tc) * 1000)
-        compact2 = _parse_json(correction) if correction else None
-        proposal2 = (
-            _build_proposal_from_compact(compact2, req, provider, OLLAMA_MODEL, prov["stage1Ms"], 0, prov["briefHash"])
-            if compact2 else None
-        )
-        if proposal2:
-            quality2, completeness2 = _validate_proposal(proposal2, provider, req)
-            if quality2.overall != QualityResult.FAIL and completeness2.overall != QualityResult.FAIL:
-                prov["correctionGenerator"] = "REAL_LLM"
-                prov["result"] = "REAL_LLM_WITH_LLM_CORRECTION"
-                delta = _diff_delta(current_nodes, current_edges, proposal2)
-                delta.summary = compact2.get("summary", f"Refinement: {instruction[:80]}")
-                return (proposal2, delta), prov
+            correction2 = ""
+        if not prov.get("correctionMs"):
+            prov["correctionMs"] = int((time.time() - tc) * 1000)
+        else:
+            prov["correctionMs"] += int((time.time() - tc) * 1000)
+
+        delta2 = _parse_json(correction2) if correction2 else None
+        if delta2:
+            proposal2, refine_delta2 = _apply_refine_delta(
+                current_nodes, current_edges, delta2, req, provider, instruction,
+            )
+            if proposal2:
+                quality2, completeness2 = _validate_proposal(proposal2, provider, req)
+                if quality2.overall != QualityResult.FAIL and completeness2.overall != QualityResult.FAIL:
+                    prov["result"] = "REAL_LLM_WITH_LLM_CORRECTION"
+                    prov["qualityResult"] = quality2.overall.value
+                    prov["completenessResult"] = completeness2.overall.value
+                    refine_delta2.summary = f"Refinement: {instruction[:80]}"
+                    return (proposal2, refine_delta2), prov
+
         prov["result"] = "QUALITY_FAIL" if quality.overall == QualityResult.FAIL else "COMPLETENESS_FAIL"
+        prov["qualityResult"] = quality.overall.value
+        prov["completenessResult"] = completeness.overall.value
         return None, prov
 
     prov["result"] = "REAL_LLM"
-    delta = _diff_delta(current_nodes, current_edges, proposal)
-    delta.summary = compact.get("summary", f"Refinement: {instruction[:80]}")
-    return (proposal, delta), prov
+    prov["qualityResult"] = quality.overall.value
+    prov["completenessResult"] = completeness.overall.value
+    refine_delta.summary = f"Refinement: {instruction[:80]}"
+    return (proposal, refine_delta), prov
 
 
-# ═══════════════════════════════════════════════════════════════════
+def _apply_refine_delta(
+    current_nodes: list[dict], current_edges: list[dict],
+    delta: dict, req: DetectedRequirement, provider: str,
+    instruction: str = "",
+    generation_provider: str = "LOCAL_LLM", generation_model: str | None = None,
+) -> tuple[AgainPilotProposal | None, RefineDelta]:
+    """Deterministically apply a delta to the current architecture.
+
+    generation_provider/generation_model are the AI provenance for the
+    resulting proposal (LOCAL_LLM/DEEPSEEK/OPENAI + the actual model that
+    produced the delta) — authoritative metadata the caller must pass, not
+    inferred from the global OLLAMA_MODEL. This function is shared by the
+    local, DeepSeek, and OpenAI refine paths; hardcoding LOCAL_LLM here
+    previously mislabeled every cloud-produced refine as local.
+    """
+    import copy
+    if generation_model is None:
+        generation_model = OLLAMA_MODEL
+
+    nodes = copy.deepcopy(current_nodes)
+    edges = copy.deepcopy(current_edges)
+
+    node_by_id = {n["nodeId"]: n for n in nodes}
+    edge_by_from_to = {(e["sourceNodeId"], e["targetNodeId"]): e for e in edges}
+
+    changed_nodes: list[dict] = []
+    for cn in delta.get("changedNodes", []):
+        nid = cn.get("id", "")
+        if nid in node_by_id:
+            for field in ("svc", "zone", "name", "category", "role"):
+                if field in cn:
+                    key = "nativeService" if field == "svc" else "securityZone" if field == "zone" else field
+                    if key in node_by_id[nid]:
+                        changed_nodes.append({"nodeId": nid, "field": key,
+                            "oldValue": node_by_id[nid][key], "newValue": cn[field]})
+                        node_by_id[nid][key] = cn[field]
+
+    # ── Tier-wide propagation ───────────────────────────────────────
+    # When a delta changes the runtime service of an APPLICATION node,
+    # propagate the same change to ALL application-tier nodes so HA
+    # replicas stay consistent.  Do the same for DATABASE zone changes.
+    for cn in delta.get("changedNodes", []):
+        nid = cn.get("id", "")
+        source_node = node_by_id.get(nid)
+        if not source_node:
+            continue
+        cat = source_node.get("category", "")
+        if cat == "APPLICATION" and "svc" in cn:
+            new_svc = cn["svc"]
+            for other_id, other in node_by_id.items():
+                if other_id == nid:
+                    continue
+                if other.get("category") == "APPLICATION" and other.get("nativeService") != new_svc:
+                    changed_nodes.append({"nodeId": other_id, "field": "nativeService",
+                        "oldValue": other["nativeService"], "newValue": new_svc})
+                    other["nativeService"] = new_svc
+        elif cat == "DATABASE" and "zone" in cn:
+            new_zone = cn["zone"]
+            for other_id, other in node_by_id.items():
+                if other_id == nid:
+                    continue
+                if other.get("category") == "DATABASE" and other.get("securityZone") != new_zone:
+                    changed_nodes.append({"nodeId": other_id, "field": "securityZone",
+                        "oldValue": other["securityZone"], "newValue": new_zone})
+                    other["securityZone"] = new_zone
+
+    added_node_ids = []
+    for an in delta.get("addedNodes", []):
+        nid = an.get("id", "")
+        if not nid or nid in node_by_id:
+            continue
+        added_node_ids.append(nid)
+        node_by_id[nid] = {
+            "nodeId": nid,
+            "name": an.get("name", get_display_name(provider, an.get("svc", ""))),
+            "category": _normalize_category(an.get("role", an.get("type", "APPLICATION"))),
+            "provider": provider,
+            "nativeService": an.get("svc", ""),
+            "platform": "KUBERNETES" if "KUBERNETES" in req.platform else "NATIVE_VM",
+            "securityZone": an.get("zone", "private"),
+            "dataClassification": "internal",
+            "owner": "",
+            "source": "AI_GENERATED",
+            "verificationState": "UNVERIFIED",
+            "properties": {},
+            "serviceVerification": "KNOWN_UNVERIFIED",
+        }
+
+    removed_node_ids = []
+    for rnid in delta.get("removedNodeIds", []):
+        if rnid in node_by_id:
+            del node_by_id[rnid]
+            removed_node_ids.append(rnid)
+
+    for ce in delta.get("changedEdges", []):
+        key = (ce.get("from", ""), ce.get("to", ""))
+        if key in edge_by_from_to:
+            for field in ("proto", "type", "label"):
+                if field in ce:
+                    protocol_key = "protocol" if field == "proto" else field
+                    if protocol_key in edge_by_from_to[key]:
+                        edge_by_from_to[key][protocol_key] = ce[field]
+
+    for ae in delta.get("addedEdges", []):
+        eid = f"EDGE-REFINE-{len(edge_by_from_to):03d}"
+        edge_by_from_to[(ae.get("from", ""), ae.get("to", ""))] = {
+            "edgeId": eid,
+            "sourceNodeId": ae.get("from", ""),
+            "targetNodeId": ae.get("to", ""),
+            "type": ae.get("type", "request"),
+            "protocol": ae.get("proto", "TCP"),
+            "direction": "unidirectional",
+            "dataType": "",
+            "securityClassification": "none",
+            "label": ae.get("label", ae.get("proto", "")),
+        }
+
+    removed_edge_ids = []
+    for reid in delta.get("removedEdgeIds", []):
+        removed_edge_ids.append(reid)
+
+    new_nodes = list(node_by_id.values())
+    new_node_ids = {n["nodeId"] for n in new_nodes}
+
+    new_edges = []
+    for e in edge_by_from_to.values():
+        if e["edgeId"] in removed_edge_ids:
+            continue
+        if e["sourceNodeId"] not in new_node_ids or e["targetNodeId"] not in new_node_ids:
+            continue
+        new_edges.append(e)
+
+    gen_nodes = [GeneratedNode(
+        n["nodeId"], n["name"], n["category"], n["provider"], n["nativeService"],
+        n["platform"], n["securityZone"], n.get("dataClassification", "internal"),
+        n.get("owner", ""), n.get("source", "AI_GENERATED"), n.get("verificationState", "UNVERIFIED"),
+        properties=n.get("properties", {}),
+        service_verification=n.get("serviceVerification", "KNOWN_UNVERIFIED"),
+    ) for n in new_nodes]
+
+    eid_counter = 0
+    gen_edges = []
+    for e in new_edges:
+        eid_counter += 1
+        gen_edges.append(GeneratedEdge(
+            f"EDGE-{eid_counter:03d}", e["sourceNodeId"], e["targetNodeId"],
+            e.get("type", "request"), e.get("protocol", "TCP"),
+            e.get("direction", "unidirectional"), e.get("dataType", ""),
+            e.get("securityClassification", "none"), e.get("label", ""),
+        ))
+
+    views = _derive_views(new_nodes, new_edges)
+
+    proposal = AgainPilotProposal(
+        title=f"Refined {provider} Architecture",
+        summary=f"Refinement: {instruction[:80]}",
+        detected_requirements=req, nodes=gen_nodes, edges=gen_edges, groups=[],
+        views=views, native_service_recommendations=[],
+        assumptions=[], risks=[], clarifying_questions=[], rationale="",
+        generation_provider=generation_provider, generation_model=generation_model,
+        brief_hash=hashlib.sha256(instruction.encode()).hexdigest()[:12],
+    )
+
+    refine_delta = RefineDelta(
+        added_nodes=[n for n in gen_nodes if n.node_id in added_node_ids],
+        removed_nodes=removed_node_ids,
+        changed_nodes=changed_nodes,
+        added_edges=[e for e in gen_edges if e.source_node_id in added_node_ids or e.target_node_id in added_node_ids],
+        removed_edges=removed_edge_ids,
+    )
+
+    return proposal, refine_delta
+
+
 # AGAINPILOT PROVIDER ROUTER
 # ═══════════════════════════════════════════════════════════════════
 
@@ -1988,6 +2320,11 @@ class AgainPilotProviderRouter:
         self._provider = AIProvider.LOCAL_LLM if self._ollama else AIProvider.NONE
         self._last_result_mode = ""
         self._last_provenance: dict = {}
+        self._last_routing_provenance: Any = None  # RoutingProvenance from model_router
+
+        # Hybrid model router (M3) — only active when cloud is configured
+        self._hybrid_router: Any = None
+        self._policy: str = _os.environ.get("AGAINPILOT_ROUTING_POLICY", "LOCAL_FIRST")
 
     @property
     def mode(self) -> AIGenerationMode: return self._mode
@@ -2002,7 +2339,56 @@ class AgainPilotProviderRouter:
     def last_result_mode(self) -> str: return self._last_result_mode
 
     @property
-    def last_provenance(self) -> dict: return dict(self._last_provenance)
+    def last_provenance(self) -> dict:
+        if self._last_routing_provenance:
+            return self._last_routing_provenance.to_dict()
+        return dict(self._last_provenance)
+
+    @property
+    def last_routing_provenance(self) -> Any:
+        return self._last_routing_provenance
+
+    def _get_hybrid_router(self):
+        """Lazy-init hybrid router — only when router mode is HYBRID and cloud is configured.
+
+        Config (env vars):
+          AGAINPILOT_ROUTER_MODE=HYBRID        (required to enable)
+          AGAINPILOT_CLOUD_PROVIDER=OPENAI     (default: OPENAI)
+          OPENAI_API_KEY=<secret>              (required for OpenAI)
+          AGAINPILOT_CLOUD_API_KEY=<secret>    (deprecated legacy — still accepted)
+          OPENAI_MODEL=gpt-4o                  (default)
+          AGAINPILOT_ROUTING_POLICY=LOCAL_FIRST (default)
+        """
+        if self._hybrid_router is not None:
+            return self._hybrid_router
+
+        router_mode = _os.environ.get("AGAINPILOT_ROUTER_MODE", "")
+        if router_mode != "HYBRID":
+            # Legacy compat: check old AGAINPILOT_CLOUD_API_KEY
+            if not _os.environ.get("AGAINPILOT_CLOUD_API_KEY"):
+                return None
+
+        api_key = (_os.environ.get("OPENAI_API_KEY")
+                   or _os.environ.get("AGAINPILOT_CLOUD_API_KEY")
+                   or _os.environ.get("DEEPSEEK_API_KEY"))
+        if not api_key:
+            return None
+
+        from .model_router import (
+            HybridModelRouter, LocalOllamaProvider, CloudProviderAdapter, ExecutionPolicy, ModelRole as MR
+        )
+        try:
+            policy = ExecutionPolicy(self._policy)
+        except ValueError:
+            policy = ExecutionPolicy.LOCAL_FIRST
+
+        local = LocalOllamaProvider("llama3.1:8b")
+        fast = LocalOllamaProvider("qwen2.5:7b", role=MR.FAST_LOCAL)  # type: ignore
+        cloud = CloudProviderAdapter()
+        self._hybrid_router = HybridModelRouter(
+            local_architect=local, fast_local=fast, cloud_expert=cloud, policy=policy,
+        )
+        return self._hybrid_router
 
     def generate(self, request: AgainPilotRequest, force_mode: str | None = None) -> AgainPilotProposal:
         """Generate an architecture proposal.
@@ -2021,6 +2407,7 @@ class AgainPilotProviderRouter:
         provider = request.provider_preference.value if request.provider_preference != ProviderPreference.AUTO else req.provider
         self._last_result_mode = ""
         self._last_provenance = {}
+        self._last_routing_provenance = None
 
         if force_mode == "DETERMINISTIC_FALLBACK":
             proposal = generate_architecture(request)
@@ -2033,6 +2420,37 @@ class AgainPilotProviderRouter:
             }
             return proposal
 
+        # ── M3 Hybrid Router path ──
+        # Gate this on hr existing (cloud is configured), NOT on self._ollama.
+        # self._ollama is a startup-time snapshot of local availability; using
+        # it here made CLOUD_FIRST unreachable whenever Ollama happened to be
+        # down, even though CLOUD_FIRST's entire purpose is to route around
+        # local. The router itself does a live local-availability check
+        # per-request (LocalOllamaProvider.is_available()) and already knows
+        # how to handle "local down" per policy — LOCAL_ONLY blocks, LOCAL_FIRST
+        # escalates, CLOUD_FIRST never needed local at all. Let it decide.
+        hr = self._get_hybrid_router()
+        if hr is not None:
+            from .model_router import ExecutionPolicy
+            try:
+                policy = ExecutionPolicy(self._policy)
+            except ValueError:
+                policy = ExecutionPolicy.LOCAL_FIRST
+            proposal, route_prov = hr.route_generation(
+                request.brief, request.provider_preference.value,
+                request.platform_preference.value, req, policy=policy,
+            )
+            self._last_routing_provenance = route_prov
+            self._last_result_mode = route_prov.final_result_mode
+            self._last_provenance = route_prov.to_dict()
+            if proposal:
+                return proposal
+            if route_prov.final_result_mode == "BLOCKED":
+                raise RealAIGenerationFailed(route_prov.to_dict())
+            # NEEDS_USER_REVIEW → fall through to raise
+            raise RealAIGenerationFailed(route_prov.to_dict())
+
+        # ── Original local-only path ──
         if self._ollama:
             proposal, prov = _generate_real_ai(
                 request.brief, request.provider_preference.value,
@@ -2075,6 +2493,7 @@ class AgainPilotProviderRouter:
         doesn't lose them — see _merge_refine_requirements."""
         self._last_result_mode = ""
         self._last_provenance = {}
+        self._last_routing_provenance = None
 
         if force_mode == "DETERMINISTIC_FALLBACK":
             proposal, delta = refine_architecture(nodes, edges, instruction, provider, base_req=base_req)
@@ -2085,6 +2504,29 @@ class AgainPilotProviderRouter:
             }
             return proposal, delta
 
+        # ── M3 Hybrid Router path ──
+        # Same fix as generate(): gate on hr existing, not on the stale
+        # self._ollama snapshot — see comment above generate()'s hybrid branch.
+        hr = self._get_hybrid_router()
+        if hr is not None:
+            from .model_router import ExecutionPolicy
+            try:
+                policy = ExecutionPolicy(self._policy)
+            except ValueError:
+                policy = ExecutionPolicy.LOCAL_FIRST
+            result, route_prov = hr.route_refine(
+                nodes, edges, instruction, provider, base_req=base_req, policy=policy,
+            )
+            self._last_routing_provenance = route_prov
+            self._last_result_mode = route_prov.final_result_mode
+            self._last_provenance = route_prov.to_dict()
+            if result:
+                return result
+            if route_prov.final_result_mode == "BLOCKED":
+                raise RealAIGenerationFailed(route_prov.to_dict())
+            raise RealAIGenerationFailed(route_prov.to_dict())
+
+        # ── Original local-only path ──
         if self._ollama:
             result, prov = _generate_real_refine(nodes, edges, instruction, provider, base_req=base_req)
             self._last_provenance = prov
