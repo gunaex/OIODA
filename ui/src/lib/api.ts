@@ -41,6 +41,7 @@ export const api={
   acceptDesign: (id:string) => api.post(`/api/v1/designs/${assertResourceId(id,'design')}/accept`),
   aiGenerate: (id:string,b:any) => api.post(`/api/v1/designs/${assertResourceId(id,'design')}/ai-generate`,b),
   updateDesignFlow: (id:string,flow:any) => api.post(`/api/v1/designs/${assertResourceId(id,'design')}/update-flow`,{flow}),
+  getDesignFeasibility: (id:string,fidelity:string='SIMULATED') => api.get<{feasibility:any}>(`/api/v1/designs/${assertResourceId(id,'design')}/feasibility?fidelity=${encodeURIComponent(fidelity)}`),
   // AGAINPILOT
   againpilotStatus:()=>api.get<{mode:string;provider:string;available:boolean}>('/api/v1/againpilot/status'),
   againpilotGenerate:(b:any)=>api.post<{proposal:any;quality?:any;completeness?:any;generationMode?:string;generationProvider?:string;generationModel?:string;resultMode?:string;provenance?:any;needsFallbackConsent?:boolean}>('/api/v1/againpilot/generate',b),

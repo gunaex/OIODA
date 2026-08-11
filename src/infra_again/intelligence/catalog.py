@@ -150,6 +150,26 @@ class ProviderService:
     replaced_by: str = ""
     notes: str = ""
 
+    # Phase N2 — per-launch-mode/runtime-mode execution support. Keyed by a
+    # deterministic runtime-mode marker (e.g. "FARGATE", "EC2"). A launch
+    # mode NOT present here has NO verified execution support even if the
+    # service family (execution_support above) does — family-level support
+    # must never be silently inherited by a specific launch mode (e.g. "AWS
+    # ECS supports X" must never imply "AWS ECS Fargate supports X").
+    launch_types: dict[str, list[str]] = field(default_factory=dict)
+
+    # Phase N2 — independent executor/observer/validator/verifier support,
+    # each its own list of fidelities. None (the default) means "not
+    # independently tracked" and falls back to execution_support (see
+    # support_for()) so every pre-N2 seed entry keeps its existing
+    # collapsed-to-one-signal behavior unchanged. An explicit [] is NOT the
+    # same as None — it means "independently declared, and genuinely zero
+    # support" (e.g. an executor exists but nothing observes it yet).
+    executor_support: list[str] | None = None
+    observer_support: list[str] | None = None
+    validator_support: list[str] | None = None
+    verifier_support: list[str] | None = None
+
     @property
     def is_safe_to_execute(self) -> bool:
         return self.lifecycle in (CatalogLifecycle.VERIFIED, CatalogLifecycle.SUPPORTED)
@@ -159,12 +179,28 @@ class ProviderService:
         return any(s not in ("NONE", "PLAN_ONLY", "NOT_TESTED", "NOT_IMPLEMENTED")
                    for s in self.execution_support)
 
+    def support_for(self, aspect: str) -> list[str]:
+        """Fidelities at which `aspect` (EXECUTOR|OBSERVER|VALIDATOR|VERIFIER)
+        is independently available. Falls back to execution_support only
+        when the aspect was never declared (None) — an explicit [] means
+        genuinely zero support for that aspect and is NOT overridden."""
+        specific = {
+            "EXECUTOR": self.executor_support, "OBSERVER": self.observer_support,
+            "VALIDATOR": self.validator_support, "VERIFIER": self.verifier_support,
+        }.get(aspect.upper())
+        return specific if specific is not None else self.execution_support
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "provider": self.provider, "serviceId": self.service_id,
             "displayName": self.display_name, "category": self.category,
             "lifecycle": self.lifecycle.value,
             "executionSupport": self.execution_support,
+            "launchTypes": self.launch_types,
+            "executorSupport": self.executor_support,
+            "observerSupport": self.observer_support,
+            "validatorSupport": self.validator_support,
+            "verifierSupport": self.verifier_support,
             "platforms": self.platforms,
             "regions": self.regions, "resourceTypes": self.resource_types,
             "capabilities": self.capabilities,

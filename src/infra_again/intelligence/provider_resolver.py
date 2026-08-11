@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..execution.phase7_models import ExecutionFidelity
+from ..execution.policy import PHASE7_ASK, PHASE7_BLOCK, PHASE8_ASK
 from .catalog import ProviderCatalog, get_catalog
 
 # ═══════════════════════════════════════════════════════════════════
@@ -67,6 +69,26 @@ _NOOP_SUPPORT = {"NOT_IMPLEMENTED", "NOT_TESTED", "NONE"}
 # service's execution_support list.
 _FIDELITY_ORDER = ["PRODUCTION", "CONTROLLED_REAL", "SANDBOX", "LOCAL_RUNTIME", "SIMULATED", "PLAN_ONLY"]
 
+# ═══════════════════════════════════════════════════════════════════
+# Runtime-mode (launch-mode) disambiguation — Phase N2.0.1
+# ═══════════════════════════════════════════════════════════════════
+#
+# Deterministic ONLY — separate from canonical service identity. A native
+# service name can imply a launch/runtime mode (e.g. "ecs_fargate" implies
+# the AWS ECS family running under the FARGATE launch type). Capturing this
+# separately means family-level execution_support can never be silently
+# read as proof that a specific launch mode is supported — see
+# ProviderService.launch_types and ProviderServiceResolver.resolve_fidelity.
+RUNTIME_MODE_MARKERS: dict[str, dict[str, str]] = {
+    "AWS": {
+        "ecs_fargate": "FARGATE", "ecs-fargate": "FARGATE",
+        "fargate": "FARGATE", "aws_fargate": "FARGATE",
+        "ecs_ec2": "EC2", "ecs-ec2": "EC2", "ecs_on_ec2": "EC2",
+    },
+}
+
+ALL_FIDELITIES = [f.value for f in ExecutionFidelity]
+
 
 def normalize_service_id(provider: str, native_service: str) -> str:
     """Deterministic normalization ONLY: lowercase/underscore + exact alias
@@ -83,6 +105,10 @@ class ServiceResolution:
     canonical_service_id: str = ""
     canonical_native_service: str = ""
     display_name: str = ""
+    # Deterministically-detected launch/runtime mode (e.g. "FARGATE"), or ""
+    # if the requested native_service carries no such marker. Never guessed —
+    # see RUNTIME_MODE_MARKERS.
+    runtime_mode: str = ""
     # COMPATIBLE | INCOMPATIBLE | NOT_PLATFORM_SPECIFIC | UNKNOWN
     platform_compatibility: str = "UNKNOWN"
 
@@ -109,6 +135,7 @@ class ServiceResolution:
             "canonicalServiceId": self.canonical_service_id,
             "canonicalNativeService": self.canonical_native_service,
             "displayName": self.display_name,
+            "runtimeMode": self.runtime_mode,
             "platformCompatibility": self.platform_compatibility,
             "providerLifecycleState": self.provider_lifecycle_state,
             "executionSupportState": self.execution_support_state,
@@ -121,6 +148,33 @@ class ServiceResolution:
             "metadataVersion": self.metadata_version,
             "lastVerifiedAt": self.last_verified_at,
             "warnings": self.warnings,
+        }
+
+
+@dataclass
+class FidelityCapability:
+    """Phase N2 — capability at ONE specific fidelity. Never collapse this
+    into a single "available somewhere" boolean; a service ready at
+    SIMULATED is not thereby ready at SANDBOX."""
+    fidelity: str = ""
+    ready: bool = False
+    executor_available: bool = False
+    observer_available: bool = False
+    validator_available: bool = False
+    verifier_available: bool = False
+    # ALLOW | ASK | BLOCK — mirrors execution.policy.PolicyVerdict
+    policy_verdict: str = "BLOCK"
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "fidelity": self.fidelity, "ready": self.ready,
+            "executorAvailable": self.executor_available,
+            "observerAvailable": self.observer_available,
+            "validatorAvailable": self.validator_available,
+            "verifierAvailable": self.verifier_available,
+            "policyVerdict": self.policy_verdict,
+            "reason": self.reason,
         }
 
 
@@ -148,6 +202,8 @@ class ProviderServiceResolver:
 
         canonical_id = normalize_service_id(provider_u, native_service)
         res.canonical_service_id = canonical_id
+        norm_key = (native_service or "").strip().lower().replace(" ", "_").replace("-", "_")
+        res.runtime_mode = RUNTIME_MODE_MARKERS.get(provider_u, {}).get(norm_key, "")
 
         svc = self._catalog.get_service(provider_u, canonical_id)
         if svc is None:
@@ -169,7 +225,22 @@ class ProviderServiceResolver:
         res.metadata_version = svc.source_version
         res.last_verified_at = svc.verified_at
 
-        real_support = [s for s in svc.execution_support if s not in _NOOP_SUPPORT]
+        if res.runtime_mode:
+            # A launch/runtime mode was explicitly requested — family-level
+            # execution_support must NEVER be silently inherited by it. Only
+            # an explicit launch_types entry for this exact mode counts.
+            launch_support = svc.launch_types.get(res.runtime_mode)
+            if launch_support is None:
+                res.warnings.append(
+                    f"{svc.display_name} {res.runtime_mode} launch mode has no independently "
+                    f"verified execution support — family-level support does not imply it."
+                )
+                real_support: list[str] = []
+            else:
+                real_support = [s for s in launch_support if s not in _NOOP_SUPPORT]
+        else:
+            real_support = [s for s in svc.execution_support if s not in _NOOP_SUPPORT]
+
         if not real_support:
             res.execution_support_state = "UNSUPPORTED"
         else:
@@ -196,18 +267,38 @@ class ProviderServiceResolver:
             res.platform_compatibility = "INCOMPATIBLE"
             res.warnings.append(f"{svc.display_name} is not known to run on platform={platform}")
 
-        # Executor/observer/validator/verifier availability is derived from
-        # the SAME execution_support signal — never asserted independently,
-        # never fabricated. PLAN_ONLY means a plan can exist but nothing
-        # actually executes/observes it (matches N2.2's stated semantics).
+        # Executor/observer/validator/verifier availability. By default all
+        # four are derived from the SAME execution_support signal (matches
+        # pre-N2 behavior — most services don't declare independent
+        # aspect-level support). PLAN_ONLY means a plan can exist but nothing
+        # actually executes/observes/validates/verifies it. Phase N2: a
+        # service MAY declare executor_support/observer_support/
+        # validator_support/verifier_support independently (e.g. an executor
+        # exists but nothing independently observes it yet) — when declared,
+        # that aspect's availability is evaluated on its own list instead of
+        # collapsing to one signal. Either way, a requested runtime_mode
+        # (e.g. FARGATE) with no launch_types entry forces every aspect to
+        # UNSUPPORTED — never inherited from the family.
         has_real_backing = res.execution_support_state not in ("UNSUPPORTED", "PLAN_ONLY")
-        res.executor_available = has_real_backing
-        res.observer_available = has_real_backing
-        res.validator_available = has_real_backing
+
+        def _aspect_available(specific_list: list[str] | None) -> bool:
+            if specific_list is None:
+                return has_real_backing
+            if res.runtime_mode:
+                launch_support = svc.launch_types.get(res.runtime_mode)
+                eff = [s for s in (launch_support or []) if s not in _NOOP_SUPPORT]
+            else:
+                eff = [s for s in specific_list if s not in _NOOP_SUPPORT]
+            return any(s != "PLAN_ONLY" for s in eff)
+
+        res.executor_available = _aspect_available(svc.executor_support)
+        res.observer_available = _aspect_available(svc.observer_support)
+        res.validator_available = _aspect_available(svc.validator_support)
         # The verifier (execution/verifier.py's ExecutionVerifier) is generic
         # across services, not per-service-implemented — it's available
-        # whenever there's real execution to independently check.
-        res.verifier_available = has_real_backing
+        # whenever there's real execution to independently check, unless a
+        # service explicitly declares a narrower verifier_support.
+        res.verifier_available = _aspect_available(svc.verifier_support)
 
         if svc.deprecated:
             msg = f"{svc.display_name} is DEPRECATED"
@@ -224,6 +315,81 @@ class ProviderServiceResolver:
             provider=node.get("provider", ""),
             native_service=node.get("nativeService", ""),
             platform=node.get("platform", ""),
+        )
+
+    def resolve_fidelity(
+        self, provider: str, native_service: str, fidelity: str, platform: str = "",
+    ) -> "FidelityCapability":
+        """Phase N2 — fidelity-SCOPED capability. `resolve()`'s executor/
+        observer/validator/verifier_available answer "available at the best
+        fidelity this service has anywhere"; this answers "available AT
+        THIS SPECIFIC fidelity", which is what feasibility/executability
+        decisions must actually use (N2 entry-audit requirement
+        CAPABILITY_IS_FIDELITY_SCOPED). CONTROLLED_REAL/PRODUCTION are
+        always policy-BLOCKed here regardless of catalog data — that is a
+        safety-policy invariant, never something a catalog entry can
+        override (mirrors execution.policy.PHASE7_BLOCK).
+        """
+        fid = (fidelity or "").upper()
+        try:
+            fid_enum = ExecutionFidelity(fid)
+        except ValueError:
+            return FidelityCapability(
+                fidelity=fid, ready=False, executor_available=False, observer_available=False,
+                validator_available=False, verifier_available=False,
+                policy_verdict="BLOCK", reason=f"Unknown fidelity '{fid}'",
+            )
+
+        if fid_enum in PHASE7_BLOCK:
+            return FidelityCapability(
+                fidelity=fid, ready=False, executor_available=False, observer_available=False,
+                validator_available=False, verifier_available=False,
+                policy_verdict="BLOCK", reason=f"{fid} execution is blocked by safety policy",
+            )
+
+        result = self.resolve(provider=provider, native_service=native_service, platform=platform)
+
+        if fid_enum == ExecutionFidelity.PLAN_ONLY:
+            known = result.provider_lifecycle_state != "UNKNOWN_SERVICE"
+            return FidelityCapability(
+                fidelity=fid, ready=known, executor_available=False, observer_available=False,
+                validator_available=False, verifier_available=False,
+                policy_verdict="ALLOW" if known else "BLOCK",
+                reason="" if known else "Unknown service — cannot plan",
+            )
+
+        provider_u = (provider or "").upper()
+        key = normalize_service_id(provider_u, native_service)
+        svc = self._catalog.get_service(provider_u, key)
+
+        def _aspect_supported(specific_list: list[str] | None) -> bool:
+            if svc is None:
+                return False
+            if result.runtime_mode:
+                launch_support = svc.launch_types.get(result.runtime_mode)
+                return fid in (launch_support or [])
+            eff = specific_list if specific_list is not None else svc.execution_support
+            return fid in eff
+
+        executor_ok = _aspect_supported(svc.executor_support if svc else [])
+        observer_ok = _aspect_supported(svc.observer_support if svc else [])
+        validator_ok = _aspect_supported(svc.validator_support if svc else [])
+        verifier_ok = _aspect_supported(svc.verifier_support if svc else [])
+
+        ready = executor_ok
+        ask_fidelities = PHASE7_ASK | PHASE8_ASK
+        if not ready:
+            policy_verdict, reason = "BLOCK", f"No verified {fid} execution support for this service"
+        elif fid_enum in ask_fidelities:
+            policy_verdict, reason = "ASK", f"{fid} requires explicit user approval"
+        else:
+            policy_verdict, reason = "ALLOW", ""
+
+        return FidelityCapability(
+            fidelity=fid, ready=ready,
+            executor_available=executor_ok, observer_available=observer_ok,
+            validator_available=validator_ok, verifier_available=verifier_ok,
+            policy_verdict=policy_verdict, reason=reason,
         )
 
 

@@ -264,6 +264,32 @@ def register_flow_routes(app: FastAPI) -> None:
             conn.close()
         return {"design": result}
 
+    @app.get("/api/v1/designs/{design_id}/feasibility")
+    async def get_design_feasibility(design_id: str, fidelity: str = "SIMULATED"):
+        """Phase N2 — read-only architecture feasibility/executability for a
+        persisted design, recomputed fresh from Provider Intelligence every
+        call. Never trusts any executability-looking field the design's raw
+        flow JSON might already carry."""
+        d = _designs.get(design_id)
+        if not d:
+            raise HTTPException(status_code=404, detail="Design not found")
+        conn = _get_conn()
+        try:
+            row = conn.execute("SELECT flow_json FROM flow_designs WHERE design_id=?", (design_id,)).fetchone()
+        finally:
+            conn.close()
+        flow_data = json.loads(row["flow_json"]) if row and row["flow_json"] else {}
+        nodes = flow_data.get("nodes", [])
+
+        from ..intelligence.feasibility import assess_architecture_feasibility
+        provider = next((n.get("provider", "") for n in nodes if n.get("provider") not in ("", "EXTERNAL")), "")
+        assessment = assess_architecture_feasibility(
+            nodes, architecture_id=design_id, architecture_revision=str(d.revision),
+            provider=provider, platform=flow_data.get("platform", ""),
+            requested_fidelity=fidelity,
+        )
+        return {"feasibility": assessment.to_dict()}
+
     @app.post("/api/v1/designs/{design_id}/generate")
     async def generate_design(design_id: str):
         d = _designs.get(design_id)

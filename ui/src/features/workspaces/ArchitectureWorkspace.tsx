@@ -346,6 +346,12 @@ export default function ArchitectureWorkspace(props: Props = {}) {
             </div>
           ) : null}
         </div>
+        {currentDesign?.designId && (
+          <div style={{ padding: 12, borderBottom: '1px solid var(--border-default)', overflowY: 'auto' }}>
+            <div className="panel-title" style={{ marginBottom: 8 }}>Architecture Feasibility</div>
+            <FeasibilityPanel designId={currentDesign.designId} refreshToken={canonical?.nodes?.length} />
+          </div>
+        )}
       </div>
 
       {/* AGAINPILOT Panel */}
@@ -485,6 +491,84 @@ export default function ArchitectureWorkspace(props: Props = {}) {
         </div>
       )}
       {msg && <div style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 100, padding: '8px 16px', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 6, fontSize: 11, color: 'var(--info)', maxWidth: 300, cursor: 'pointer' }} onClick={() => setMsg('')}>{msg}</div>}
+    </div>
+  );
+}
+
+/* ── Architecture Feasibility — Phase N2.8 ──
+   Read-only. Always recomputed by the backend from Provider Intelligence —
+   this component never derives or overrides executability itself; it only
+   renders whatever GET /designs/{id}/feasibility returns. Honest status
+   labels only — a missing executor/observer/validator/verifier is shown as
+   NOT READY / BLOCKED, never silently upgraded to green. */
+const READY_TONE: Record<string, string> = { true: 'badge-success', false: 'badge-neutral' };
+const EXEC_TONE: Record<string, string> = {
+  EXECUTABLE: 'badge-success', PARTIALLY_EXECUTABLE: 'badge-warning',
+  NOT_EXECUTABLE: 'badge-danger', UNKNOWN: 'badge-neutral',
+};
+const FIDELITY_ROWS: [string, string][] = [
+  ['planOnlyReady', 'PLAN_ONLY'], ['simulatedReady', 'SIMULATED'],
+  ['localRuntimeReady', 'LOCAL_RUNTIME'], ['localPrivateCloudReady', 'LOCAL_PRIVATE_CLOUD'],
+  ['sandboxReady', 'SANDBOX'], ['controlledRealReady', 'CONTROLLED_REAL'],
+  ['productionReady', 'PRODUCTION'],
+];
+const HARD_BLOCKED = new Set(['CONTROLLED_REAL', 'PRODUCTION']);
+
+function FeasibilityPanel({ designId, refreshToken }: { designId?: string; refreshToken?: string | number }) {
+  const [data, setData] = useState<any>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!designId) { setData(null); return; }
+    let cancelled = false;
+    api.getDesignFeasibility(designId).then(r => {
+      if (!cancelled) { setData(r.feasibility); setError(''); }
+    }).catch(() => { if (!cancelled) { setData(null); setError('Feasibility unavailable'); } });
+    return () => { cancelled = true; };
+  }, [designId, refreshToken]);
+
+  if (!designId) return null;
+  if (error) return <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{error}</div>;
+  if (!data) return <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>Loading feasibility…</div>;
+
+  return (
+    <div style={{ fontSize: 10 }}>
+      <div className="flex-between" style={{ marginBottom: 6 }}>
+        <span className={`badge ${EXEC_TONE[data.overallExecutability] || 'badge-neutral'}`} style={{ fontSize: 9 }}>
+          {data.overallExecutability}
+        </span>
+        <span style={{ fontSize: 8, color: 'var(--text-muted)' }}>@ {data.requestedFidelity}</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, marginBottom: 6, fontSize: 9 }}>
+        <div>Execution: {Math.round((data.executorCoverage || 0) * 100)}%</div>
+        <div>Verification: {Math.round((data.verifierCoverage || 0) * 100)}%</div>
+      </div>
+      <div style={{ marginBottom: 6 }}>
+        {FIDELITY_ROWS.map(([key, label]) => (
+          <div key={key} style={{ display: 'flex', justifyContent: 'space-between', padding: '1px 0' }}>
+            <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
+            <span className={`badge ${HARD_BLOCKED.has(label) ? 'badge-danger' : READY_TONE[String(!!data[key])]}`} style={{ fontSize: 8 }}>
+              {HARD_BLOCKED.has(label) ? 'BLOCKED' : (data[key] ? 'READY' : 'NOT READY')}
+            </span>
+          </div>
+        ))}
+      </div>
+      {data.blockingIssues?.length > 0 && (
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ color: 'var(--danger)', fontWeight: 500, marginBottom: 2 }}>Blocking Issues</div>
+          {data.blockingIssues.map((b: string, i: number) => (
+            <div key={i} style={{ color: 'var(--text-muted)', fontSize: 9, paddingLeft: 4 }}>• {b}</div>
+          ))}
+        </div>
+      )}
+      {data.warnings?.length > 0 && (
+        <div>
+          <div style={{ color: 'var(--warning)', fontWeight: 500, marginBottom: 2 }}>Warnings</div>
+          {data.warnings.slice(0, 5).map((w: string, i: number) => (
+            <div key={i} style={{ color: 'var(--text-muted)', fontSize: 9, paddingLeft: 4 }}>• {w}</div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
