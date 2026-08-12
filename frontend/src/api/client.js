@@ -182,6 +182,18 @@ export const updateDefect = (slug, defectId, payload) => api.put(`/${slug}/defec
 export const listSignoffs = (slug, cycleId) => api.get(`/${slug}/cycles/${cycleId}/signoffs`).then((r) => r.data)
 export const createSignoff = (slug, cycleId, payload) => api.post(`/${slug}/cycles/${cycleId}/signoffs`, payload).then((r) => r.data)
 
+// Ecosystem (QA-E8) — the canonical QAResult only exists for a cycle that
+// was created via a Conductor QARequest; getQaResult rejects (404) for a
+// purely local/manual cycle, which callers treat as "not ecosystem-
+// originated" rather than an error to surface.
+export const getQaResult = (slug, cycleId) => api.get(`/${slug}/cycles/${cycleId}/qa-result`).then((r) => r.data)
+
+// Hybrid runner runs (QA-E7/E8) — automation provenance for a test result.
+export const listHybridRuns = (slug, params = {}) => api.get(`/${slug}/hybrid/runs`, { params }).then((r) => r.data)
+export const getHybridRun = (slug, runId) => api.get(`/${slug}/hybrid/runs/${runId}`).then((r) => r.data)
+export const hybridRunEvidenceUrl = (slug, runId, evidenceId) =>
+  `${API_BASE}/${slug}/hybrid/runs/${runId}/evidence/${evidenceId}`
+
 // Export
 export const exportExcelUrl = (slug, cycleId) => `${API_BASE}/${slug}/cycles/${cycleId}/export/excel`
 export const exportZipUrl = (slug, cycleId) => `${API_BASE}/${slug}/cycles/${cycleId}/export/zip`

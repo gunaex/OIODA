@@ -23,6 +23,17 @@ const STYLES = {
   UNREVIEWED: 'bg-gray-100 text-gray-600',
   ACCEPTED: 'bg-green-100 text-green-700',
   CHANGES_REQUESTED: 'bg-red-100 text-red-700',
+  // QAResult qualityGate (QA-E8) — this project's own QA verdict, not a
+  // final ecosystem delivery decision (see EcosystemPanel.jsx).
+  APPROVED: 'bg-green-100 text-green-700',
+  REJECTED: 'bg-red-100 text-red-700',
+  PENDING: 'bg-yellow-100 text-yellow-700',
+  // Hybrid runner run status (QA-E7/E8)
+  RUNNING: 'bg-blue-100 text-blue-700',
+  WAITING_FOR_HUMAN: 'bg-yellow-100 text-yellow-700',
+  RESUMING: 'bg-blue-100 text-blue-700',
+  PASSED: 'bg-green-100 text-green-700',
+  FAILED: 'bg-red-100 text-red-700',
 }
 
 export default function StatusBadge({ status }) {

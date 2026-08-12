@@ -13,6 +13,8 @@ import {
 import { useAuth } from '../auth/AuthContext.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import EvidenceGallery from '../components/EvidenceGallery.jsx'
+import EcosystemPanel from '../components/EcosystemPanel.jsx'
+import AutomationProvenance from '../components/AutomationProvenance.jsx'
 
 const STATUS_FILTERS = ['ALL', 'NOT_RUN', 'PASS', 'FAIL', 'BLOCKED', 'NOT_APPLICABLE']
 
@@ -201,6 +203,9 @@ export default function CycleExecution() {
         {error && (
           <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2 mt-2">{error}</p>
         )}
+        <div className="mt-2">
+          <EcosystemPanel slug={slug} cycleId={cycleId} />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
@@ -285,6 +290,8 @@ export default function CycleExecution() {
               isAdmin={isAdmin}
               isLocked={isLocked}
             />
+
+            <AutomationProvenance key={`automation-${selected.id}`} slug={slug} resultId={selected.id} />
 
             <div>
               <p className="text-xs font-medium text-gray-500 uppercase mb-1">Actual Result</p>
