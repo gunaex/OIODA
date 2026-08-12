@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+/* ── Conductor Again — Premium Theme ────────────────────── */
+:root {
+  --amber-50: #fffbeb;
+  --amber-600: #d97706;
+  --amber-700: #b45309;
+}
+
+html, body {
+  overflow-x: hidden;
+  max-width: 100%;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ── Page Shell ─────────────────────────────────────────── */
+.page-shell {
+  padding: 1rem;
+}
+@media (min-width: 640px)  { .page-shell { padding: 1.5rem; } }
+@media (min-width: 1024px) { .page-shell { padding: 2rem; } }
+@media (min-width: 1280px) { .page-shell { padding: 3rem; } }
+
+/* ── Reading Column ─────────────────────────────────────── */
+.reading-col {
+  max-width: 78ch;
+}
+
+/* ── Table Scroll ───────────────────────────────────────── */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Premium Card Glow (top-level accent) ───────────────── */
+.card-premium {
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.04), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+}
+.card-premium:hover {
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.06), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+}
+
+/* ── Gradient Header ────────────────────────────────────── */
+.header-gradient {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 30%, #fbbf24 100%);
+}
+
+/* ── Amber focus ring ───────────────────────────────────── */
+.focus-amber:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px #d97706, 0 0 0 4px #fef3c7;
+}
