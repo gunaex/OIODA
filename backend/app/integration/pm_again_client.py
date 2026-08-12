@@ -15,9 +15,11 @@ from typing import Any, Optional
 import httpx
 
 from app.integration.account_again_client import AccountAgainClient, AccountAgainUnavailableError
+from app.integration.service_health import check_service_identity
 
 PM_AGAIN_URL = os.getenv("PM_AGAIN_URL", "http://localhost:8000/api")
 TIMEOUT_SECONDS = 5.0
+EXPECTED_SERVICE = "PM_AGAIN"
 
 
 class PMAgainUnavailableError(Exception):
@@ -34,11 +36,13 @@ class PMAgainClient:
 
     @staticmethod
     def health() -> bool:
-        try:
-            resp = httpx.get(f"{PM_AGAIN_URL}/health", timeout=TIMEOUT_SECONDS)
-            return resp.status_code == 200
-        except httpx.HTTPError:
-            return False
+        """Healthy iff reachable AND the responder identifies itself as
+        PM_AGAIN — HTTP 200 alone is not proof of service identity (a
+        misconfigured/colliding service on the same port would also
+        answer 200). Fails closed on any mismatch (ECOSYSTEM-H1)."""
+        return check_service_identity(
+            f"{PM_AGAIN_URL}/health", expected_service=EXPECTED_SERVICE, timeout=TIMEOUT_SECONDS,
+        )
 
     @staticmethod
     def dispatch_delivery_work_package(

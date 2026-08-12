@@ -32,7 +32,7 @@ cd backend
 python -m app.seed              # สร้าง admin user
 python -m seed_ai               # ลงทะเบียน AI providers
 python -m seed_skills           # สร้าง Skills
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8010
 
 # Terminal 2 — Frontend
 cd frontend
@@ -360,7 +360,7 @@ npm run build
 |---|---|
 | ลืมรหัสผ่าน | รัน `python -m app.seed` ใหม่ |
 | Database พัง | ลบ `backend/data/` แล้วรัน seed scripts ใหม่ |
-| Backend ไม่เริ่ม | ตรวจสอบ port 8000 ไม่ถูกใช้งานอยู่ |
+| Backend ไม่เริ่ม | ตรวจสอบ port 8010 ไม่ถูกใช้งานอยู่ |
 | Frontend build fail | `rm -rf node_modules && npm install` |
 
 ---

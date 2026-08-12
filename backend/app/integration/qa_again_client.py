@@ -15,9 +15,14 @@ from typing import Any, Optional
 import httpx
 
 from app.integration.account_again_client import AccountAgainClient, AccountAgainUnavailableError
+from app.integration.service_health import check_service_identity
 
-QA_AGAIN_URL = os.getenv("QA_AGAIN_URL", "http://localhost:8000/api")
+# Canonical local topology (ECOSYSTEM-H1): PM Again owns :8000. QA Again's
+# own default must never collide with it — :8002 is QA Again's canonical
+# local port. Explicit QA_AGAIN_URL still takes precedence over this default.
+QA_AGAIN_URL = os.getenv("QA_AGAIN_URL", "http://localhost:8002/api")
 TIMEOUT_SECONDS = 5.0
+EXPECTED_SERVICE = "QA_AGAIN"
 
 
 class QAAgainUnavailableError(Exception):
@@ -34,11 +39,13 @@ class QAAgainClient:
 
     @staticmethod
     def health() -> bool:
-        try:
-            resp = httpx.get(f"{QA_AGAIN_URL}/health", timeout=TIMEOUT_SECONDS)
-            return resp.status_code == 200
-        except httpx.HTTPError:
-            return False
+        """Healthy iff reachable AND the responder identifies itself as
+        QA_AGAIN — HTTP 200 alone is not proof of service identity (a
+        misconfigured/colliding service on the same port would also
+        answer 200). Fails closed on any mismatch (ECOSYSTEM-H1)."""
+        return check_service_identity(
+            f"{QA_AGAIN_URL}/health", expected_service=EXPECTED_SERVICE, timeout=TIMEOUT_SECONDS,
+        )
 
     @staticmethod
     def dispatch_qa_request(

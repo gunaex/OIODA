@@ -20,10 +20,13 @@ from typing import Any, Optional
 
 import httpx
 
+from app.integration.service_health import check_service_identity
+
 ACCOUNT_AGAIN_URL = os.getenv("ACCOUNT_AGAIN_URL", "http://localhost:8001/api/v1")
 SYSTEM_ID = os.getenv("ACCOUNT_AGAIN_SYSTEM_ID", "CONDUCTOR_MAIN")
 CLIENT_SECRET = os.getenv("ACCOUNT_AGAIN_CLIENT_SECRET", "")
 TIMEOUT_SECONDS = 5.0
+EXPECTED_SERVICE = "account-again"
 
 
 class AccountAgainUnavailableError(Exception):
@@ -92,11 +95,12 @@ class AccountAgainClient:
 
     @staticmethod
     def health() -> bool:
-        try:
-            resp = httpx.get(f"{ACCOUNT_AGAIN_URL}/health", timeout=TIMEOUT_SECONDS)
-            return resp.status_code == 200
-        except httpx.HTTPError:
-            return False
+        """Healthy iff reachable AND the responder identifies itself as
+        account-again — HTTP 200 alone is not proof of service identity
+        (ECOSYSTEM-H1)."""
+        return check_service_identity(
+            f"{ACCOUNT_AGAIN_URL}/health", expected_service=EXPECTED_SERVICE, timeout=TIMEOUT_SECONDS,
+        )
 
     # ── Service auth (E5.1) ──────────────────────────────────
 
