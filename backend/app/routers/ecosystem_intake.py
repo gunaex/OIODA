@@ -45,7 +45,14 @@ def intake_delivery_work_package_endpoint(
         raise HTTPException(status_code=422, detail=str(exc))
 
     idempotency_key = request.headers.get("Idempotency-Key") or f"CONDUCTOR_MAIN:DELIVERY_WORK_PACKAGE:{dwp.workPackageId}"
-    tenant_id = claims.get("tenantId")
+    # Prefer the caller's per-request tenant context (X-Tenant-Id — same
+    # header Conductor's own ecosystem_auth.py resolves tenant from) over the
+    # service token's own tenantId claim. A service identity's registered
+    # tenant is fixed at creation (often null for a service shared across
+    # tenants, as CONDUCTOR_MAIN is here); the actual BusinessIntent/DeliveryRun
+    # tenant is per-request, so that's what must govern which PM tenant a
+    # DeliveryWorkPackage is attributed to.
+    tenant_id = request.headers.get("X-Tenant-Id") or claims.get("tenantId")
 
     try:
         reference, project, created = intake_delivery_work_package(
