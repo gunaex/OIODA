@@ -31,6 +31,12 @@ class ReadinessInputs:
     infrastructure_status: Optional[str] = None  # SUCCESS, PARTIAL, FAILED
     qa_quality_gate: Optional[str] = None  # APPROVED, REJECTED, PENDING
     evidence_refs: list = field(default_factory=list)
+    # PM-E5: informational only. PMStatus.projectStatus is surfaced in
+    # aggregatedEvidence/specialistResults (see service.py compute_readiness)
+    # but deliberately never read by evaluate_readiness below — PM Again is
+    # execution-visibility authority, not final delivery-readiness authority
+    # (PMSTATUS_NOT_FINAL_DELIVERY_AUTHORITY).
+    pm_project_status: Optional[str] = None
 
 
 @dataclass

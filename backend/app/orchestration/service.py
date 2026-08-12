@@ -289,6 +289,7 @@ class OrchestrationService:
         eng = self.latest_result(run, "ENGINEERING")
         infra = self.latest_result(run, "INFRASTRUCTURE")
         qa = self.latest_result(run, "QA")
+        pm = self.latest_result(run, "PM")
 
         eng_blocking = bool((eng.payload.get("conductorPolicy") or {}).get("blocking")) if eng else False
 
@@ -298,21 +299,25 @@ class OrchestrationService:
             engineering_partial_blocking=eng_blocking,
             infrastructure_status=infra.status if infra else None,
             qa_quality_gate=qa.status if qa else None,
+            pm_project_status=pm.status if pm else None,
             evidence_refs=[
                 *(eng.evidence_refs if eng else []),
                 *(infra.evidence_refs if infra else []),
                 *(qa.evidence_refs if qa else []),
+                *(pm.evidence_refs if pm else []),
             ],
         )
         decision = evaluate_readiness(inputs)
 
         aggregated_evidence = {
+            "pmEvidence": (pm.payload.get("evidence") if pm else []) or [],
             "engineeringEvidence": (eng.payload.get("evidence") if eng else []) or [],
             "infrastructureEvidence": (infra.payload.get("evidence") if infra else []) or [],
             "qaEvidence": (qa.payload.get("evidence") if qa else []) or [],
         }
         specialist_results = {
             k: v for k, v in {
+                "pmStatus": pm.status if pm else None,
                 "engineeringStatus": eng.status if eng else None,
                 "infrastructureStatus": infra.status if infra else None,
                 "qaQualityGate": qa.status if qa else None,
@@ -341,6 +346,7 @@ class OrchestrationService:
             reason_code=decision.reason_code,
             reason=decision.reason,
             inputs_ref={
+                "pmStatusId": pm.canonical_id if pm else None,
                 "engineeringResultId": eng.canonical_id if eng else None,
                 "infrastructureResultId": infra.canonical_id if infra else None,
                 "qaResultId": qa.canonical_id if qa else None,

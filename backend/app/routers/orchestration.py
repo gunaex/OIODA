@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_master_db
 from app.integration.lacc_client import LACCUnavailableError
+from app.integration.pm_again_client import PMAgainUnavailableError
 from app.orchestration.dispatch import idea_to_code_adapter, infra_adapter, pm_adapter, qa_adapter
 from app.orchestration.ecosystem_auth import EcosystemIdentity, require_ecosystem_identity
 from app.orchestration.models import DeliveryRun, OrchestrationBusinessIntent, SpecialistDispatch, SpecialistResult
@@ -279,6 +280,51 @@ def dispatch_qa(
     svc.advance_stage(run, "QA")
     result = svc.intake_result(run=run, specialist="QA", contract_name="QAResult", payload=result_payload)
     return {"dispatch": _dispatch_view(dispatch), "result": _result_view(result)}
+
+
+# ── PM Again dispatch + status (PM-E5) ────────────────────────────
+# Informational/non-blocking: PM Again is execution-visibility authority,
+# not delivery-readiness authority. This never advances current_stage —
+# "PM" is not a slot in the ENGINEERING->INFRASTRUCTURE->QA stage pipeline,
+# it runs alongside it.
+
+@router.post("/runs/{run_id}/dispatch-pm")
+def dispatch_pm(
+    run_id: str, identity: EcosystemIdentity = Depends(require_ecosystem_identity),
+    db: Session = Depends(get_master_db), svc: OrchestrationService = Depends(_svc),
+):
+    run = _get_run_or_404(db, run_id, identity.tenant_id)
+    dwp = run.work_package_payload
+    try:
+        dispatch = svc.register_dispatch(
+            run=run, specialist="PM", contract_name="DeliveryWorkPackage",
+            canonical_id=run.work_package_id, payload=dwp, idempotency_key=f"pm-{run.run_id}",
+            adapter_status=pm_adapter.STATUS,
+        )
+    except IdempotencyConflictError as e:
+        raise HTTPException(409, str(e))
+
+    if dispatch.dispatch_status == "PENDING":
+        try:
+            response = pm_adapter.dispatch(run=run, delivery_work_package=dwp)
+        except PMAgainUnavailableError as e:
+            svc.mark_dispatch_failed(dispatch, str(e))
+            raise HTTPException(502, f"PM Again dispatch failed: {e}")
+        svc.mark_dispatch_sent(dispatch, response)
+    return {"dispatch": _dispatch_view(dispatch)}
+
+
+@router.post("/runs/{run_id}/refresh-pm-status")
+def refresh_pm_status(
+    run_id: str, identity: EcosystemIdentity = Depends(require_ecosystem_identity),
+    db: Session = Depends(get_master_db), svc: OrchestrationService = Depends(_svc),
+):
+    run = _get_run_or_404(db, run_id, identity.tenant_id)
+    status_payload = pm_adapter.fetch_status(run=run)
+    if status_payload is None:
+        return {"pmStatus": None, "note": "PM Again has no status for this work package yet, or is unreachable."}
+    result = svc.intake_result(run=run, specialist="PM", contract_name="PMStatus", payload=status_payload)
+    return {"pmStatus": _result_view(result)}
 
 
 # ── Delivery Readiness (§F, §57) ─────────────────────────────────

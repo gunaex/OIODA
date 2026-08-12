@@ -4,7 +4,7 @@ import pytest
 
 from app.database import MasterSessionLocal
 from app.integration.lacc_client import LocalAIControlCenterClient
-from app.orchestration.dispatch import FROZEN_RUNTIME, HARNESS, REAL_RUNTIME, UNAVAILABLE
+from app.orchestration.dispatch import FROZEN_RUNTIME, HARNESS, REAL_RUNTIME
 from app.orchestration.dispatch import idea_to_code_adapter, infra_adapter, pm_adapter, qa_adapter
 from app.orchestration.service import OrchestrationService
 
@@ -26,12 +26,13 @@ def test_adapter_status_classifications_are_disclosed():
     assert idea_to_code_adapter.STATUS == REAL_RUNTIME
     assert infra_adapter.STATUS == FROZEN_RUNTIME
     assert qa_adapter.STATUS == HARNESS
-    assert pm_adapter.STATUS == UNAVAILABLE
+    assert pm_adapter.STATUS == REAL_RUNTIME
 
 
-def test_pm_adapter_never_fabricates_a_status(run):
-    assert pm_adapter.build_pm_status_placeholder(run=run) is None
-    assert pm_adapter.health() is False
+def test_pm_adapter_never_fabricates_a_status_when_unreachable(run):
+    """No live PM Again in this test environment — fetch_status must return
+    None (fail closed), never a synthetic/fabricated PMStatus."""
+    assert pm_adapter.fetch_status(run=run) is None
 
 
 def test_infra_adapter_produces_valid_canonical_request_and_result(run):
@@ -70,3 +71,14 @@ def test_idea_to_code_adapter_real_dispatch(run):
     response = idea_to_code_adapter.dispatch(run=run, engineering_work_package=ewp, project_name="e8-adapter-test")
     assert response["status"] in ("RECEIVED", "DUPLICATE")
     assert response["run"]["correlationId"] == run.correlation_id
+
+
+@pytest.mark.skipif(not pm_adapter.health(), reason="PM Again not reachable")
+def test_pm_adapter_real_dispatch_and_status_fetch(run):
+    dwp = run.work_package_payload
+    response = pm_adapter.dispatch(run=run, delivery_work_package=dwp)
+    assert response["created"] in (True, False)
+
+    status = pm_adapter.fetch_status(run=run)
+    assert status is not None
+    assert status["workPackageId"] == run.work_package_id
