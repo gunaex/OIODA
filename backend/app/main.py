@@ -42,6 +42,7 @@ from .routers import (
     holidays,
     workflows,
     diagrams,
+    pm_status,
 )
 from .seed import seed_document_templates, seed_bootstrap_admin, seed_thai_holidays
 from .rate_limit import limiter
@@ -126,6 +127,7 @@ app.include_router(diagrams.router)
 app.include_router(resource_allocations.router)
 app.include_router(dashboard.project_router)
 app.include_router(slippage.router)
+app.include_router(pm_status.router)
 app.include_router(progress_matrix.router)
 app.include_router(change_requests.router)
 app.include_router(effort.router)
