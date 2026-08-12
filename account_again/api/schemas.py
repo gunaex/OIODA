@@ -90,6 +90,13 @@ class CredentialRefCreate(BaseModel):
 class CredentialRefRotate(BaseModel):
     secretStoreReference: Optional[str] = None
 
+class CredentialResolveRequest(BaseModel):
+    tenantId: str
+    provider: str
+    purpose: str
+    serviceSystemId: Optional[str] = None
+    correlationId: Optional[str] = None
+
 # ── Service Identity ──
 class ServiceIdentityCreate(BaseModel):
     systemId: str

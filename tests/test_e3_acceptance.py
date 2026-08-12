@@ -1,13 +1,5 @@
 """Account Again — E3 Acceptance Test Suite."""
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from account_again.database import Base, get_db
-from account_again.main import app
-import account_again.models  # noqa: ensure all models registered before create_all
 from account_again.models import (
     Tenant, Account, SubjectIdentity, Role, Permission, AccountRole,
     ProductEntitlement, AIEntitlement, CredentialReference,
@@ -17,54 +9,9 @@ from account_again.models.tenant import _new_id, _now
 from account_again.models.credential_reference import FORBIDDEN_CREDENTIAL_FIELDS
 from account_again.models.audit import FORBIDDEN_AUDIT_FIELDS
 
-# In-memory SQLite for tests — use a single shared engine
-TEST_DB = "sqlite:///test_account_again.db"
-import os
-test_db_path = os.path.join(os.path.dirname(__file__), "..", "test_account_again.db")
-if os.path.exists(test_db_path):
-    os.remove(test_db_path)
-TEST_DB = f"sqlite:///{test_db_path}"
-engine = create_engine(TEST_DB, connect_args={"check_same_thread": False})
-TestingSession = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-# Ensure all models are registered
-import account_again.models  # noqa
-Base.metadata.create_all(bind=engine)
-
-
-def override_get_db():
-    db = TestingSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    """Reset DB state before each test."""
-    with engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(table.delete())
-    yield
-    with engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(table.delete())
-
-
-@pytest.fixture
-def client():
-    return TestClient(app)
-
-
-@pytest.fixture
-def db():
-    db_session = TestingSession()
-    yield db_session
-    db_session.close()
+# `db`, `client`, and the autouse `setup_db` fixture now live in tests/conftest.py,
+# shared with test_e4_credential_resolve.py (see conftest.py docstring for why this
+# moved out of this file in E4).
 
 
 # ── Helpers ──
@@ -432,4 +379,4 @@ class TestNonModification:
 
     def test_deployment_topology_not_decided(self):
         """This is local-only; no cloud deployment artifacts exist."""
-        assert "sqlite" in TEST_DB or True
+        assert True  # local-only SQLite persistence; no cloud deployment artifacts exist

@@ -18,7 +18,7 @@ from account_again.api.schemas import (
     AccountRoleAssign, RolePermissionAssign,
     ProductEntitlementCreate, ProductEntitlementUpdate,
     AIEntitlementCreate, AIEntitlementUpdate,
-    CredentialRefCreate, CredentialRefRotate,
+    CredentialRefCreate, CredentialRefRotate, CredentialResolveRequest,
     ServiceIdentityCreate, SessionCreate,
     EntitlementEvaluateRequest,
     QuotaPolicyCreate, UsageRecordCreate,
@@ -26,6 +26,7 @@ from account_again.api.schemas import (
 from account_again.services import (
     EntitlementRequest, evaluate_entitlement,
     write_audit, check_idempotent, record_idempotent,
+    secret_resolver,
 )
 from passlib.hash import bcrypt as passlib_bcrypt
 try:
@@ -378,6 +379,76 @@ def revoke_credential_ref(credential_ref: str, db: Session = Depends(get_db)):
                 result="SUCCESS", tenant_id=cr.tenant_id)
     db.commit()
     return cr.to_dict()
+
+
+# ── Credential Resolution Boundary ──
+# Controlled runtime-secret handoff. This is the ONLY endpoint that may return a raw
+# secret value, and only transiently: never persisted here, never written to audit
+# metadata, never included in any other response. Callers (e.g. Local AI Control Center)
+# must use the value immediately and must not persist it either.
+@router.post("/credential-refs/{credential_ref}/resolve")
+def resolve_credential_ref(credential_ref: str, body: CredentialResolveRequest, db: Session = Depends(get_db)):
+    cr = db.query(CredentialReference).filter(CredentialReference.credential_ref == credential_ref).first()
+    if not cr:
+        raise HTTPException(404, "Credential reference not found")
+
+    if cr.tenant_id != body.tenantId:
+        write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+                    action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
+                    target_id=credential_ref, result="DENY_TENANT_MISMATCH", tenant_id=body.tenantId,
+                    correlation_id=body.correlationId)
+        db.commit()
+        raise HTTPException(403, "Credential reference does not belong to the requesting tenant")
+
+    if cr.status == "REVOKED":
+        write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+                    action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
+                    target_id=credential_ref, result="DENY_REVOKED", tenant_id=cr.tenant_id,
+                    correlation_id=body.correlationId)
+        db.commit()
+        raise HTTPException(403, "Credential reference is revoked")
+
+    if cr.expires_at and cr.expires_at < _now():
+        write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+                    action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
+                    target_id=credential_ref, result="DENY_EXPIRED", tenant_id=cr.tenant_id,
+                    correlation_id=body.correlationId)
+        db.commit()
+        raise HTTPException(403, "Credential reference has expired")
+
+    if body.serviceSystemId:
+        svc = db.query(ServiceIdentity).filter(ServiceIdentity.system_id == body.serviceSystemId).first()
+        if not svc or svc.status == "REVOKED":
+            write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId,
+                        action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
+                        target_id=credential_ref, result="DENY_SERVICE_IDENTITY", tenant_id=cr.tenant_id,
+                        correlation_id=body.correlationId)
+            db.commit()
+            raise HTTPException(403, "Requesting service identity is not active")
+
+    secret = secret_resolver.resolve(credential_ref, cr.provider, body.purpose)
+
+    if secret is None:
+        write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+                    action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
+                    target_id=credential_ref, result="DENY_UNRESOLVABLE", tenant_id=cr.tenant_id,
+                    correlation_id=body.correlationId)
+        db.commit()
+        raise HTTPException(424, "Credential reference could not be resolved to a secret value")
+
+    # Audit records the fact of resolution — never the secret value itself.
+    write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+                action="CREDENTIAL_RESOLVE", target_type="CredentialReference",
+                target_id=credential_ref, result="SUCCESS", tenant_id=cr.tenant_id,
+                correlation_id=body.correlationId)
+    db.commit()
+
+    return {
+        "credentialRef": credential_ref,
+        "provider": cr.provider,
+        "secret": secret,
+        "resolvedAt": _now(),
+    }
 
 
 # ── Service Identities ──
