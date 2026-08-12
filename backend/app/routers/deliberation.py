@@ -4,6 +4,9 @@ Multi-agent deliberation with anti-convergence governance.
 Independent first-pass → blind critique → revision → judge → decision.
 """
 
+import asyncio
+import json
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_roles
 from app.database import get_master_db
+from app.integration.lacc_client import LocalAIControlCenterClient
 from app.models import (
     AIResource,
     DeliberationCase,
@@ -26,6 +30,33 @@ from app.models import (
 )
 
 router = APIRouter(prefix="/api/deliberation", tags=["deliberation"])
+
+# Local Ollama model families for panel diversity — same rationale as multi_ai.py:
+# genuinely different model lineages, not just quantization variants, so "independent
+# reasoning from a different model" is still a real property even though every
+# execution routes through the same local Ollama executor (LACC's only wired executor
+# today, disclosed in docs/architecture/CONDUCTOR_AI_EXECUTION_BOUNDARY.md).
+_DELIBERATION_DIVERSITY_MODELS = ["qwen2.5:7b", "llama3.1:8b", "gemma3:4b", "qwen2.5-coder:7b"]
+
+_INDEPENDENT_REASONING_PROMPT = """You are panel member "{label}" in a governed multi-agent deliberation, assigned the role: {role}.
+
+You must reason INDEPENDENTLY — you have not seen and must not assume any other panel member's answer.
+
+TASK:
+{task}
+
+DECISION CRITERIA:
+{criteria}
+
+Respond with ONLY a valid JSON object (no markdown, no explanation outside the JSON) with these exact keys:
+{{
+  "conclusion": "your conclusion in 1-3 sentences",
+  "recommended_action": "what you recommend doing",
+  "key_claims": ["claim 1", "claim 2"],
+  "assumptions": ["assumption 1"],
+  "uncertainties": ["uncertainty 1"],
+  "confidence": 0.0
+}}"""
 
 ROLES = [
     "PROPOSER", "ALTERNATIVE_PROPOSER", "DOMAIN_ANALYST",
@@ -231,6 +262,97 @@ def submit_independent(
     db.commit()
     db.refresh(sub)
     return {"submission_id": sub.id, "all_submitted": all_submitted, "case_status": case.status}
+
+
+@router.post("/{case_id}/members/{member_id}/generate")
+async def generate_independent_submission(
+    case_id: str,
+    member_id: str,
+    db: Session = Depends(get_master_db),
+    user: User = Depends(get_current_user),
+):
+    """E8.1-D: generates a panel member's independent first-pass submission via the
+    AIExecutionGateway (LocalAIControlCenterClient.execute_capability), rather than
+    requiring an external caller to POST /submit with pre-written content. This
+    completes deliberation's real AI execution wiring — panel selection/role/turn
+    logic below is unchanged; only the provider-execution boundary is new. Independent
+    reasoning is preserved structurally: the prompt is built solely from
+    case.source_packet_json (the frozen input) and never includes any peer's
+    submission — this endpoint is only valid while the case is still in
+    'panel_selected'/'independent_round'."""
+    case = db.query(DeliberationCase).filter(DeliberationCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if case.status not in ("panel_selected", "independent_round"):
+        raise HTTPException(status_code=400, detail=f"Case is in '{case.status}', not ready for submissions")
+
+    member = db.query(PanelMember).filter(PanelMember.id == member_id, PanelMember.case_id == case_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+    if member.has_submitted:
+        raise HTTPException(status_code=409, detail="Member has already submitted")
+
+    packet = case.source_packet_json or {}
+    label_index = ord((member.display_label.replace("Candidate ", "")[:1] or "A")) - ord("A")
+    model = _DELIBERATION_DIVERSITY_MODELS[label_index % len(_DELIBERATION_DIVERSITY_MODELS)]
+    prompt = _INDEPENDENT_REASONING_PROMPT.format(
+        label=member.display_label, role=member.assigned_role,
+        task=packet.get("task", ""), criteria=packet.get("criteria", case.decision_criteria or ""),
+    )
+    correlation_id = f"corr-delib-{case_id}"
+    request_id = f"req-delib-{uuid.uuid4().hex[:8]}"
+
+    result = await asyncio.to_thread(
+        LocalAIControlCenterClient.execute_capability,
+        capability="GENERAL_REASONING", correlation_id=correlation_id,
+        prompt=prompt, model_preference=model, request_id=request_id,
+    )
+    if result.get("status") != "COMPLETED":
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI execution failed for panel member {member.display_label}: {result.get('outputSummary')}",
+        )
+
+    raw_text = result.get("outputSummary") or ""
+    parsed = {}
+    try:
+        start, end = raw_text.find("{"), raw_text.rfind("}") + 1
+        if start >= 0 and end > start:
+            parsed = json.loads(raw_text[start:end])
+    except Exception:
+        parsed = {}
+
+    evidence_refs = [result.get("evidenceRef")] if result.get("evidenceRef") else []
+    sub = IndependentSubmission(
+        case_id=case_id,
+        member_id=member.id,
+        conclusion=parsed.get("conclusion", raw_text[:2000]),
+        recommended_action=parsed.get("recommended_action", ""),
+        key_claims=parsed.get("key_claims", []),
+        evidence_references=evidence_refs,
+        assumptions=parsed.get("assumptions", []),
+        uncertainties=parsed.get("uncertainties", []),
+        confidence=parsed.get("confidence"),
+        raw_response=raw_text,
+    )
+    db.add(sub)
+    member.has_submitted = True
+    member.model_id = result.get("modelUsed", model)
+    member.provider_code = result.get("providerUsed", "ollama")
+
+    all_members = db.query(PanelMember).filter(PanelMember.case_id == case_id).all()
+    all_submitted = all(m.has_submitted for m in all_members)
+    if all_submitted:
+        case.status = "independent_complete"
+        _take_diversity_snapshot(db, case, "initial")
+
+    db.commit()
+    db.refresh(sub)
+    return {
+        "submission_id": sub.id, "all_submitted": all_submitted, "case_status": case.status,
+        "provider": member.provider_code, "model": member.model_id,
+        "requestId": request_id, "correlationId": correlation_id, "evidenceRef": result.get("evidenceRef"),
+    }
 
 
 # ═══════════════════════════════════════════════════════════

@@ -1,13 +1,24 @@
 """
 Conductor Again — AI-Powered Intake & Golden Flow
 Uses AUTO router + Skills to decompose and analyze with real AI.
+
+E8.1-F: the AI decomposition call routes through LocalAIControlCenterClient.execute_capability()
+(the AIExecutionGateway) in ECOSYSTEM_MODE (default) rather than instantiating a DeepSeek
+adapter directly with a decrypted AIAccount.api_key_encrypted. The pre-E8.1 direct-adapter
+path remains available ONLY when ECOSYSTEM_MODE=false (LEGACY_DIRECT_AI_MODE, dev-only,
+disclosed, §34) — it is never reachable in ecosystem mode. The rule-based fallback
+(_decompose_text_structured) is unchanged either way.
 """
+
+import os
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
 from app.database import get_master_db, get_project_db
+from app.integration.lacc_client import LocalAIControlCenterClient
 from app.models import (
     AIResource,
     DeliberationCase,
@@ -25,6 +36,45 @@ from app.r2_storage import build_object_key, generate_download_url, generate_upl
 from app.routers.intake import _categorize, _assign_module
 
 router = APIRouter(prefix="/api/{slug}/golden", tags=["golden-flow"])
+
+ECOSYSTEM_MODE = os.getenv("ECOSYSTEM_MODE", "false").lower() == "true"
+
+_DECOMPOSITION_PROMPT = """You are a requirements decomposition specialist. Analyze the following requirements and output a JSON array of function objects. Each function must have: code (F-001 format), title, description, category (ui/backend/integration/data/security/reporting/feature), complexity (trivial/simple/moderate/complex/very_complex), and target_module (CONDUCTOR/PM_AGAIN/QA_AGAIN/DEV).
+
+Requirements:
+{content}
+
+Output ONLY valid JSON array, no other text."""
+
+
+async def _ai_decompose_via_gateway(content: str, slug: str) -> tuple[list | None, str | None]:
+    """AIExecutionGateway path (ECOSYSTEM_MODE): CODE_PLANNING-shaped decomposition
+    request, no AIResource/api_key_encrypted lookup at all. Returns (None, None) (falls
+    back to rule-based decomposition) on any non-success/non-parseable result — never
+    raises."""
+    import asyncio
+    import json
+
+    correlation_id = f"corr-golden-{uuid.uuid4().hex[:12]}"
+    result = await asyncio.to_thread(
+        LocalAIControlCenterClient.execute_capability,
+        capability="BUSINESS_ANALYSIS",
+        correlation_id=correlation_id,
+        prompt=_DECOMPOSITION_PROMPT.format(content=content[:5000]),
+        request_id=f"req-golden-{uuid.uuid4().hex[:8]}",
+    )
+    if result.get("status") != "COMPLETED":
+        return None, None
+    model_used = f"{result.get('providerUsed', 'ollama')}/{result.get('modelUsed', 'unknown')}"
+    text = result.get("outputSummary") or ""
+    try:
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            return json.loads(text[start:end]), model_used
+    except Exception:
+        pass
+    return None, None
 
 
 @router.post("/ai-decompose")
@@ -51,52 +101,49 @@ async def ai_decompose(
 
     # Try AI-powered analysis
     ai_result = None
-    resources = master_db.query(AIResource).filter(
-        AIResource.enabled == True,
-        AIResource.health_state.in_(["AVAILABLE", "DEGRADED"]),
-    ).all()
+    ai_model_used = None
+    if ECOSYSTEM_MODE:
+        ai_result, ai_model_used = await _ai_decompose_via_gateway(content, slug)
+    else:
+        # ── LEGACY_DIRECT_AI_MODE (dev-only, disclosed, §34) ──
+        resources = master_db.query(AIResource).filter(
+            AIResource.enabled == True,
+            AIResource.health_state.in_(["AVAILABLE", "DEGRADED"]),
+        ).all()
 
-    if resources:
-        # Quick auto-route: pick the highest priority available resource
-        best = sorted(resources, key=lambda r: r.base_priority, reverse=True)[0]
-        account = best.account
-        if account and account.api_key_encrypted:
-            try:
-                from app.routers.ai_resources import _decrypt
-                api_key = _decrypt(account.api_key_encrypted)
-                provider_code = account.provider.code if account.provider else "unknown"
-                model_id = best.model.model_id if best.model else "deepseek-chat"
+        if resources:
+            best = sorted(resources, key=lambda r: r.base_priority, reverse=True)[0]
+            account = best.account
+            if account and account.api_key_encrypted:
+                try:
+                    from app.routers.ai_resources import _decrypt
+                    api_key = _decrypt(account.api_key_encrypted)
+                    provider_code = account.provider.code if account.provider else "unknown"
+                    model_id = best.model.model_id if best.model else "deepseek-chat"
 
-                if provider_code == "deepseek" and api_key:
-                    from app.adapters.base import AIRequest
-                    from app.adapters.deepseek import create_deepseek_adapter
-                    adapter = create_deepseek_adapter(api_key)
+                    if provider_code == "deepseek" and api_key:
+                        from app.adapters.base import AIRequest
+                        from app.adapters.deepseek import create_deepseek_adapter
+                        adapter = create_deepseek_adapter(api_key)
 
-                    prompt = f"""You are a requirements decomposition specialist. Analyze the following requirements and output a JSON array of function objects. Each function must have: code (F-001 format), title, description, category (ui/backend/integration/data/security/reporting/feature), complexity (trivial/simple/moderate/complex/very_complex), and target_module (CONDUCTOR/PM_AGAIN/QA_AGAIN/DEV).
-
-Requirements:
-{content[:5000]}
-
-Output ONLY valid JSON array, no other text."""
-
-                    response = await adapter.chat(AIRequest(
-                        messages=[{"role": "user", "content": prompt}],
-                        model_id=model_id,
-                        max_tokens=2000,
-                        temperature=0.3,
-                    ))
-                    import json
-                    try:
-                        # Try to extract JSON from response
-                        text = response.content or ""
-                        start = text.find("[")
-                        end = text.rfind("]") + 1
-                        if start >= 0 and end > start:
-                            ai_result = json.loads(text[start:end])
-                    except Exception:
-                        pass  # Fall back to rule-based
-            except Exception:
-                pass  # AI failed, fall back to rule-based
+                        response = await adapter.chat(AIRequest(
+                            messages=[{"role": "user", "content": _DECOMPOSITION_PROMPT.format(content=content[:5000])}],
+                            model_id=model_id,
+                            max_tokens=2000,
+                            temperature=0.3,
+                        ))
+                        import json
+                        try:
+                            text = response.content or ""
+                            start = text.find("[")
+                            end = text.rfind("]") + 1
+                            if start >= 0 and end > start:
+                                ai_result = json.loads(text[start:end])
+                                ai_model_used = f"{provider_code}/{model_id}"
+                        except Exception:
+                            pass  # Fall back to rule-based
+                except Exception:
+                    pass  # AI failed, fall back to rule-based
 
     # Create session
     session = IntakeSession(
@@ -185,7 +232,7 @@ Output ONLY valid JSON array, no other text."""
     return {
         "session_id": session.id,
         "ai_powered": bool(ai_result),
-        "ai_model": f"{best.account.provider.code}/{best.model.model_id}" if (resources and ai_result) else None,
+        "ai_model": ai_model_used,
         "function_count": len(functions),
         "total_effort_days": round(sum(f.effort_person_days for f in functions), 1),
         "risk_level": forecast.level,

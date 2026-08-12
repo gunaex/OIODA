@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_roles
 from app.database import get_master_db
+from app.integration.lacc_client import LocalAIControlCenterClient
 from app.models import (
     AIAccount,
     AIResource,
@@ -322,6 +323,16 @@ async def execute_skill(
     db.add(execution)
     db.commit()
 
+    # 5. Real execution — always via the AIExecutionGateway (E8.1-E §25: AUTO-router
+    # chooses the candidate/capability; LACC performs the final provider/model route
+    # and is the only thing that ever calls a provider). No direct provider call
+    # existed here before E8.1 (the pre-E8.1 AUTO-router only ever recorded a "queued"
+    # execution and never actually ran it) — this is new functionality, not a
+    # migration, so it is not gated behind ECOSYSTEM_MODE.
+    execution_result = None
+    if primary:
+        execution_result = await _execute_skill_via_gateway(execution, sv, body.input_data, request_id)
+
     return RouterDecisionOut(
         request_id=request_id,
         skill_id=body.skill_id,
@@ -337,7 +348,46 @@ async def execute_skill(
             f"{len(eligible)} eligible after policy filtering",
             f"Primary: {primary.display_name} (score {primary.total_score})" if primary else "No eligible resource found",
         ],
+        execution=execution_result,
     )
+
+
+async def _execute_skill_via_gateway(
+    execution: SkillExecution, sv: SkillVersion, input_data: dict, request_id: str,
+) -> dict:
+    """Runs the skill's prompt through the AIExecutionGateway and updates the
+    SkillExecution row with the real outcome. Never calls a provider directly."""
+    import asyncio
+    import time
+
+    db_session = Session.object_session(execution)
+    prompt = f"{sv.system_instructions}\n\n{sv.prompt_template}\n\nInput:\n{input_data}".strip()
+    correlation_id = f"corr-skill-{execution.id}"
+
+    t0 = time.monotonic()
+    result = await asyncio.to_thread(
+        LocalAIControlCenterClient.execute_capability,
+        capability="GENERAL_REASONING", correlation_id=correlation_id,
+        prompt=prompt, request_id=f"req-skillexec-{request_id}",
+    )
+    elapsed = int((time.monotonic() - t0) * 1000)
+
+    execution.status = "succeeded" if result.get("status") == "COMPLETED" else "failed_retryable"
+    execution.output_summary = (result.get("outputSummary") or "")[:2000]
+    execution.latency_ms = elapsed
+    execution.completed_at = datetime.now(timezone.utc)
+    if execution.status != "succeeded":
+        execution.error_message = (result.get("outputSummary") or "")[:500]
+    db_session.commit()
+
+    return {
+        "status": execution.status,
+        "provider": result.get("providerUsed", "none"),
+        "model": result.get("modelUsed", "none"),
+        "output_summary": execution.output_summary,
+        "latency_ms": elapsed,
+        "evidence_ref": result.get("evidenceRef"),
+    }
 
 
 def _score_resource(resource: AIResource, skill: Skill, model: InstalledModel | None) -> float:

@@ -494,6 +494,10 @@ export default function AIResourcesPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">API Key</label>
+                <p className="text-xs text-gray-400 mb-1">
+                  Stored for reference/dev-mode only — in ecosystem mode, AI execution routes
+                  through Local AI Control Center and this key is never read at runtime.
+                </p>
                 <div className="relative">
                   <input
                     type={showApiKey['new'] ? 'text' : 'password'}

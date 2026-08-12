@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.adapters import get_adapter
 from app.auth import get_current_user, require_roles
 from app.database import get_master_db
+from app.integration.lacc_client import LocalAIControlCenterClient
 from app.models import (
     AIAccount,
     AIExecutionRuntime,
@@ -39,6 +40,8 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/api/ai", tags=["ai-resources"])
+
+ECOSYSTEM_MODE = os.getenv("ECOSYSTEM_MODE", "false").lower() == "true"
 
 # ── Encryption ────────────────────────────────────────────
 _ENCRYPTION_KEY = os.getenv("AI_KEY_ENCRYPTION_KEY", Fernet.generate_key().decode())
@@ -335,6 +338,19 @@ async def health_check_account(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    if ECOSYSTEM_MODE:
+        # CONDUCTOR_RAW_AI_CREDENTIAL_AUTHORITY_REMOVED (E8.1-G): in ecosystem mode,
+        # Conductor never decrypts AIAccount.api_key_encrypted at runtime — provider
+        # health/connectivity is Local AI Control Center's concern (Ollama health) or
+        # Account Again's (credential status), not Conductor's own credential probe.
+        return {
+            "ok": None,
+            "message": "LEGACY_CREDENTIAL_HEALTH_CHECK_DISABLED_IN_ECOSYSTEM_MODE: "
+                        "Conductor does not read AIAccount.api_key_encrypted at runtime "
+                        "in ecosystem mode. Use Local AI Control Center's own health "
+                        "endpoint for provider/model availability.",
+        }
+
     if not account.api_key_encrypted:
         return {"ok": False, "message": "No API key configured"}
 
@@ -388,6 +404,20 @@ async def test_resource(
     resource = db.query(AIResource).filter(AIResource.id == resource_id).first()
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
+
+    if ECOSYSTEM_MODE:
+        # AIExecutionGateway path — no AIResource/api_key_encrypted lookup at all.
+        result = LocalAIControlCenterClient.execute_capability(
+            capability="GENERAL_REASONING", correlation_id=f"corr-restest-{resource_id}",
+            prompt=prompt, request_id=f"req-restest-{resource_id[:8]}",
+        )
+        if result.get("status") != "COMPLETED":
+            return {"ok": False, "error": result.get("outputSummary", "AI execution failed")}
+        return {
+            "ok": True, "response": result.get("outputSummary"),
+            "model": result.get("modelUsed"), "provider": result.get("providerUsed"),
+            "evidence_ref": result.get("evidenceRef"),
+        }
 
     account = resource.account
     if not account or not account.api_key_encrypted:

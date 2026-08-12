@@ -1,22 +1,23 @@
 """
-Conductor Again — Local AI Control Center Client (E8-D)
+Conductor Again — Local AI Control Center Client / AI Execution Gateway (E8-D, E8.1-C)
 
 Sole HTTP boundary between Conductor Main and Local AI Control Center (LACC).
-Conductor no longer calls AI providers directly for engineering execution —
-EngineeringWorkPackage dispatch goes through LACC's real Idea -> Code
-integration boundary (POST /api/integration/v1/work-packages), which is a
-genuine REAL_RUNTIME endpoint verified live against a running LACC instance.
+Conductor does not call AI providers directly, and does not select or hold raw
+provider credentials — every AI execution path goes through this client:
 
-Disclosed interface gap (not a Conductor bug): LACC exposes NO generic
-AIExecutionRequest/AIExecutionResult execution endpoint for a Specialist OS's
-own general-reasoning needs (Conductor's deliberation/decomposition). LACC's
-own contract-conformance-v2 route reports this same gap as
-"AI_EXECUTION_REQUEST_LIVE=NOT_APPLICABLE_NO_RUNTIME_PRODUCER". Per E8 task
-policy (§36 "prefer Conductor-side adaptation" / do not build missing LACC
-surface as a side effect), `execute_capability` below does NOT invent a
-provider call to fill that gap — it fails closed with BLOCKED_BY_POLICY, the
-same discipline LACC's own client applies to Account Again failures. It never
-falls back to a direct AI provider SDK call.
+  - EngineeringWorkPackage dispatch -> LACC's real Idea -> Code integration
+    boundary (POST /api/integration/v1/work-packages), REAL_RUNTIME.
+  - General AI capability execution (deliberation, skills, multi-AI, golden
+    flow) -> LACC's generic AI execution boundary (POST /api/ai/execute),
+    added in E8.1-B specifically to close the gap E8 disclosed
+    (LACC previously had "AI_EXECUTION_REQUEST_LIVE=NOT_APPLICABLE_NO_RUNTIME_PRODUCER").
+    Also REAL_RUNTIME now — live-verified end to end (Account Again entitlement,
+    real Ollama execution, real usage record) while building this client.
+
+`execute_capability()` authenticates as CONDUCTOR_MAIN via the same
+AccountAgainClient service token used for entitlement/credential calls (E5.1
+mechanism) and fails closed (never a direct provider SDK call) if LACC is
+unavailable or denies the request.
 """
 
 import os
@@ -25,6 +26,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
+
+from app.integration.account_again_client import AccountAgainClient, AccountAgainUnavailableError
 
 LACC_URL = os.getenv("LOCAL_AI_CONTROL_CENTER_URL", "http://localhost:9191/api")
 TIMEOUT_SECONDS = 10.0
@@ -127,28 +130,54 @@ class LocalAIControlCenterClient:
         except httpx.HTTPError:
             return []
 
-    # ── General AI capability execution (E8-D §36-38) ─────────────────
+    # ── General AI capability execution — the AIExecutionGateway (E8.1-C) ────
 
     @staticmethod
     def execute_capability(
-        *, capability: str, correlation_id: str, payload: Optional[dict[str, Any]] = None,
+        *, capability: str, correlation_id: str, prompt: str, tenant_id: str = "local-tenant",
+        request_id: Optional[str] = None, idempotency_key: Optional[str] = None,
+        model_preference: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Provider-neutral AIExecutionRequest -> AIExecutionResult. LACC has no
-        generic execution endpoint for this today (disclosed interface gap, module
-        docstring). Fails closed to BLOCKED_BY_POLICY — NEVER falls back to a direct
+        """The single AIExecutionGateway boundary: every real Conductor AI execution
+        path (deliberation, skills, multi-AI, golden flow) calls this, never a
+        provider SDK directly. `capability` MUST be one of the canonical
+        AIExecutionRequest.capability values (CODE_PLANNING, GENERAL_REASONING, etc.
+        — NOT Account Again's AI_* entitlement vocabulary; LACC's /api/ai/execute
+        translates between the two internally).
+
+        Fails closed to BLOCKED_BY_POLICY/FAILED — NEVER falls back to a direct
         provider SDK call (LACC_DOWN_NO_DIRECT_PROVIDER_BYPASS)."""
-        request_id = f"req-{uuid.uuid4().hex[:12]}"
-        return {
+        request_id = request_id or f"req-{uuid.uuid4().hex[:12]}"
+        body = {
             "requestId": request_id,
             "correlationId": correlation_id,
-            "status": "BLOCKED_BY_POLICY",
-            "outputSummary": (
-                "Local AI Control Center exposes no generic AIExecutionRequest execution "
-                "endpoint for this capability. Conductor does not fall back to a direct "
-                "AI provider call — see LACC_INTERFACE_GAP in the E8 report."
-            ),
-            "providerUsed": "none",
-            "modelUsed": "none",
-            "policyResult": {"airlockDecision": "BLOCK"},
-            "completedAt": _now_iso(),
+            "capability": capability,
+            "tenantId": tenant_id,
+            "payload": {"prompt": prompt},
         }
+        if idempotency_key:
+            body["idempotencyKey"] = idempotency_key
+        if model_preference:
+            body["modelPreference"] = {"model": model_preference}
+
+        try:
+            token = AccountAgainClient.get_service_token()
+        except AccountAgainUnavailableError as e:
+            return {
+                "requestId": request_id, "correlationId": correlation_id, "status": "FAILED",
+                "outputSummary": f"Cannot authenticate to Local AI Control Center: {e}",
+                "providerUsed": "none", "modelUsed": "none", "completedAt": _now_iso(),
+            }
+
+        try:
+            resp = httpx.post(
+                f"{LACC_URL}/ai/execute", json=body,
+                headers={"Authorization": f"Bearer {token}"}, timeout=60.0,
+            )
+            return resp.json()
+        except httpx.HTTPError as e:
+            return {
+                "requestId": request_id, "correlationId": correlation_id, "status": "FAILED",
+                "outputSummary": f"AI_EXECUTION_UNAVAILABLE: Local AI Control Center unreachable: {e}",
+                "providerUsed": "none", "modelUsed": "none", "completedAt": _now_iso(),
+            }

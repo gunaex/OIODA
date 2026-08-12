@@ -459,3 +459,7 @@ class RouterDecisionOut(BaseModel):
     candidates_considered: int
     candidates_eligible: int
     reason: list[str] = []
+    # E8.1-E: AUTO-router chooses the candidate; execution itself always routes through
+    # the AIExecutionGateway (LocalAIControlCenterClient), never a direct provider call.
+    # None when no eligible candidate existed to execute.
+    execution: dict | None = None

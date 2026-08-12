@@ -92,3 +92,9 @@ full classification.
 
 See the E8 final report (returned at the end of this phase) for the complete
 gate-by-gate status.
+
+> **Closure note (2026-08-12):** the LACC generic-execution gap described above was
+> closed in E8.1 — see
+> [E8_1_LEGACY_AI_EXECUTION_CLOSURE.md](E8_1_LEGACY_AI_EXECUTION_CLOSURE.md) and
+> [CONDUCTOR_AI_EXECUTION_BOUNDARY.md](../architecture/CONDUCTOR_AI_EXECUTION_BOUNDARY.md).
+> This section is left as-written for historical accuracy of what E8 actually found.
