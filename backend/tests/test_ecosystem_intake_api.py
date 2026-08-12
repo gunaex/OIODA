@@ -160,6 +160,103 @@ def test_qa_result_by_qa_request_id_returns_canonical_result(auth_client, client
     CanonicalContractValidator.validate("QAResult", body)
 
 
+def test_explicit_rerun_creates_new_attempt_and_replay_does_not(client, master_db=None):
+    """QA-E9.9 — POST .../rerun always adds a QAExecutionAttempt; a plain
+    POST /qa-requests replay of the same key+payload must not."""
+    _override_conductor_identity()
+    intake = client.post("/api/ecosystem/qa-requests", json=_qar("wp-rerun-1", "qar-rerun-http-1")).json()
+    assert intake["testCycleId"] is None  # fresh project, no published revision — unmapped
+
+    # Can't rerun an unmapped request.
+    resp = client.post("/api/ecosystem/qa-requests/qar-rerun-http-1/rerun")
+    assert resp.status_code == 409
+
+
+def test_rerun_requires_service_auth():
+    unauthenticated_client = TestClient(app)
+    resp = unauthenticated_client.post("/api/ecosystem/qa-requests/qar-anything/rerun")
+    assert resp.status_code == 401
+
+
+def test_rerun_404_for_unknown_qa_request(client):
+    _override_conductor_identity()
+    resp = client.post("/api/ecosystem/qa-requests/qar-does-not-exist-rerun/rerun")
+    assert resp.status_code == 404
+
+
+def test_rerun_on_mapped_request_creates_attempt_two(auth_client, client):
+    slug = auth_client.post("/api/projects", json={"name": "E9 Rerun Mapping Project"}).json()["slug"]
+    suite = auth_client.post(f"/api/{slug}/suites", json={"name": "Suite", "suite_type": "REGRESSION"}).json()
+    revision = auth_client.post(f"/api/{slug}/suites/{suite['id']}/revisions", json={"revision_label": "v1"}).json()
+    auth_client.post(
+        f"/api/{slug}/revisions/{revision['id']}/cases",
+        json={"checkpoint_code": "RERUN-001", "title": "case", "action_md": "do it", "expected_result_md": "works"},
+    )
+    auth_client.post(f"/api/{slug}/suites/{suite['id']}/revisions/{revision['id']}/publish")
+
+    with MasterSessionLocal() as master_db:
+        project = master_db.query(models.Project).filter(models.Project.slug == slug).first()
+        master_db.add(models.ExternalQAProjectLink(work_package_id="wp-rerun-2", project_id=project.id))
+        master_db.commit()
+
+    _override_conductor_identity()
+    intake = client.post("/api/ecosystem/qa-requests", json=_qar("wp-rerun-2", "qar-rerun-http-2")).json()
+    assert intake["testCycleId"] is not None
+
+    resp = client.post("/api/ecosystem/qa-requests/qar-rerun-http-2/rerun")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["attemptNo"] == 2
+    assert body["trigger"] == "EXPLICIT_RERUN"
+    assert body["testCycleId"] == intake["testCycleId"]
+
+    # A replay of the original intake still must not add a third attempt.
+    client.post("/api/ecosystem/qa-requests", json=_qar("wp-rerun-2", "qar-rerun-http-2"))
+    resp2 = client.post("/api/ecosystem/qa-requests/qar-rerun-http-2/rerun")
+    assert resp2.json()["attemptNo"] == 3  # a second explicit rerun legitimately adds attempt 3
+
+
+def test_cross_tenant_qa_result_blocked(auth_client, client):
+    """E10.7 — a CONDUCTOR_MAIN token presenting a different tenant
+    context than the one this QARequest was intaken under must not read
+    its QAResult, even though CONDUCTOR_MAIN itself is a valid,
+    cross-tenant-capable service identity."""
+    slug = auth_client.post("/api/projects", json={"name": "E10 Tenant QAResult Project"}).json()["slug"]
+    suite = auth_client.post(f"/api/{slug}/suites", json={"name": "Suite", "suite_type": "REGRESSION"}).json()
+    revision = auth_client.post(f"/api/{slug}/suites/{suite['id']}/revisions", json={"revision_label": "v1"}).json()
+    auth_client.post(
+        f"/api/{slug}/revisions/{revision['id']}/cases",
+        json={"checkpoint_code": "TEN-001", "title": "case", "action_md": "do it", "expected_result_md": "works"},
+    )
+    auth_client.post(f"/api/{slug}/suites/{suite['id']}/revisions/{revision['id']}/publish")
+    with MasterSessionLocal() as master_db:
+        project = master_db.query(models.Project).filter(models.Project.slug == slug).first()
+        master_db.add(models.ExternalQAProjectLink(work_package_id="wp-tenant-result-1", project_id=project.id))
+        master_db.commit()
+
+    _override_conductor_identity(tenant_id="tenant-owner")
+    intake = client.post("/api/ecosystem/qa-requests", json=_qar("wp-tenant-result-1", "qar-tenant-result-1"))
+    assert intake.json()["testCycleId"] is not None
+
+    _override_conductor_identity(tenant_id="tenant-intruder")
+    resp = client.get("/api/ecosystem/qa-requests/qar-tenant-result-1/qa-result")
+    assert resp.status_code == 404
+
+    _override_conductor_identity(tenant_id="tenant-owner")
+    resp_owner = client.get("/api/ecosystem/qa-requests/qar-tenant-result-1/qa-result")
+    assert resp_owner.status_code == 200
+
+
+def test_cross_tenant_rerun_blocked(client):
+    _override_conductor_identity(tenant_id="tenant-owner")
+    intake = client.post("/api/ecosystem/qa-requests", json=_qar("wp-tenant-rerun-1", "qar-tenant-rerun-1"))
+    assert intake.status_code == 200
+
+    _override_conductor_identity(tenant_id="tenant-intruder")
+    resp = client.post("/api/ecosystem/qa-requests/qar-tenant-rerun-1/rerun")
+    assert resp.status_code == 404
+
+
 def test_connection_status_requires_human_auth():
     # A fresh, cookie-less TestClient — the shared `client`/`auth_client`
     # session fixtures carry auth cookies from earlier tests in the same

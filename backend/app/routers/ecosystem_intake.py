@@ -21,7 +21,8 @@ from ..ecosystem import account_again_client
 from ..ecosystem.ecosystem_auth import ECOSYSTEM_MODE
 from ..ecosystem.mapping_service import TenantMismatch, intake_qa_request
 from ..ecosystem.service_auth import require_conductor_service_identity
-from ..ecosystem_intake import IdempotencyConflictError
+from .. import ecosystem_intake as ecosystem_intake_service
+from ..ecosystem_intake import IdempotencyConflictError, NotMappedError
 from ..qa_result_service import QAResultNotAvailableError, build_qa_result
 
 router = APIRouter(prefix="/api/ecosystem", tags=["ecosystem"])
@@ -76,9 +77,69 @@ def intake_qa_request_endpoint(
     }
 
 
+def _find_external_request_or_404(master_db: Session, qa_request_id: str) -> models.ExternalQARequest:
+    external_request = (
+        master_db.query(models.ExternalQARequest)
+        .filter(models.ExternalQARequest.qa_request_id == qa_request_id)
+        .order_by(models.ExternalQARequest.created_at.desc())
+        .first()
+    )
+    if not external_request:
+        raise HTTPException(status_code=404, detail=f"No ExternalQARequest found for qaRequestId {qa_request_id!r}")
+    return external_request
+
+
+def _enforce_request_tenant(external_request: models.ExternalQARequest, request: Request, claims: dict) -> None:
+    """CROSS_TENANT_QAREQUEST_BLOCKED / CROSS_TENANT_QARESULT_BLOCKED —
+    CONDUCTOR_MAIN is a shared, cross-tenant service identity by design
+    (QA-E6), so the service token alone is never enough to authorize
+    access to a specific tenant's QARequest/QAResult: the caller's
+    per-request tenant context must also match what this ExternalQARequest
+    was actually intaken under. An ExternalQARequest intaken with no
+    tenant (tenant_id is None) stays exempt, matching the same convention
+    used for untenanted projects elsewhere. 404, not 403, to avoid leaking
+    cross-tenant existence."""
+    if not external_request.tenant_id:
+        return
+    caller_tenant = request.headers.get("X-Tenant-Id") or claims.get("tenantId")
+    if caller_tenant != external_request.tenant_id:
+        raise HTTPException(status_code=404, detail=f"No ExternalQARequest found for qaRequestId {external_request.qa_request_id!r}")
+
+
+@router.post("/qa-requests/{qa_request_id}/rerun")
+def rerun_qa_request(
+    qa_request_id: str,
+    request: Request,
+    master_db: Session = Depends(get_master_db),
+    claims: dict = Depends(require_conductor_service_identity),
+):
+    """QA-E9.9 — explicit re-run, distinct from idempotent replay of
+    POST /qa-requests: this always records a new QAExecutionAttempt
+    (QA-E2's ecosystem_intake.explicit_rerun), never a new TestCycle or a
+    second ExternalQARequest. Requires the request to already be mapped
+    to a cycle (QA-E4)."""
+    external_request = _find_external_request_or_404(master_db, qa_request_id)
+    _enforce_request_tenant(external_request, request, claims)
+    triggered_by = f"ecosystem:{claims.get('systemId', 'CONDUCTOR_MAIN')}"
+    try:
+        attempt = ecosystem_intake_service.explicit_rerun(master_db, external_request, triggered_by=triggered_by)
+    except NotMappedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    return {
+        "externalQARequestId": external_request.id,
+        "qaProjectSlug": external_request.qa_project_slug,
+        "testCycleId": external_request.test_cycle_id,
+        "attemptId": attempt.id,
+        "attemptNo": attempt.attempt_no,
+        "trigger": attempt.trigger,
+    }
+
+
 @router.get("/qa-requests/{qa_request_id}/qa-result")
 def qa_result_by_qa_request_id(
     qa_request_id: str,
+    request: Request,
     master_db: Session = Depends(get_master_db),
     claims: dict = Depends(require_conductor_service_identity),
 ):
@@ -93,6 +154,7 @@ def qa_result_by_qa_request_id(
     )
     if not external_request or not external_request.qa_project_slug or not external_request.test_cycle_id:
         raise HTTPException(status_code=404, detail="No QA Again cycle mapped for this qaRequestId yet")
+    _enforce_request_tenant(external_request, request, claims)
 
     project_db = open_project_session(external_request.qa_project_slug)
     try:
