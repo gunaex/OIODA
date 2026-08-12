@@ -124,3 +124,24 @@ def test_pm_status_by_work_package_unknown_is_404(client):
     _override_conductor_identity()
     resp = client.get("/api/ecosystem/pm-status", params={"workPackageId": "wp-does-not-exist"})
     assert resp.status_code == 404
+
+
+def test_connection_status_is_real_not_mocked(auth_client, monkeypatch):
+    # Force both probes down (unreachable ports) so this test doesn't depend
+    # on whether a real Account Again / Conductor happens to be running
+    # locally right now — it's asserting the probe reports what it actually
+    # observed, not asserting either service's live state.
+    monkeypatch.setenv("ACCOUNT_AGAIN_URL", "http://localhost:1/api/v1")
+    import app.ecosystem.account_again_client as aac
+
+    monkeypatch.setattr(aac, "ACCOUNT_AGAIN_URL", "http://localhost:1/api/v1")
+    import app.routers.ecosystem_intake as ei
+
+    monkeypatch.setattr(ei, "CONDUCTOR_MAIN_URL", "http://localhost:1/api")
+
+    resp = auth_client.get("/api/ecosystem/connection-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body.keys()) == {"ecosystemMode", "accountAgain", "conductorMain"}
+    assert body["accountAgain"]["reachable"] is False
+    assert body["conductorMain"]["reachable"] is False

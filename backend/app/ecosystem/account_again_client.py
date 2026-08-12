@@ -21,6 +21,14 @@ EXPECTED_ISSUER = "account-again-local"
 EXPECTED_AUDIENCE = "again-ecosystem-services"
 
 
+def health() -> bool:
+    try:
+        resp = httpx.get(f"{ACCOUNT_AGAIN_URL}/health", timeout=3.0)
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 class ServiceAuthError(Exception):
     """Raised for any failure verifying an inbound service token or
     evaluating entitlement — callers must treat this as a hard deny, never

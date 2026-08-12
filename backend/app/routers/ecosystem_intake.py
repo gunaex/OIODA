@@ -1,17 +1,25 @@
+import os
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..auth import get_current_user
 from ..database import get_master_db, get_project_db, open_project_session
 from ..contracts.validator import CanonicalContractValidator, ValidationError as SchemaValidationError
 from ..contracts.models import DeliveryWorkPackage
+from ..ecosystem import account_again_client
+from ..ecosystem.ecosystem_auth import ECOSYSTEM_MODE
 from ..ecosystem.service_auth import require_conductor_service_identity
 from ..ecosystem.mapping_service import intake_delivery_work_package, TenantMismatch
 from ..ecosystem.intake_service import IdempotencyConflict, raise_conflict_http
 from ..pm_status_service import build_pm_status
 
 router = APIRouter(prefix="/api/ecosystem", tags=["ecosystem"])
+
+CONDUCTOR_MAIN_URL = os.environ.get("CONDUCTOR_MAIN_URL", "http://localhost:8010/api")
 
 _dwp_validator = CanonicalContractValidator("DeliveryWorkPackage")
 _pmstatus_validator = CanonicalContractValidator("PMStatus")
@@ -54,6 +62,26 @@ def intake_delivery_work_package_endpoint(
         "projectSlug": project.slug if project else None,
         "status": reference.status,
         "created": created,
+    }
+
+
+def _conductor_reachable() -> bool:
+    try:
+        resp = httpx.get(f"{CONDUCTOR_MAIN_URL}/health", timeout=3.0)
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+@router.get("/connection-status")
+def connection_status(_user: models.User = Depends(get_current_user)):
+    """Real, API-backed connection diagnostics for the operator UI —
+    PM_ECOSYSTEM_UI_NOT_MOCK_BACKED. Never claims a connection that wasn't
+    actually probed."""
+    return {
+        "ecosystemMode": ECOSYSTEM_MODE,
+        "accountAgain": {"reachable": account_again_client.health()},
+        "conductorMain": {"reachable": _conductor_reachable()},
     }
 
 

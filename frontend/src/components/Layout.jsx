@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext.jsx'
 import SearchBar from './SearchBar.jsx'
 import QuickNoteBar from './QuickNoteBar.jsx'
 import UserBadge from './UserBadge.jsx'
+import EcosystemStatusIndicator from './EcosystemStatusIndicator.jsx'
 
 const tabClass = ({ isActive }) =>
   `px-4 py-2 rounded-md text-sm font-medium ${
@@ -102,6 +103,7 @@ export default function Layout() {
               </NavLink>
             )}
           </nav>
+          <EcosystemStatusIndicator />
           <UserBadge />
         </div>
       </header>

@@ -285,6 +285,11 @@ export const getGlobalDashboard = () => api.get('/dashboard/global').then((r) =>
 // Slippage Predictor
 export const getSlippageSummary = (slug) => api.get(`/${slug}/slippage/summary`).then((r) => r.data)
 
+// Ecosystem integration (PM-E7) — real API-backed, no mock data
+export const getPmStatus = (slug) => api.get(`/${slug}/pm-status`).then((r) => r.data)
+export const getEcosystemConnectionStatus = () => api.get('/ecosystem/connection-status').then((r) => r.data)
+export const getEcosystemSource = (slug) => api.get(`/${slug}/ecosystem-source`).then((r) => r.data)
+
 // Thai Holidays (global, pmo_admin-managed)
 export const listHolidays = (year) => api.get('/holidays', { params: { year } }).then((r) => r.data)
 export const createHoliday = (payload) => api.post('/holidays', payload).then((r) => r.data)

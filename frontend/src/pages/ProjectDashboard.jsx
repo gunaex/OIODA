@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { getProjectDashboard, getSlippageSummary } from '../api/client'
 import StatusBadge from '../components/StatusBadge.jsx'
 import EffortBudgetGauge from '../components/EffortBudgetGauge.jsx'
+import EcosystemSourceBadge from '../components/EcosystemSourceBadge.jsx'
 
 const RAG_LABEL = { red: 'Red', amber: 'Amber', green: 'Green' }
 
@@ -52,6 +53,8 @@ export default function ProjectDashboard() {
         <StatusBadge status={data.rag} />
         <span className="text-sm text-gray-400">{RAG_LABEL[data.rag]}</span>
       </div>
+
+      <EcosystemSourceBadge slug={slug} />
 
       <EffortBudgetGauge slug={slug} />
 
