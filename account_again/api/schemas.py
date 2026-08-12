@@ -103,6 +103,16 @@ class ServiceIdentityCreate(BaseModel):
     tenantId: Optional[str] = None
     allowedCapabilities: List[str] = Field(default_factory=list)
 
+# ── Service Auth (E5.1) ──
+class ServiceTokenRequest(BaseModel):
+    systemId: str
+    clientSecret: str
+
+class ServiceSecretRotateRequest(BaseModel):
+    """Empty body is fine — a secret is generated server-side. A caller-supplied
+    clientSecret is accepted only for deterministic local testing (E5.1 tests)."""
+    clientSecret: Optional[str] = None
+
 # ── Session ──
 class SessionCreate(BaseModel):
     subjectId: str

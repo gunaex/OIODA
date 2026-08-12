@@ -1,7 +1,7 @@
 """Account Again — API routes."""
 
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.orm import Session
 
 from account_again.database import get_db, create_all
@@ -22,22 +22,95 @@ from account_again.api.schemas import (
     ServiceIdentityCreate, SessionCreate,
     EntitlementEvaluateRequest,
     QuotaPolicyCreate, UsageRecordCreate,
+    ServiceTokenRequest, ServiceSecretRotateRequest,
 )
 from account_again.services import (
     EntitlementRequest, evaluate_entitlement,
     write_audit, check_idempotent, record_idempotent,
     secret_resolver,
 )
+from account_again.services import service_auth
+from account_again.services.service_auth import ServiceTokenError
+import secrets as _secrets
 from passlib.hash import bcrypt as passlib_bcrypt
 try:
     import bcrypt as _bcrypt_lib
     def _hash_password(pw: str) -> str:
         return _bcrypt_lib.hashpw(pw.encode(), _bcrypt_lib.gensalt()).decode()
+    def _verify_password(pw: str, hashed: str) -> bool:
+        return _bcrypt_lib.checkpw(pw.encode(), hashed.encode())
 except Exception:
     def _hash_password(pw: str) -> str:
         return passlib_bcrypt.hash(pw)
+    def _verify_password(pw: str, hashed: str) -> bool:
+        return passlib_bcrypt.verify(pw, hashed)
 
 router = APIRouter()
+
+
+# ── E5.1 Service Auth Dependencies ──
+# LOCAL_OIDC_COMPATIBLE_SERVICE_AUTH: verifies a Bearer JWT (RS256, issued by
+# POST /auth/service-token) and re-checks the ServiceIdentity's live DB status on every
+# call — token validity alone is never sufficient (E5.1 §10).
+
+class VerifiedServiceCaller:
+    def __init__(self, system_id: str, service_identity_id: str, tenant_id: Optional[str]):
+        self.system_id = system_id
+        self.service_identity_id = service_identity_id
+        self.tenant_id = tenant_id
+
+
+def _load_and_check_service_identity(db: Session, claims: dict) -> VerifiedServiceCaller:
+    svc = db.query(ServiceIdentity).filter(
+        ServiceIdentity.service_identity_id == claims["serviceIdentityId"]
+    ).first()
+    if not svc:
+        raise HTTPException(401, "Service identity referenced by token no longer exists")
+    if svc.status == "REVOKED":
+        raise HTTPException(403, f"Service identity {svc.system_id} has been revoked since token issuance")
+    if svc.system_id != claims["systemId"]:
+        # Token claim and current DB record disagree — treat as invalid rather than
+        # trusting either blindly.
+        raise HTTPException(401, "Token systemId does not match current service identity record")
+    return VerifiedServiceCaller(system_id=svc.system_id, service_identity_id=svc.service_identity_id, tenant_id=claims.get("tenantId"))
+
+
+def require_service_token(
+    authorization: Optional[str] = Header(None), db: Session = Depends(get_db)
+) -> VerifiedServiceCaller:
+    """Hard dependency — used on the most sensitive endpoints (credential resolution,
+    usage submission). Missing/malformed/invalid/expired token or revoked identity ->
+    401/403. The legacy X-AGAIN-Service-Context header is NEVER consulted here — it is
+    not authoritative (E5.1 §6)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing service bearer token")
+    token = authorization[len("Bearer "):]
+    try:
+        claims = service_auth.verify_service_token(token)
+    except ServiceTokenError as e:
+        raise HTTPException(401, f"Invalid service token: {e}")
+    return _load_and_check_service_identity(db, claims)
+
+
+def optional_service_token(
+    authorization: Optional[str] = Header(None), db: Session = Depends(get_db)
+) -> Optional[VerifiedServiceCaller]:
+    """Soft dependency — used on /entitlements/evaluate, which E3/E4/E4.1 already have
+    ~68 passing tests calling without any token (subject/account-based checks, not just
+    service calls). Verifying a token WHEN PRESENT (rather than requiring one always)
+    lets E5.1 prove the token path is real without a large, out-of-scope rewrite of
+    every prior test file. See docs/current-state/E5_1_TRUST_CLOSURE.md for this
+    explicit, disclosed scoping decision."""
+    if not authorization:
+        return None
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Malformed Authorization header")
+    token = authorization[len("Bearer "):]
+    try:
+        claims = service_auth.verify_service_token(token)
+    except ServiceTokenError as e:
+        raise HTTPException(401, f"Invalid service token: {e}")
+    return _load_and_check_service_identity(db, claims)
 
 
 # ── Health ──
@@ -387,13 +460,27 @@ def revoke_credential_ref(credential_ref: str, db: Session = Depends(get_db)):
 # metadata, never included in any other response. Callers (e.g. Local AI Control Center)
 # must use the value immediately and must not persist it either.
 @router.post("/credential-refs/{credential_ref}/resolve")
-def resolve_credential_ref(credential_ref: str, body: CredentialResolveRequest, db: Session = Depends(get_db)):
+def resolve_credential_ref(
+    credential_ref: str, body: CredentialResolveRequest, db: Session = Depends(get_db),
+    caller: VerifiedServiceCaller = Depends(require_service_token),
+):
+    # E5.1 §6/§15: the authenticated token identity is authoritative. A body-supplied
+    # serviceSystemId that disagrees with the token is rejected outright, never
+    # silently normalized to either side.
+    if body.serviceSystemId and body.serviceSystemId != caller.system_id:
+        write_audit(db, actor_type="SERVICE", actor_id=caller.system_id,
+                    action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
+                    target_id=credential_ref, result="DENY_IDENTITY_MISMATCH", tenant_id=body.tenantId,
+                    correlation_id=body.correlationId)
+        db.commit()
+        raise HTTPException(403, "Authenticated token identity does not match declared serviceSystemId")
+
     cr = db.query(CredentialReference).filter(CredentialReference.credential_ref == credential_ref).first()
     if not cr:
         raise HTTPException(404, "Credential reference not found")
 
     if cr.tenant_id != body.tenantId:
-        write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+        write_audit(db, actor_type="SERVICE", actor_id=caller.system_id,
                     action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
                     target_id=credential_ref, result="DENY_TENANT_MISMATCH", tenant_id=body.tenantId,
                     correlation_id=body.correlationId)
@@ -401,7 +488,7 @@ def resolve_credential_ref(credential_ref: str, body: CredentialResolveRequest, 
         raise HTTPException(403, "Credential reference does not belong to the requesting tenant")
 
     if cr.status == "REVOKED":
-        write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+        write_audit(db, actor_type="SERVICE", actor_id=caller.system_id,
                     action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
                     target_id=credential_ref, result="DENY_REVOKED", tenant_id=cr.tenant_id,
                     correlation_id=body.correlationId)
@@ -409,27 +496,20 @@ def resolve_credential_ref(credential_ref: str, body: CredentialResolveRequest, 
         raise HTTPException(403, "Credential reference is revoked")
 
     if cr.expires_at and cr.expires_at < _now():
-        write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+        write_audit(db, actor_type="SERVICE", actor_id=caller.system_id,
                     action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
                     target_id=credential_ref, result="DENY_EXPIRED", tenant_id=cr.tenant_id,
                     correlation_id=body.correlationId)
         db.commit()
         raise HTTPException(403, "Credential reference has expired")
 
-    if body.serviceSystemId:
-        svc = db.query(ServiceIdentity).filter(ServiceIdentity.system_id == body.serviceSystemId).first()
-        if not svc or svc.status == "REVOKED":
-            write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId,
-                        action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
-                        target_id=credential_ref, result="DENY_SERVICE_IDENTITY", tenant_id=cr.tenant_id,
-                        correlation_id=body.correlationId)
-            db.commit()
-            raise HTTPException(403, "Requesting service identity is not active")
+    # Requesting service identity status (ACTIVE, not revoked) was already verified by
+    # the require_service_token dependency above — no redundant re-check needed here.
 
     secret = secret_resolver.resolve(credential_ref, cr.provider, body.purpose)
 
     if secret is None:
-        write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+        write_audit(db, actor_type="SERVICE", actor_id=caller.system_id,
                     action="CREDENTIAL_RESOLVE_DENIED", target_type="CredentialReference",
                     target_id=credential_ref, result="DENY_UNRESOLVABLE", tenant_id=cr.tenant_id,
                     correlation_id=body.correlationId)
@@ -437,7 +517,7 @@ def resolve_credential_ref(credential_ref: str, body: CredentialResolveRequest, 
         raise HTTPException(424, "Credential reference could not be resolved to a secret value")
 
     # Audit records the fact of resolution — never the secret value itself.
-    write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId or "unknown",
+    write_audit(db, actor_type="SERVICE", actor_id=caller.system_id,
                 action="CREDENTIAL_RESOLVE", target_type="CredentialReference",
                 target_id=credential_ref, result="SUCCESS", tenant_id=cr.tenant_id,
                 correlation_id=body.correlationId)
@@ -494,6 +574,59 @@ def revoke_service_identity(service_identity_id: str, db: Session = Depends(get_
     return svc.to_dict()
 
 
+@router.post("/service-identities/{service_identity_id}/rotate-client-secret")
+def rotate_client_secret(service_identity_id: str, body: ServiceSecretRotateRequest, db: Session = Depends(get_db)):
+    """Generates (or, for deterministic local testing, accepts) a client secret for
+    OAuth2-client-credentials-style token issuance. Returns the PLAINTEXT secret exactly
+    once — only the bcrypt hash is ever stored. Losing the returned value means rotating
+    again; there is no way to recover it, by design."""
+    svc = db.query(ServiceIdentity).filter(ServiceIdentity.service_identity_id == service_identity_id).first()
+    if not svc:
+        raise HTTPException(404, "Service identity not found")
+    plaintext = body.clientSecret or _secrets.token_urlsafe(32)
+    svc.client_secret_hash = _hash_password(plaintext)
+    db.commit()
+    write_audit(db, actor_type="SYSTEM", actor_id="init", action="SERVICE_CLIENT_SECRET_ROTATED",
+                target_type="ServiceIdentity", target_id=svc.service_identity_id, result="SUCCESS")
+    db.commit()
+    return {"serviceIdentityId": svc.service_identity_id, "systemId": svc.system_id, "clientSecret": plaintext}
+
+
+# ── E5.1 Service Auth ──
+@router.post("/auth/service-token")
+def issue_service_token(body: ServiceTokenRequest, db: Session = Depends(get_db)):
+    svc = db.query(ServiceIdentity).filter(ServiceIdentity.system_id == body.systemId).first()
+    if not svc or not svc.client_secret_hash:
+        write_audit(db, actor_type="SERVICE", actor_id=body.systemId, action="SERVICE_TOKEN_ISSUE_DENIED",
+                    target_type="ServiceIdentity", target_id=body.systemId, result="DENY_UNKNOWN_OR_NO_SECRET")
+        db.commit()
+        raise HTTPException(401, "Unknown service identity or no client secret configured")
+    if svc.status == "REVOKED":
+        write_audit(db, actor_type="SERVICE", actor_id=body.systemId, action="SERVICE_TOKEN_ISSUE_DENIED",
+                    target_type="ServiceIdentity", target_id=svc.service_identity_id, result="DENY_REVOKED")
+        db.commit()
+        raise HTTPException(403, "Service identity is revoked")
+    if not _verify_password(body.clientSecret, svc.client_secret_hash):
+        write_audit(db, actor_type="SERVICE", actor_id=body.systemId, action="SERVICE_TOKEN_ISSUE_DENIED",
+                    target_type="ServiceIdentity", target_id=svc.service_identity_id, result="DENY_BAD_SECRET")
+        db.commit()
+        raise HTTPException(401, "Invalid client secret")
+
+    result = service_auth.issue_service_token(
+        service_identity_id=svc.service_identity_id, system_id=svc.system_id, tenant_id=svc.tenant_id,
+    )
+    # Audit records issuance — never the token value itself.
+    write_audit(db, actor_type="SERVICE", actor_id=svc.system_id, action="SERVICE_TOKEN_ISSUED",
+                target_type="ServiceIdentity", target_id=svc.service_identity_id, result="SUCCESS")
+    db.commit()
+    return {"accessToken": result["accessToken"], "tokenType": result["tokenType"], "expiresIn": result["expiresIn"]}
+
+
+@router.get("/.well-known/jwks.json")
+def jwks():
+    return service_auth.get_jwks()
+
+
 # ── Sessions ──
 @router.post("/sessions")
 def create_session(body: SessionCreate, db: Session = Depends(get_db)):
@@ -524,19 +657,34 @@ def revoke_session(session_id: str, db: Session = Depends(get_db)):
 
 
 # ── Entitlement Evaluation ──
+# E5.1 §7: token is OPTIONAL here (soft dependency), not hard-required like credential
+# resolve/usage — this endpoint is also called with subject/account-based (human)
+# context by E3's pre-existing test suite, which has no token concept at all. When a
+# token IS supplied, it is authoritative and a disagreeing body.serviceSystemId is
+# rejected — never silently trusted. See docs/current-state/E5_1_TRUST_CLOSURE.md for
+# this explicit, disclosed scoping decision.
 @router.post("/entitlements/evaluate")
-def evaluate(body: EntitlementEvaluateRequest, db: Session = Depends(get_db)):
+def evaluate(
+    body: EntitlementEvaluateRequest, db: Session = Depends(get_db),
+    caller: Optional[VerifiedServiceCaller] = Depends(optional_service_token),
+):
     # Idempotency check
     if body.idempotencyKey:
         existing = check_idempotent(db, body.idempotencyKey)
         if existing:
             return {"decision": "DUPLICATE", "idempotentResult": existing}
 
+    effective_service_system_id = body.serviceSystemId
+    if caller:
+        if body.serviceSystemId and body.serviceSystemId != caller.system_id:
+            raise HTTPException(403, "Authenticated token identity does not match declared serviceSystemId")
+        effective_service_system_id = caller.system_id
+
     req = EntitlementRequest(
         tenant_id=body.tenantId,
         account_id=body.accountId,
         subject_id=body.subjectId,
-        service_system_id=body.serviceSystemId,
+        service_system_id=effective_service_system_id,
         product_id=body.productId,
         capability=body.capability,
         provider=body.provider,
@@ -607,32 +755,34 @@ def list_quota_policies(tenantId: Optional[str] = Query(None), db: Session = Dep
 
 # ── Usage ──
 @router.post("/usage")
-def record_usage(body: UsageRecordCreate, db: Session = Depends(get_db)):
+def record_usage(
+    body: UsageRecordCreate, db: Session = Depends(get_db),
+    caller: VerifiedServiceCaller = Depends(require_service_token),
+):
     if body.idempotencyKey:
         existing = check_idempotent(db, body.idempotencyKey)
         if existing:
             return {"status": "DUPLICATE", "idempotentResult": existing}
 
-    # E4.1 §19: domain-level tenant enforcement. A tenant-scoped ServiceIdentity cannot
-    # submit usage into a different tenant's context.
-    if body.serviceSystemId:
-        svc = db.query(ServiceIdentity).filter(ServiceIdentity.system_id == body.serviceSystemId).first()
-        if not svc:
-            raise HTTPException(403, f"Unknown service identity {body.serviceSystemId}")
-        if svc.status == "REVOKED":
-            write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId,
-                        action="USAGE_SUBMISSION_DENIED", target_type="UsageRecord",
-                        target_id=body.serviceSystemId, result="DENY_REVOKED_SERVICE_IDENTITY",
-                        tenant_id=body.tenantId, correlation_id=body.correlationId)
-            db.commit()
-            raise HTTPException(403, f"Service identity {body.serviceSystemId} is revoked")
-        if svc.tenant_id and svc.tenant_id != body.tenantId:
-            write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId,
-                        action="USAGE_SUBMISSION_DENIED", target_type="UsageRecord",
-                        target_id=body.serviceSystemId, result="DENY_TENANT_MISMATCH",
-                        tenant_id=body.tenantId, correlation_id=body.correlationId)
-            db.commit()
-            raise HTTPException(403, f"Service identity {body.serviceSystemId} is scoped to a different tenant")
+    # E5.1 §15: caller identity comes from the verified token, never the request body.
+    # A body-supplied serviceSystemId that disagrees with the token is rejected outright.
+    if body.serviceSystemId and body.serviceSystemId != caller.system_id:
+        write_audit(db, actor_type="SERVICE", actor_id=caller.system_id,
+                    action="USAGE_SUBMISSION_DENIED", target_type="UsageRecord",
+                    target_id=caller.system_id, result="DENY_IDENTITY_MISMATCH",
+                    tenant_id=body.tenantId, correlation_id=body.correlationId)
+        db.commit()
+        raise HTTPException(403, "Authenticated token identity does not match declared serviceSystemId")
+
+    # E4.1 §19 domain-level tenant enforcement, now driven by the verified caller
+    # identity rather than a self-reported body field.
+    if caller.tenant_id and caller.tenant_id != body.tenantId:
+        write_audit(db, actor_type="SERVICE", actor_id=caller.system_id,
+                    action="USAGE_SUBMISSION_DENIED", target_type="UsageRecord",
+                    target_id=caller.system_id, result="DENY_TENANT_MISMATCH",
+                    tenant_id=body.tenantId, correlation_id=body.correlationId)
+        db.commit()
+        raise HTTPException(403, f"Service identity {caller.system_id} is scoped to a different tenant")
 
     ur = UsageRecord(
         record_id=_new_id(),

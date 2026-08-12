@@ -21,6 +21,10 @@ class ServiceIdentity(Base):
     allowed_capabilities = Column(JSON, nullable=True, default=list)
     created_at = Column(String, nullable=False, default=_now)
     revoked_at = Column(String, nullable=True)
+    # E5.1: bcrypt hash of the client secret used for OAuth2-client-credentials-style
+    # token issuance (POST /auth/service-token). Never the plaintext secret — the
+    # plaintext is returned exactly once, at creation/rotation time, and never stored.
+    client_secret_hash = Column(String, nullable=True)
 
     def to_dict(self) -> dict:
         return {

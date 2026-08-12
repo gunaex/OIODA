@@ -162,52 +162,71 @@ class TestCloudLocalPolicy:
         assert resp.json()["cloudAllowed"] is False
 
 
+def _direct_service_identity_token(client, db, system_id: str, tenant_id=None, status="ACTIVE") -> str:
+    """Like make_service_token, but inserts the ServiceIdentity directly (bypassing the
+    API's VALID_SYSTEM_IDS check) so tests can use descriptive fictional system IDs.
+    Token issuance itself doesn't check VALID_SYSTEM_IDS — only creation does."""
+    sid = f"svc-{system_id.lower()}"
+    db.add(ServiceIdentity(service_identity_id=sid, system_id=system_id, tenant_id=tenant_id, status=status))
+    db.commit()
+    secret = "test-client-secret-not-real"
+    client.post(f"/api/v1/service-identities/{sid}/rotate-client-secret", json={"clientSecret": secret})
+    resp = client.post("/api/v1/auth/service-token", json={"systemId": system_id, "clientSecret": secret})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["accessToken"]
+
+
 class TestCrossTenantUsageSubmission:
-    """E4.1 §19: domain-level tenant enforcement for usage submission."""
+    """E4.1 §19 / E5.1 §15: tenant enforcement for usage submission, now driven by the
+    verified token identity rather than a self-reported body field."""
 
     def test_unscoped_service_identity_can_submit_any_tenant(self, client, db):
         """No cross-check possible without tenant scoping — documents the real limit of
         domain-only enforcement (see E5_IDENTITY_AND_SERVICE_AUTH.md)."""
         make_tenant(db, tenant_id="tenant-a")
-        db.add(ServiceIdentity(service_identity_id="svc1", system_id="GLOBAL_SVC"))
-        db.commit()
-        resp = client.post("/api/v1/usage", json={
-            "tenantId": "tenant-a", "serviceSystemId": "GLOBAL_SVC", "capability": "AI_CODE",
+        token = _direct_service_identity_token(client, db, "GLOBAL_SVC")
+        resp = client.post("/api/v1/usage", headers={"Authorization": f"Bearer {token}"}, json={
+            "tenantId": "tenant-a", "capability": "AI_CODE",
         })
         assert resp.status_code == 200
 
     def test_tenant_scoped_service_identity_blocked_from_other_tenant(self, client, db):
         make_tenant(db, tenant_id="tenant-a")
         make_tenant(db, tenant_id="tenant-b")
-        db.add(ServiceIdentity(service_identity_id="svc1", system_id="SCOPED_SVC", tenant_id="tenant-a"))
-        db.commit()
-        resp = client.post("/api/v1/usage", json={
-            "tenantId": "tenant-b", "serviceSystemId": "SCOPED_SVC", "capability": "AI_CODE",
+        token = _direct_service_identity_token(client, db, "SCOPED_SVC", tenant_id="tenant-a")
+        resp = client.post("/api/v1/usage", headers={"Authorization": f"Bearer {token}"}, json={
+            "tenantId": "tenant-b", "capability": "AI_CODE",
         })
         assert resp.status_code == 403
 
     def test_tenant_scoped_service_identity_allowed_own_tenant(self, client, db):
         make_tenant(db, tenant_id="tenant-a")
-        db.add(ServiceIdentity(service_identity_id="svc1", system_id="SCOPED_SVC", tenant_id="tenant-a"))
-        db.commit()
-        resp = client.post("/api/v1/usage", json={
-            "tenantId": "tenant-a", "serviceSystemId": "SCOPED_SVC", "capability": "AI_CODE",
+        token = _direct_service_identity_token(client, db, "SCOPED_SVC", tenant_id="tenant-a")
+        resp = client.post("/api/v1/usage", headers={"Authorization": f"Bearer {token}"}, json={
+            "tenantId": "tenant-a", "capability": "AI_CODE",
         })
         assert resp.status_code == 200
 
-    def test_revoked_service_identity_blocked_from_usage_submission(self, client, db):
+    def test_revoked_after_token_issuance_blocked_from_usage_submission(self, client, db):
         make_tenant(db, tenant_id="tenant-a")
-        db.add(ServiceIdentity(service_identity_id="svc1", system_id="REVOKED_SVC", tenant_id="tenant-a", status="REVOKED"))
-        db.commit()
-        resp = client.post("/api/v1/usage", json={
-            "tenantId": "tenant-a", "serviceSystemId": "REVOKED_SVC", "capability": "AI_CODE",
+        token = _direct_service_identity_token(client, db, "REVOKED_SVC", tenant_id="tenant-a")
+        svc = db.query(ServiceIdentity).filter(ServiceIdentity.system_id == "REVOKED_SVC").first()
+        client.post(f"/api/v1/service-identities/{svc.service_identity_id}/revoke")
+        resp = client.post("/api/v1/usage", headers={"Authorization": f"Bearer {token}"}, json={
+            "tenantId": "tenant-a",
         })
         assert resp.status_code == 403
 
-    def test_unknown_service_identity_blocked(self, client, db):
+    def test_missing_token_rejected(self, client, db):
         make_tenant(db, tenant_id="tenant-a")
-        resp = client.post("/api/v1/usage", json={
-            "tenantId": "tenant-a", "serviceSystemId": "DOES_NOT_EXIST",
+        resp = client.post("/api/v1/usage", json={"tenantId": "tenant-a"})
+        assert resp.status_code == 401
+
+    def test_body_serviceSystemId_cannot_masquerade_as_different_token_identity(self, client, db):
+        make_tenant(db, tenant_id="tenant-a")
+        token = _direct_service_identity_token(client, db, "REAL_CALLER", tenant_id="tenant-a")
+        resp = client.post("/api/v1/usage", headers={"Authorization": f"Bearer {token}"}, json={
+            "tenantId": "tenant-a", "serviceSystemId": "SOME_OTHER_SYSTEM",
         })
         assert resp.status_code == 403
 
