@@ -7,7 +7,9 @@ from account_again.services.entitlement_engine import (
 )
 from account_again.services.audit import write_audit
 from account_again.services.idempotency import check_idempotent, record_idempotent
-from account_again.services.secret_resolver import secret_resolver, SecretResolver
+from account_again.services.secret_resolver import (
+    secret_resolver, SecretResolverBase, EnvSecretResolver, StaticMapSecretResolver,
+)
 
 __all__ = [
     "EntitlementRequest",
@@ -17,5 +19,7 @@ __all__ = [
     "check_idempotent",
     "record_idempotent",
     "secret_resolver",
-    "SecretResolver",
+    "SecretResolverBase",
+    "EnvSecretResolver",
+    "StaticMapSecretResolver",
 ]
