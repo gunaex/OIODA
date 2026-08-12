@@ -147,6 +147,53 @@ class DocumentTemplate(MasterBase):
     approved_by = Column(String)
 
 
+class ExternalWorkReference(MasterBase):
+    """PM-owned mapping from an ecosystem source object (e.g. a Conductor
+    DeliveryWorkPackage) to whatever PM Again created/reused locally in
+    response to it. Deliberately separate from Project/Task rather than
+    stuffing ecosystem fields onto every existing table — see
+    docs/architecture/PM_CONDUCTOR_BOUNDARY.md.
+
+    idempotency_key is unique: replaying the same source payload must map to
+    the same row (CONDUCTOR_INTAKE_IDEMPOTENCY), and payload_hash lets a
+    same-key-different-payload replay be detected as an explicit conflict
+    (IDEMPOTENCY_CONFLICT_REJECTED) rather than silently overwritten."""
+
+    __tablename__ = "external_work_references"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
+    tenant_id = Column(String, nullable=True)
+    source_system = Column(String, nullable=False)  # e.g. CONDUCTOR_MAIN
+    source_object_type = Column(String, nullable=False)  # e.g. DELIVERY_WORK_PACKAGE
+    source_object_id = Column(String, nullable=False)
+    correlation_id = Column(String, nullable=False, index=True)
+    idempotency_key = Column(String, unique=True, nullable=False, index=True)
+    payload_hash = Column(String, nullable=False)
+    local_object_type = Column(String, nullable=True)  # e.g. project | task
+    local_object_id = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="RECEIVED")  # RECEIVED|MAPPED|ACTIVE|BLOCKED|COMPLETED|CANCELLED
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class EvidenceReference(MasterBase):
+    """A link to operational evidence, not a copy of it — PM Again stores
+    where evidence lives (and a short summary), never the raw specialist
+    payload (see EVIDENCE_REFERENCE_MODEL in the ecosystem integration
+    plan)."""
+
+    __tablename__ = "evidence_references"
+
+    id = Column(Integer, primary_key=True, index=True)
+    external_work_reference_id = Column(Integer, ForeignKey("external_work_references.id"), nullable=False)
+    type = Column(String, nullable=True)
+    source = Column(String, nullable=True)
+    reference = Column(String, nullable=True)
+    summary = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Function(ProjectBase):
     __tablename__ = "functions"
 
