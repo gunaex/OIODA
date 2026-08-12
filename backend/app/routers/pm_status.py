@@ -6,10 +6,17 @@ from ..database import get_master_db, get_project_db
 from ..auth import get_current_user
 from ..pm_status_service import build_pm_status
 from ..contracts.validator import CanonicalContractValidator
+from ..ecosystem.ecosystem_auth import require_project_tenant_match
 
 # Baseline auth only — read-only, same visibility as the other
-# Dashboard/Slippage endpoints (client_viewer included).
-router = APIRouter(prefix="/api/{slug}/pm-status", tags=["pm-status"], dependencies=[Depends(get_current_user)])
+# Dashboard/Slippage endpoints (client_viewer included). Plus tenant match
+# (no-op unless ECOSYSTEM_MODE=true and the project has a tenant_id set) —
+# CROSS_TENANT_PMSTATUS_ACCESS_BLOCKED.
+router = APIRouter(
+    prefix="/api/{slug}/pm-status",
+    tags=["pm-status"],
+    dependencies=[Depends(get_current_user), Depends(require_project_tenant_match)],
+)
 
 _pmstatus_validator = CanonicalContractValidator("PMStatus")
 

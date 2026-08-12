@@ -10,10 +10,17 @@ from ..import_engine import ImportError_, export_response, raise_import_errors, 
 from ..import_schemas import TASKS as SCHEMA
 from ..activity import log_changes
 from ..auth import require_internal
+from ..ecosystem.ecosystem_auth import require_project_tenant_match
 
 # Entire router requires an internal role (pmo_admin/dev/qa) — client_viewer
 # must not see tasks at all, per the security spec ("ห้ามเห็น internal task").
-router = APIRouter(prefix="/api/{slug}/tasks", tags=["tasks"], dependencies=[Depends(require_internal)])
+# require_project_tenant_match is a no-op unless ECOSYSTEM_MODE=true and the
+# project has a tenant_id set (CROSS_TENANT_TASK_ACCESS_BLOCKED).
+router = APIRouter(
+    prefix="/api/{slug}/tasks",
+    tags=["tasks"],
+    dependencies=[Depends(require_internal), Depends(require_project_tenant_match)],
+)
 
 # Column list now lives in import_schemas — one definition for the
 # template, the import validator and the export.

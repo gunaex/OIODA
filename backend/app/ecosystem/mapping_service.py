@@ -20,6 +20,13 @@ from ..contracts.models import DeliveryWorkPackage, WorkPackageState
 from . import intake_service
 
 _BUSINESS_INTENT_SOURCE_TYPE = "BUSINESS_INTENT"
+
+
+class TenantMismatch(Exception):
+    """Raised when a DeliveryWorkPackage's caller tenant doesn't match the
+    tenant already recorded on the project its businessIntentId maps to
+    (CROSS_TENANT_DELIVERY_WORK_PACKAGE_REJECTED)."""
+
 _WORK_PACKAGE_SOURCE_TYPE = "DELIVERY_WORK_PACKAGE"
 
 _STATE_TO_TASK_STATUS = {
@@ -48,6 +55,11 @@ def _find_or_create_project(master_db: Session, *, business_intent_id: str, titl
     if existing_link and existing_link.project_id:
         project = master_db.query(models.Project).filter(models.Project.id == existing_link.project_id).first()
         if project:
+            if project.tenant_id and tenant_id and project.tenant_id != tenant_id:
+                raise TenantMismatch(
+                    f"businessIntentId {business_intent_id!r} is owned by tenant {project.tenant_id!r}, "
+                    f"not the caller's tenant {tenant_id!r}"
+                )
             return project
 
     base_slug = slugify(title) or slugify(business_intent_id)
@@ -57,7 +69,7 @@ def _find_or_create_project(master_db: Session, *, business_intent_id: str, titl
         suffix += 1
         slug = f"{base_slug}-{suffix}"
 
-    project = models.Project(name=title, slug=slug, project_type="simple")
+    project = models.Project(name=title, slug=slug, project_type="simple", tenant_id=tenant_id)
     master_db.add(project)
     master_db.commit()
     master_db.refresh(project)

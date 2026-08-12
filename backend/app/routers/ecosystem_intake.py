@@ -7,7 +7,7 @@ from ..database import get_master_db, get_project_db, open_project_session
 from ..contracts.validator import CanonicalContractValidator, ValidationError as SchemaValidationError
 from ..contracts.models import DeliveryWorkPackage
 from ..ecosystem.service_auth import require_conductor_service_identity
-from ..ecosystem.mapping_service import intake_delivery_work_package
+from ..ecosystem.mapping_service import intake_delivery_work_package, TenantMismatch
 from ..ecosystem.intake_service import IdempotencyConflict, raise_conflict_http
 from ..pm_status_service import build_pm_status
 
@@ -45,6 +45,8 @@ def intake_delivery_work_package_endpoint(
         )
     except IdempotencyConflict as exc:
         raise raise_conflict_http(exc)
+    except TenantMismatch as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
 
     return {
         "externalWorkReferenceId": reference.id,

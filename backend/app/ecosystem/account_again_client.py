@@ -85,9 +85,9 @@ def verify_service_token(token: str) -> dict:
 class _EntitlementCache:
     def __init__(self):
         self._lock = threading.Lock()
-        self._entries: dict[tuple, tuple[float, bool]] = {}
+        self._entries: dict[tuple, tuple[float, dict]] = {}
 
-    def evaluate(self, *, tenant_id: str, product_id: str, service_system_id: str) -> bool:
+    def evaluate(self, *, tenant_id: str, product_id: str, service_system_id: str) -> dict:
         key = (tenant_id, product_id, service_system_id)
         with self._lock:
             cached = self._entries.get(key)
@@ -100,9 +100,11 @@ class _EntitlementCache:
                 timeout=5.0,
             )
             resp.raise_for_status()
-            decision = resp.json().get("decision") == "ALLOW"
+            decision = resp.json()
         except httpx.HTTPError as exc:
-            raise ServiceAuthError(f"Account Again entitlement evaluation unreachable: {exc}") from exc
+            # Fail-closed: any transport failure is an explicit DENY, never
+            # an implicit ALLOW.
+            decision = {"decision": "DENY", "reasonCode": "ACCOUNT_AGAIN_UNAVAILABLE", "reasonMessage": str(exc)}
         with self._lock:
             self._entries[key] = (time.monotonic(), decision)
         return decision
@@ -111,5 +113,8 @@ class _EntitlementCache:
 _entitlement_cache = _EntitlementCache()
 
 
-def evaluate_entitlement(*, tenant_id: str, product_id: str = "PM_AGAIN", service_system_id: str = "PM_AGAIN") -> bool:
+def evaluate_entitlement(*, tenant_id: str, product_id: str = "PM_AGAIN", service_system_id: str = "PM_AGAIN") -> dict:
+    """Returns Account Again's raw entitlement decision dict
+    ({"decision": "ALLOW"|"DENY", "reasonCode": ..., ...}). Fail-closed on
+    any transport failure."""
     return _entitlement_cache.evaluate(tenant_id=tenant_id, product_id=product_id, service_system_id=service_system_id)

@@ -41,6 +41,8 @@ class Project(MasterBase):
     # letters. Nullable: a project created before this feature, or one that
     # never sets it, just keeps typing task/function codes by hand.
     project_code = Column(String, nullable=True)
+    # Ecosystem tenant ownership (PM-E6) — nullable, see MASTER_COLUMN_PATCHES.
+    tenant_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -56,6 +58,8 @@ class User(MasterBase):
     role = Column(String, nullable=False)  # pmo_admin | dev | qa | client_viewer
     active = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
+    # Ecosystem tenant membership (PM-E6) — nullable, see MASTER_COLUMN_PATCHES.
+    tenant_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

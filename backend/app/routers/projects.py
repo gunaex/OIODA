@@ -14,6 +14,7 @@ from ..database import (
     dispose_project_engine,
 )
 from ..auth import get_current_user, require_internal, require_roles, verify_password
+from ..ecosystem.ecosystem_auth import require_project_tenant_match
 
 router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depends(get_current_user)])
 
@@ -117,7 +118,7 @@ def list_projects(
 
 
 @router.get("/{slug}", response_model=schemas.ProjectOut)
-def get_project(slug: str, db: Session = Depends(get_master_db)):
+def get_project(slug: str, db: Session = Depends(get_master_db), _tenant=Depends(require_project_tenant_match)):
     project = db.query(models.Project).filter(models.Project.slug == slug).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")

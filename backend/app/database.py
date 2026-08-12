@@ -39,9 +39,16 @@ MASTER_COLUMN_PATCHES = {
         # Running Code Generator's "PJ" prefix — nullable, a project without
         # one just keeps typing task/function codes by hand.
         "project_code": "TEXT",
+        # Ecosystem tenant ownership (PM-E6). Nullable: a project created
+        # before ecosystem mode existed, or one created purely locally, has
+        # no tenant and is exempt from tenant-match enforcement.
+        "tenant_id": "TEXT",
     },
     "users": {
         "must_change_password": "BOOLEAN DEFAULT 0",
+        # Ecosystem tenant membership (PM-E6). Nullable for the same reason
+        # as projects.tenant_id.
+        "tenant_id": "TEXT",
     },
 }
 PROJECT_COLUMN_PATCHES = {
