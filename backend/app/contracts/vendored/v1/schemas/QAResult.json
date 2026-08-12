@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/QAResult.json",
+  "title": "QAResult",
+  "description": "Independent quality validation result from QA Again.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": [
+    "qaResultId",
+    "correlationId",
+    "workPackageId",
+    "qaRequestId",
+    "status",
+    "testSummary",
+    "qualityGate",
+    "evidence",
+    "completedAt"
+  ],
+  "properties": {
+    "qaResultId": {
+      "type": "string",
+      "examples": ["qr-001"]
+    },
+    "correlationId": {
+      "type": "string",
+      "examples": ["e2e-golden-001"]
+    },
+    "workPackageId": {
+      "type": "string",
+      "examples": ["wp-001"]
+    },
+    "qaRequestId": {
+      "type": "string",
+      "examples": ["qar-001"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["COMPLETED", "PARTIAL", "FAILED"],
+      "description": "QA execution status."
+    },
+    "testSummary": {
+      "type": "object",
+      "required": ["total", "passed", "failed", "skipped"],
+      "properties": {
+        "total": { "type": "integer" },
+        "passed": { "type": "integer" },
+        "failed": { "type": "integer" },
+        "skipped": { "type": "integer" }
+      }
+    },
+    "defects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "severity": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+          "status": { "type": "string" },
+          "relatedTest": { "type": "string" }
+        }
+      }
+    },
+    "qualityGate": {
+      "type": "string",
+      "enum": ["APPROVED", "REJECTED", "PENDING"],
+      "description": "QA quality gate decision. APPROVED = acceptable, REJECTED = unacceptable, PENDING = more info needed."
+    },
+    "acceptanceValidation": {
+      "type": "object",
+      "properties": {
+        "businessCriteriaMet": { "type": "boolean" },
+        "technicalCriteriaMet": { "type": "boolean" },
+        "notes": { "type": "string" }
+      }
+    },
+    "recommendedRegressionAreas": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "source", "reference"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["QA_TEST_RESULTS", "DEFECT_REGISTER", "ACCEPTANCE_CHECKLIST"]
+          },
+          "source": { "type": "string" },
+          "reference": { "type": "string" },
+          "summary": { "type": "string" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

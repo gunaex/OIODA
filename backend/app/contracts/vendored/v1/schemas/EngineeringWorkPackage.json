@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/EngineeringWorkPackage.json",
+  "title": "EngineeringWorkPackage",
+  "description": "Engineering work request sent to Idea → Code.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": ["engineeringWorkPackageId", "correlationId", "workPackageId", "requirements", "createdAt"],
+  "properties": {
+    "engineeringWorkPackageId": { "type": "string", "examples": ["ewp-001"] },
+    "correlationId": { "type": "string", "examples": ["e2e-golden-001"] },
+    "workPackageId": { "type": "string", "examples": ["wp-001"] },
+    "requirements": { "type": "string", "description": "Engineering requirements description." },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "language": { "type": "string" },
+        "framework": { "type": "string" },
+        "database": { "type": "string" }
+      }
+    },
+    "targetRepo": { "type": "string" },
+    "createdAt": { "type": "string", "format": "date-time" }
+  }
+}

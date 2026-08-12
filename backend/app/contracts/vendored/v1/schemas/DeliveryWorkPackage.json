@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/DeliveryWorkPackage.json",
+  "title": "DeliveryWorkPackage",
+  "description": "Decomposed work package created by Conductor Main for orchestration across Specialist OS products.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": [
+    "workPackageId",
+    "correlationId",
+    "businessIntentId",
+    "title",
+    "priority",
+    "state",
+    "assignments",
+    "createdAt"
+  ],
+  "properties": {
+    "workPackageId": {
+      "type": "string",
+      "description": "Unique identifier for this work package.",
+      "examples": ["wp-001"]
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Correlation ID linking the full delivery flow.",
+      "examples": ["e2e-golden-001"]
+    },
+    "businessIntentId": {
+      "type": "string",
+      "description": "Reference to the originating Business Intent.",
+      "examples": ["bi-001"]
+    },
+    "title": {
+      "type": "string",
+      "description": "Human-readable title of the work package.",
+      "examples": ["Production-ready web application with PostgreSQL"]
+    },
+    "description": {
+      "type": "string",
+      "description": "Detailed description of the business intent."
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+      "description": "Priority of this work package."
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "DRAFT",
+        "PLANNED",
+        "IN_PROGRESS",
+        "WAITING_FOR_HUMAN",
+        "BLOCKED",
+        "ENGINEERING_COMPLETE",
+        "INFRA_READY",
+        "QA_PENDING",
+        "QA_APPROVED",
+        "READY_FOR_DELIVERY",
+        "NOT_READY",
+        "CANCELLED"
+      ],
+      "description": "Aggregate delivery state."
+    },
+    "assignments": {
+      "type": "object",
+      "description": "Specialist OS assignments for this work package.",
+      "properties": {
+        "pm": {
+          "type": "boolean",
+          "description": "PM Again tracking required."
+        },
+        "engineering": {
+          "type": "boolean",
+          "description": "Idea → Code execution required."
+        },
+        "infrastructure": {
+          "type": "boolean",
+          "description": "Infrastructure Again provisioning required."
+        },
+        "qa": {
+          "type": "boolean",
+          "description": "QA Again validation required."
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "description": "IDs of work packages this depends on.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "engineeringContext": {
+      "type": "object",
+      "description": "Context for Idea → Code.",
+      "properties": {
+        "requirements": {
+          "type": "string"
+        },
+        "constraints": {
+          "type": "object"
+        }
+      }
+    },
+    "infrastructureContext": {
+      "type": "object",
+      "description": "Provider-neutral infrastructure requirements.",
+      "properties": {
+        "database": {
+          "type": "object",
+          "properties": {
+            "engine": { "type": "string" },
+            "availability": { "type": "string" },
+            "backup": { "type": "object" },
+            "encryption": { "type": "object" },
+            "storage": { "type": "string" }
+          }
+        },
+        "applicationRuntime": {
+          "type": "object",
+          "properties": {
+            "containerized": { "type": "boolean" },
+            "replicas": { "type": "integer" },
+            "https": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "qaContext": {
+      "type": "object",
+      "description": "Context for QA Again.",
+      "properties": {
+        "businessAcceptanceCriteria": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "technicalAcceptanceCriteria": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of work package creation."
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of last update."
+    }
+  }
+}

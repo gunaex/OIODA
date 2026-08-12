@@ -1,0 +1,20 @@
+{
+  "sourceRepo": "/Users/kanphong/AGAIN-ECOSYSTEM",
+  "sourceCommit": "bf1237d",
+  "vendoredAt": "2026-08-12",
+  "contractSet": "v1",
+  "schemas": [
+    "BusinessIntent",
+    "DeliveryReadinessResult",
+    "DeliveryWorkPackage",
+    "EngineeringResult",
+    "EngineeringWorkPackage",
+    "InfrastructureRequest",
+    "InfrastructureResult",
+    "OSMessageEnvelope",
+    "PMStatus",
+    "QARequest",
+    "QAResult"
+  ],
+  "note": "Verbatim copy of AGAIN-ECOSYSTEM contracts/v1/schemas/*.json. AGAIN-ECOSYSTEM is canonical (ADR-003) — if these ever diverge, this repo is wrong. PM Again is runtime authority/producer only for DeliveryWorkPackage (consumer) and PMStatus (producer); the rest are vendored read-only for drift detection and reference validation of stored evidence."
+}
