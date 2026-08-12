@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.database import get_master_db
 from app.integration.lacc_client import LACCUnavailableError
 from app.integration.pm_again_client import PMAgainUnavailableError
+from app.integration.qa_again_client import QAAgainUnavailableError
 from app.orchestration.dispatch import idea_to_code_adapter, infra_adapter, pm_adapter, qa_adapter
 from app.orchestration.ecosystem_auth import EcosystemIdentity, require_ecosystem_identity
 from app.orchestration.models import DeliveryRun, OrchestrationBusinessIntent, SpecialistDispatch, SpecialistResult
@@ -260,6 +261,13 @@ def dispatch_qa(
     identity: EcosystemIdentity = Depends(require_ecosystem_identity),
     db: Session = Depends(get_master_db), svc: OrchestrationService = Depends(_svc),
 ):
+    """QA-E5: dispatches the canonical QARequest to the real QA Again
+    adapter. Unlike the old synchronous HARNESS, QA Again's own execution
+    is genuinely asynchronous — this call only sends the request and
+    records the dispatch; the QAResult arrives later via
+    refresh-qa-result. QA_UNAVAILABLE_NO_FAKE_APPROVAL: if QA Again can't
+    be reached, the dispatch is marked FAILED and a 502 is raised — never
+    a fabricated APPROVED/COMPLETED result."""
     run = _get_run_or_404(db, run_id, identity.tenant_id)
     try:
         svc.assert_no_downstream_after_hard_failure(run, "QA")
@@ -271,15 +279,45 @@ def dispatch_qa(
         raise HTTPException(409, "No EngineeringResult received yet")
 
     qar = qa_adapter.build_qa_request(run=run, engineering_result=eng.payload, acceptance_criteria=body.acceptance_criteria)
-    dispatch = svc.register_dispatch(
-        run=run, specialist="QA", contract_name="QARequest", canonical_id=qar["qaRequestId"], payload=qar,
-        idempotency_key=f"qa-{run.run_id}", adapter_status=qa_adapter.STATUS,
-    )
-    result_payload = qa_adapter.run_harness(run=run, qa_request=qar, engineering_result=eng.payload)
-    svc.mark_dispatch_sent(dispatch, result_payload)
-    svc.advance_stage(run, "QA")
+    try:
+        dispatch = svc.register_dispatch(
+            run=run, specialist="QA", contract_name="QARequest", canonical_id=qar["qaRequestId"], payload=qar,
+            idempotency_key=f"qa-{run.run_id}", adapter_status=qa_adapter.STATUS,
+        )
+    except IdempotencyConflictError as e:
+        raise HTTPException(409, str(e))
+
+    if dispatch.dispatch_status == "PENDING":
+        try:
+            response = qa_adapter.dispatch(run=run, qa_request=qar)
+        except QAAgainUnavailableError as e:
+            svc.mark_dispatch_failed(dispatch, str(e))
+            raise HTTPException(502, f"QA Again dispatch failed: {e}")
+        svc.mark_dispatch_sent(dispatch, response)
+        svc.advance_stage(run, "QA")
+    return {"dispatch": _dispatch_view(dispatch)}
+
+
+@router.post("/runs/{run_id}/refresh-qa-result")
+def refresh_qa_result(
+    run_id: str, identity: EcosystemIdentity = Depends(require_ecosystem_identity),
+    db: Session = Depends(get_master_db), svc: OrchestrationService = Depends(_svc),
+):
+    """QA-E5: authenticated HTTP refresh — fetches the real canonical
+    QAResult for this run's dispatched qaRequestId. No event broker;
+    Conductor is expected to poll this after dispatch-qa until QA Again
+    has produced a result. QARESULT_AUTHORITY=QA_AGAIN: this never
+    recomputes a verdict locally, only stores what QA Again returns."""
+    run = _get_run_or_404(db, run_id, identity.tenant_id)
+    qa_dispatch = svc.find_existing_dispatch(f"qa-{run.run_id}")
+    if not qa_dispatch:
+        raise HTTPException(409, "No QA dispatch recorded for this run yet")
+
+    result_payload = qa_adapter.fetch_result(run=run, qa_request_id=qa_dispatch.canonical_id)
+    if result_payload is None:
+        return {"qaResult": None, "note": "QA Again has no result for this qaRequestId yet, or is unreachable."}
     result = svc.intake_result(run=run, specialist="QA", contract_name="QAResult", payload=result_payload)
-    return {"dispatch": _dispatch_view(dispatch), "result": _result_view(result)}
+    return {"qaResult": _result_view(result)}
 
 
 # ── PM Again dispatch + status (PM-E5) ────────────────────────────

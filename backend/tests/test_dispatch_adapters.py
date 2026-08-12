@@ -4,7 +4,7 @@ import pytest
 
 from app.database import MasterSessionLocal
 from app.integration.lacc_client import LocalAIControlCenterClient
-from app.orchestration.dispatch import FROZEN_RUNTIME, HARNESS, REAL_RUNTIME
+from app.orchestration.dispatch import FROZEN_RUNTIME, REAL_RUNTIME
 from app.orchestration.dispatch import idea_to_code_adapter, infra_adapter, pm_adapter, qa_adapter
 from app.orchestration.service import OrchestrationService
 
@@ -25,7 +25,7 @@ def run():
 def test_adapter_status_classifications_are_disclosed():
     assert idea_to_code_adapter.STATUS == REAL_RUNTIME
     assert infra_adapter.STATUS == FROZEN_RUNTIME
-    assert qa_adapter.STATUS == HARNESS
+    assert qa_adapter.STATUS == REAL_RUNTIME
     assert pm_adapter.STATUS == REAL_RUNTIME
 
 
@@ -65,6 +65,13 @@ def test_qa_adapter_rejects_when_upstream_failed_verify(run):
     assert result["qualityGate"] == "REJECTED"
 
 
+def test_qa_adapter_never_fabricates_a_result_when_unreachable(run):
+    """QA_UNAVAILABLE_NO_FAKE_APPROVAL: fetch_result must return None (fail
+    closed), never a synthetic/fabricated QAResult, if QA Again has no
+    result for this qaRequestId or can't be reached."""
+    assert qa_adapter.fetch_result(run=run, qa_request_id="qar-does-not-exist") is None
+
+
 @pytest.mark.skipif(not LocalAIControlCenterClient.health(), reason="Local AI Control Center not reachable")
 def test_idea_to_code_adapter_real_dispatch(run):
     ewp = idea_to_code_adapter.build_engineering_work_package(run=run, requirements="Add a GET /ping endpoint")
@@ -82,3 +89,18 @@ def test_pm_adapter_real_dispatch_and_status_fetch(run):
     status = pm_adapter.fetch_status(run=run)
     assert status is not None
     assert status["workPackageId"] == run.work_package_id
+
+
+@pytest.mark.skipif(not qa_adapter.health(), reason="QA Again not reachable")
+def test_qa_adapter_real_dispatch(run):
+    """QA-E5: real dispatch against a live QA Again. Does not assert a
+    QAResult here — QA Again's own execution is asynchronous and a fresh
+    ecosystem work package has no PUBLISHED revision to map to yet (QA
+    Again disclosed limitation, not a Conductor-side fabrication) — the
+    real golden-flow round trip (dispatch -> real execution -> refresh) is
+    covered separately, not as an every-run unit test."""
+    eng = _fake_engineering_result(run, verify_ok=True, tests_failed=0)
+    qar = qa_adapter.build_qa_request(run=run, engineering_result=eng, acceptance_criteria={})
+    response = qa_adapter.dispatch(run=run, qa_request=qar)
+    assert response["correlationId"] == run.correlation_id
+    assert response["created"] in (True, False)

@@ -1,26 +1,43 @@
 """
-QA Again dispatch adapter (E8-E §42).
+QA Again dispatch adapter (QA-E5).
 
-Classification: HARNESS. QA Again has no running local instance (E7 finding:
-STUB_ONLY). Per §42, Conductor builds a QAAgainAdapter interface plus a
-ContractQAStub/Harness for local acceptance — it does NOT build the QA Again
-product itself, and does NOT fabricate a pass/fail judgment out of thin air:
-the harness derives its result deterministically from the real
-EngineeringResult it is given (structured rule, not free-text inference).
+Classification: REAL_RUNTIME. QA Again now runs a real canonical QARequest
+intake endpoint and produces a real canonical QAResult from its own test
+execution state (contracts/vendored/v1/schemas/QAResult.json,
+backend/app/qa_result_service.py in the QA Again repo).
+
+Still never fabricates: fetch_result returns None (not a synthetic
+QAResult) whenever QA Again has no result for a qaRequestId yet —
+execution still in progress, or the request never mapped to a TestCycle —
+or QA Again is unreachable. This is the same "QA as NOT_USED rather than
+fabricating" principle the old harness always stated, just backed by a
+real client and a genuinely asynchronous result now (real QA execution
+does not complete within the dispatch call itself, unlike the old
+harness).
+
+The former HARNESS/ContractQAStub classification is preserved below as
+run_harness() for explicit local/offline fallback when QA Again is not
+running (E7 disclosed limitation) — it is not used by the default
+REAL_RUNTIME dispatch()/fetch_result() path above.
 """
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from app.contracts import v1
-from app.orchestration.dispatch import HARNESS
+from app.integration.qa_again_client import QAAgainClient
+from app.orchestration.dispatch import REAL_RUNTIME
 
-STATUS = HARNESS
+STATUS = REAL_RUNTIME
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def health() -> bool:
+    return QAAgainClient.health()
 
 
 def build_qa_request(*, run, engineering_result: dict, acceptance_criteria: dict) -> dict[str, Any]:
@@ -37,6 +54,29 @@ def build_qa_request(*, run, engineering_result: dict, acceptance_criteria: dict
         "createdAt": _now_iso(),
     })
     return qr.to_canonical_dict()
+
+
+def dispatch(*, run, qa_request: dict[str, Any]) -> dict[str, Any]:
+    """Sends the canonical QARequest to QA Again's real intake endpoint.
+    Raises QAAgainUnavailableError on transport failure — caller decides
+    fallback policy (QA_UNAVAILABLE_NO_FAKE_APPROVAL: this never returns a
+    synthetic dispatch acknowledgement)."""
+    idempotency_key = f"qa-{run.run_id}"
+    return QAAgainClient.dispatch_qa_request(
+        qa_request=qa_request, idempotency_key=idempotency_key, tenant_id=run.tenant_id,
+    )
+
+
+def fetch_result(*, run, qa_request_id: str) -> Optional[dict[str, Any]]:
+    """Fetches the real canonical QAResult for this qaRequestId. Returns
+    None — never a fabricated result — if QA Again has no result yet or
+    can't be reached."""
+    return QAAgainClient.get_qa_result(qa_request_id)
+
+
+# ── Legacy HARNESS fallback (pre-QA-E5) — not used by the REAL_RUNTIME
+# dispatch()/fetch_result() path above. Kept for explicit local/offline
+# acceptance runs when QA Again is not running. ──
 
 
 def run_harness(*, run, qa_request: dict[str, Any], engineering_result: dict[str, Any]) -> dict[str, Any]:
@@ -69,8 +109,7 @@ def run_harness(*, run, qa_request: dict[str, Any], engineering_result: dict[str
         "evidence": [{
             "type": "QA_TEST_RESULTS", "source": "conductor-main-qa-harness",
             "reference": f"conductor://qa-harness/{qa_request['qaRequestId']}",
-            "summary": "HARNESS result: QA Again has no running local instance; this is a "
-                       "disclosed ContractQAStub, not a real QA execution.",
+            "summary": "HARNESS result: explicit local/offline fallback, not a real QA Again execution.",
             "timestamp": _now_iso(),
         }],
         "completedAt": _now_iso(),
