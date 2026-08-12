@@ -12,6 +12,37 @@ from account_again.models import (
     Tenant, Account, SubjectIdentity, ServiceIdentity,
     ProductEntitlement, AIEntitlement, QuotaPolicy, UsageRecord,
 )
+from account_again.models.tenant import _new_id
+
+# Canonical reason-code vocabulary (E4.1 §6). This Python list is the single source of
+# truth — contracts/v2/schemas/EntitlementDecision.json's reasonCode enum is generated
+# to match it exactly (see scripts/export-reason-codes.py); the engine must never emit
+# a code outside this set (enforced by test_e4_1_reason_codes_canonical.py).
+REASON_CODES = {
+    "ENTITLED",
+    "TENANT_NOT_FOUND",
+    "TENANT_SUSPENDED",
+    "TENANT_DISABLED",
+    "TENANT_MISMATCH",
+    "SUBJECT_NOT_FOUND",
+    "SUBJECT_DISABLED",
+    "ACCOUNT_NOT_FOUND",
+    "ACCOUNT_DISABLED",
+    "SERVICE_IDENTITY_NOT_FOUND",
+    "REVOKED_SERVICE_IDENTITY",
+    "PRODUCT_NOT_ENTITLED",
+    "CAPABILITY_NOT_ENTITLED",
+    "PROVIDER_NOT_ALLOWED",
+    "MODEL_NOT_ALLOWED",
+    "CLOUD_NOT_ALLOWED",
+    "QUOTA_EXCEEDED",
+}
+
+# Providers Account Again treats as local (no network egress, no credential needed).
+# Mirrors Local AI Control Center's own provider classification (DEFAULT_PROVIDERS in
+# src/lib/providers/types.ts) but is independently authoritative here — Account Again
+# must decide cloud/local policy itself, not trust the caller's self-declared type.
+LOCAL_PROVIDER_IDS = {"ollama"}
 
 
 @dataclass
@@ -33,6 +64,7 @@ class EntitlementDecision:
     """Output of the entitlement decision engine."""
     decision: str  # ALLOW or DENY
     reason_code: str
+    entitlement_decision_id: str = ""
     reason_message: str = ""
     account_id: Optional[str] = None
     tenant_id: Optional[str] = None
@@ -40,8 +72,9 @@ class EntitlementDecision:
     provider_constraints: dict = field(default_factory=dict)
     model_constraints: dict = field(default_factory=dict)
     local_only: bool = False
+    cloud_allowed: bool = True
     quota_remaining: Optional[int] = None
-    policy_version: str = "1.0.0"
+    policy_version: str = "2.0.0"
     evaluated_at: Optional[str] = None
     evidence_ref: Optional[str] = None
 
@@ -56,32 +89,35 @@ def evaluate_entitlement(db: Session, request: EntitlementRequest) -> Entitlemen
     4. Product entitlement
     5. AI capability entitlement
     6. Provider/model constraints
+    6.5. Cloud/local policy (E4.1)
     7. Quota/budget limits
+
+    Every decision — ALLOW or DENY — carries a unique entitlement_decision_id (E4.1 §5)
+    and a reason_code drawn exclusively from REASON_CODES (E4.1 §6, enforced by
+    tests/test_e4_1_reason_codes_canonical.py).
     """
     from account_again.models.tenant import _now
+
+    decision_id = _new_id()
+    evaluated_at = _now()
+
+    def deny(reason_code: str, reason_message: str, **kw) -> EntitlementDecision:
+        assert reason_code in REASON_CODES, f"reason_code {reason_code} not in canonical REASON_CODES"
+        return EntitlementDecision(
+            decision="DENY", reason_code=reason_code, reason_message=reason_message,
+            entitlement_decision_id=decision_id, evaluated_at=evaluated_at, **kw,
+        )
 
     # ── 1. Tenant check ──
     tenant_id = request.tenant_id
     if tenant_id:
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
         if not tenant:
-            return EntitlementDecision(
-                decision="DENY", reason_code="TENANT_NOT_FOUND",
-                reason_message=f"Tenant {tenant_id} not found",
-                tenant_id=tenant_id, evaluated_at=_now(),
-            )
+            return deny("TENANT_NOT_FOUND", f"Tenant {tenant_id} not found", tenant_id=tenant_id)
         if tenant.status == "SUSPENDED":
-            return EntitlementDecision(
-                decision="DENY", reason_code="TENANT_SUSPENDED",
-                reason_message=f"Tenant {tenant_id} is suspended",
-                tenant_id=tenant_id, evaluated_at=_now(),
-            )
+            return deny("TENANT_SUSPENDED", f"Tenant {tenant_id} is suspended", tenant_id=tenant_id)
         if tenant.status == "DISABLED":
-            return EntitlementDecision(
-                decision="DENY", reason_code="TENANT_DISABLED",
-                reason_message=f"Tenant {tenant_id} is disabled",
-                tenant_id=tenant_id, evaluated_at=_now(),
-            )
+            return deny("TENANT_DISABLED", f"Tenant {tenant_id} is disabled", tenant_id=tenant_id)
 
     # ── 2. Human subject check ──
     account_id = request.account_id
@@ -90,41 +126,24 @@ def evaluate_entitlement(db: Session, request: EntitlementRequest) -> Entitlemen
             SubjectIdentity.subject_id == request.subject_id
         ).first()
         if not identity:
-            return EntitlementDecision(
-                decision="DENY", reason_code="SUBJECT_NOT_FOUND",
-                reason_message=f"Subject {request.subject_id} not found",
-                tenant_id=tenant_id, evaluated_at=_now(),
-            )
+            return deny("SUBJECT_NOT_FOUND", f"Subject {request.subject_id} not found", tenant_id=tenant_id)
         if identity.status != "ACTIVE":
-            return EntitlementDecision(
-                decision="DENY", reason_code="SUBJECT_DISABLED",
-                reason_message=f"Subject {request.subject_id} is {identity.status}",
-                tenant_id=tenant_id, account_id=identity.account_id, evaluated_at=_now(),
-            )
+            return deny("SUBJECT_DISABLED", f"Subject {request.subject_id} is {identity.status}",
+                         tenant_id=tenant_id, account_id=identity.account_id)
         account_id = identity.account_id
         tenant_id = identity.tenant_id
         # Tenant scoping: subject must belong to the requested tenant
         if request.tenant_id and identity.tenant_id != request.tenant_id:
-            return EntitlementDecision(
-                decision="DENY", reason_code="TENANT_MISMATCH",
-                reason_message="Subject does not belong to requested tenant",
-                tenant_id=request.tenant_id, account_id=account_id, evaluated_at=_now(),
-            )
+            return deny("TENANT_MISMATCH", "Subject does not belong to requested tenant",
+                         tenant_id=request.tenant_id, account_id=account_id)
 
     if account_id:
         account = db.query(Account).filter(Account.account_id == account_id).first()
         if not account:
-            return EntitlementDecision(
-                decision="DENY", reason_code="ACCOUNT_NOT_FOUND",
-                reason_message=f"Account {account_id} not found",
-                tenant_id=tenant_id, evaluated_at=_now(),
-            )
+            return deny("ACCOUNT_NOT_FOUND", f"Account {account_id} not found", tenant_id=tenant_id)
         if account.status == "DISABLED":
-            return EntitlementDecision(
-                decision="DENY", reason_code="ACCOUNT_DISABLED",
-                reason_message=f"Account {account_id} is disabled",
-                tenant_id=tenant_id, account_id=account_id, evaluated_at=_now(),
-            )
+            return deny("ACCOUNT_DISABLED", f"Account {account_id} is disabled",
+                         tenant_id=tenant_id, account_id=account_id)
         tenant_id = account.tenant_id
 
     # ── 3. Service identity check ──
@@ -133,17 +152,15 @@ def evaluate_entitlement(db: Session, request: EntitlementRequest) -> Entitlemen
             ServiceIdentity.system_id == request.service_system_id
         ).first()
         if not svc:
-            return EntitlementDecision(
-                decision="DENY", reason_code="SERVICE_IDENTITY_NOT_FOUND",
-                reason_message=f"Service identity {request.service_system_id} not found",
-                tenant_id=tenant_id, evaluated_at=_now(),
-            )
+            return deny("SERVICE_IDENTITY_NOT_FOUND",
+                         f"Service identity {request.service_system_id} not found", tenant_id=tenant_id)
         if svc.status == "REVOKED":
-            return EntitlementDecision(
-                decision="DENY", reason_code="REVOKED_SERVICE_IDENTITY",
-                reason_message=f"Service identity {request.service_system_id} is revoked",
-                tenant_id=tenant_id, evaluated_at=_now(),
-            )
+            return deny("REVOKED_SERVICE_IDENTITY",
+                         f"Service identity {request.service_system_id} is revoked", tenant_id=tenant_id)
+        # Service identity, once bound to a tenant, may not act for a different tenant.
+        if svc.tenant_id and request.tenant_id and svc.tenant_id != request.tenant_id:
+            return deny("TENANT_MISMATCH", "Service identity does not belong to requested tenant",
+                         tenant_id=request.tenant_id)
 
     # ── 4. Product entitlement check ──
     if request.product_id and tenant_id:
@@ -153,16 +170,15 @@ def evaluate_entitlement(db: Session, request: EntitlementRequest) -> Entitlemen
             ProductEntitlement.status == "ACTIVE",
         ).first()
         if not pe:
-            return EntitlementDecision(
-                decision="DENY", reason_code="PRODUCT_NOT_ENTITLED",
-                reason_message=f"Tenant {tenant_id} is not entitled to product {request.product_id}",
-                tenant_id=tenant_id, account_id=account_id, evaluated_at=_now(),
-            )
+            return deny("PRODUCT_NOT_ENTITLED",
+                         f"Tenant {tenant_id} is not entitled to product {request.product_id}",
+                         tenant_id=tenant_id, account_id=account_id)
 
     # ── 5. AI capability entitlement check ──
     provider_constraints = {}
     model_constraints = {}
     local_only = False
+    cloud_allowed = True
 
     if request.capability and tenant_id:
         ae = db.query(AIEntitlement).filter(
@@ -171,39 +187,43 @@ def evaluate_entitlement(db: Session, request: EntitlementRequest) -> Entitlemen
             AIEntitlement.status == "ACTIVE",
         ).first()
         if not ae:
-            return EntitlementDecision(
-                decision="DENY", reason_code="CAPABILITY_NOT_ENTITLED",
-                reason_message=f"Tenant {tenant_id} is not entitled to AI capability {request.capability}",
-                tenant_id=tenant_id, account_id=account_id,
-                capability=request.capability, evaluated_at=_now(),
-            )
+            return deny("CAPABILITY_NOT_ENTITLED",
+                         f"Tenant {tenant_id} is not entitled to AI capability {request.capability}",
+                         tenant_id=tenant_id, account_id=account_id, capability=request.capability)
         if ae.provider_constraint:
             provider_constraints["allowed"] = [ae.provider_constraint]
         if ae.model_constraint:
             model_constraints["allowed"] = [ae.model_constraint]
         local_only = ae.local_only
+        cloud_allowed = ae.cloud_allowed
 
     # ── 6. Provider constraint check ──
     if request.provider and provider_constraints.get("allowed"):
         if request.provider not in provider_constraints["allowed"]:
-            return EntitlementDecision(
-                decision="DENY", reason_code="PROVIDER_NOT_ALLOWED",
-                reason_message=f"Provider {request.provider} is not allowed for capability {request.capability}",
-                tenant_id=tenant_id, account_id=account_id,
-                capability=request.capability, provider_constraints=provider_constraints,
-                evaluated_at=_now(),
-            )
+            return deny("PROVIDER_NOT_ALLOWED",
+                         f"Provider {request.provider} is not allowed for capability {request.capability}",
+                         tenant_id=tenant_id, account_id=account_id, capability=request.capability,
+                         provider_constraints=provider_constraints)
 
     # ── 7. Model constraint check ──
     if request.model and model_constraints.get("allowed"):
         if request.model not in model_constraints["allowed"]:
-            return EntitlementDecision(
-                decision="DENY", reason_code="MODEL_NOT_ALLOWED",
-                reason_message=f"Model {request.model} is not allowed for capability {request.capability}",
-                tenant_id=tenant_id, account_id=account_id,
-                capability=request.capability, model_constraints=model_constraints,
-                evaluated_at=_now(),
-            )
+            return deny("MODEL_NOT_ALLOWED",
+                         f"Model {request.model} is not allowed for capability {request.capability}",
+                         tenant_id=tenant_id, account_id=account_id, capability=request.capability,
+                         model_constraints=model_constraints)
+
+    # ── 6.5. Cloud/local policy check (E4.1) ──
+    # Account Again decides local/cloud classification independently — it does not trust
+    # the caller's own labeling. A provider not in LOCAL_PROVIDER_IDS is treated as cloud.
+    if request.provider and request.capability:
+        is_cloud_provider = request.provider not in LOCAL_PROVIDER_IDS
+        if is_cloud_provider and (local_only or not cloud_allowed):
+            return deny("CLOUD_NOT_ALLOWED",
+                         f"Capability {request.capability} does not permit cloud provider "
+                         f"{request.provider} (localOnly={local_only}, cloudAllowed={cloud_allowed})",
+                         tenant_id=tenant_id, account_id=account_id, capability=request.capability,
+                         local_only=local_only, cloud_allowed=cloud_allowed)
 
     # ── 8. Quota check ──
     if tenant_id:
@@ -222,17 +242,15 @@ def evaluate_entitlement(db: Session, request: EntitlementRequest) -> Entitlemen
                 ).all()
                 daily_tokens = sum((r.total_tokens or 0) for r in daily)
                 if daily_tokens >= policy.tokens_per_day:
-                    return EntitlementDecision(
-                        decision="DENY", reason_code="QUOTA_EXCEEDED",
-                        reason_message=f"Daily token quota ({policy.tokens_per_day}) exceeded: {daily_tokens}",
-                        tenant_id=tenant_id, account_id=account_id,
-                        quota_remaining=0, evaluated_at=_now(),
-                    )
+                    return deny("QUOTA_EXCEEDED",
+                                 f"Daily token quota ({policy.tokens_per_day}) exceeded: {daily_tokens}",
+                                 tenant_id=tenant_id, account_id=account_id, quota_remaining=0)
 
     # ── ALLOW ──
     return EntitlementDecision(
         decision="ALLOW",
         reason_code="ENTITLED",
+        entitlement_decision_id=decision_id,
         reason_message="All entitlement checks passed",
         account_id=account_id,
         tenant_id=tenant_id,
@@ -240,5 +258,6 @@ def evaluate_entitlement(db: Session, request: EntitlementRequest) -> Entitlemen
         provider_constraints=provider_constraints,
         model_constraints=model_constraints,
         local_only=local_only,
-        evaluated_at=_now(),
+        cloud_allowed=cloud_allowed,
+        evaluated_at=evaluated_at,
     )

@@ -546,6 +546,7 @@ def evaluate(body: EntitlementEvaluateRequest, db: Session = Depends(get_db)):
     decision = evaluate_entitlement(db, req)
 
     result_dict = {
+        "entitlementDecisionId": decision.entitlement_decision_id,
         "decision": decision.decision,
         "reasonCode": decision.reason_code,
         "reasonMessage": decision.reason_message,
@@ -555,6 +556,7 @@ def evaluate(body: EntitlementEvaluateRequest, db: Session = Depends(get_db)):
         "providerConstraints": decision.provider_constraints,
         "modelConstraints": decision.model_constraints,
         "localOnly": decision.local_only,
+        "cloudAllowed": decision.cloud_allowed,
         "quotaRemaining": decision.quota_remaining,
         "policyVersion": decision.policy_version,
         "evaluatedAt": decision.evaluated_at,
@@ -565,12 +567,14 @@ def evaluate(body: EntitlementEvaluateRequest, db: Session = Depends(get_db)):
     if body.idempotencyKey:
         record_idempotent(db, body.idempotencyKey, result_dict)
 
-    # Audit
+    # Audit — target_id is now the immutable entitlementDecisionId (traceable), reason
+    # code moved into metadata rather than overloading target_id (E4.1 §5).
     write_audit(db, actor_type="SYSTEM", actor_id="entitlement-engine",
                 action="ENTITLEMENT_EVALUATION",
-                target_type="EntitlementDecision", target_id=decision.reason_code,
+                target_type="EntitlementDecision", target_id=decision.entitlement_decision_id,
                 result=decision.decision, tenant_id=decision.tenant_id,
-                correlation_id=body.correlationId)
+                correlation_id=body.correlationId,
+                metadata={"reasonCode": decision.reason_code})
     db.commit()
     return result_dict
 
@@ -608,6 +612,27 @@ def record_usage(body: UsageRecordCreate, db: Session = Depends(get_db)):
         existing = check_idempotent(db, body.idempotencyKey)
         if existing:
             return {"status": "DUPLICATE", "idempotentResult": existing}
+
+    # E4.1 §19: domain-level tenant enforcement. A tenant-scoped ServiceIdentity cannot
+    # submit usage into a different tenant's context.
+    if body.serviceSystemId:
+        svc = db.query(ServiceIdentity).filter(ServiceIdentity.system_id == body.serviceSystemId).first()
+        if not svc:
+            raise HTTPException(403, f"Unknown service identity {body.serviceSystemId}")
+        if svc.status == "REVOKED":
+            write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId,
+                        action="USAGE_SUBMISSION_DENIED", target_type="UsageRecord",
+                        target_id=body.serviceSystemId, result="DENY_REVOKED_SERVICE_IDENTITY",
+                        tenant_id=body.tenantId, correlation_id=body.correlationId)
+            db.commit()
+            raise HTTPException(403, f"Service identity {body.serviceSystemId} is revoked")
+        if svc.tenant_id and svc.tenant_id != body.tenantId:
+            write_audit(db, actor_type="SERVICE", actor_id=body.serviceSystemId,
+                        action="USAGE_SUBMISSION_DENIED", target_type="UsageRecord",
+                        target_id=body.serviceSystemId, result="DENY_TENANT_MISMATCH",
+                        tenant_id=body.tenantId, correlation_id=body.correlationId)
+            db.commit()
+            raise HTTPException(403, f"Service identity {body.serviceSystemId} is scoped to a different tenant")
 
     ur = UsageRecord(
         record_id=_new_id(),

@@ -145,3 +145,9 @@ class UsageRecordCreate(BaseModel):
     costCents: Optional[int] = None
     correlationId: Optional[str] = None
     idempotencyKey: Optional[str] = None
+    # E4.1 §19: domain-level tenant enforcement for usage submission. If the caller
+    # identifies itself, a tenant-scoped ServiceIdentity may not submit usage into a
+    # different tenant. This is NOT transport authentication (anyone can still omit
+    # serviceSystemId or claim any value without cryptographic proof) — see
+    # docs/architecture/E5_IDENTITY_AND_SERVICE_AUTH.md for the E5 dependency this closes.
+    serviceSystemId: Optional[str] = None
