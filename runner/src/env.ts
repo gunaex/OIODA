@@ -25,6 +25,16 @@ export interface RunnerConfig {
   targetBaseUrl: string;
   targetEmail: string;
   targetPassword: string;
+  // QA-E7 provenance — all optional. HYB-0's own spike scenario isn't
+  // tied to a published TestCycle/TestCase, so these stay undefined
+  // unless an operator running against a real published revision sets
+  // them; the backend records "unknown" honestly rather than a guess.
+  testCycleId?: number;
+  cycleTestResultId?: number;
+  externalQaRequestId?: string;
+  correlationId?: string;
+  environment?: string;
+  artifactRef?: string;
 }
 
 export function loadConfig(): RunnerConfig {
@@ -36,6 +46,12 @@ export function loadConfig(): RunnerConfig {
     }
     return value;
   };
+  const optionalInt = (name: string): number | undefined => {
+    const value = process.env[name];
+    if (!value) return undefined;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isNaN(parsed) ? undefined : parsed;
+  };
   return {
     backendBaseUrl: required("BACKEND_BASE_URL"),
     projectSlug: required("PROJECT_SLUG"),
@@ -43,5 +59,11 @@ export function loadConfig(): RunnerConfig {
     targetBaseUrl: required("TARGET_BASE_URL"),
     targetEmail: required("TARGET_EMAIL"),
     targetPassword: required("TARGET_PASSWORD"),
+    testCycleId: optionalInt("TEST_CYCLE_ID"),
+    cycleTestResultId: optionalInt("CYCLE_TEST_RESULT_ID"),
+    externalQaRequestId: process.env.EXTERNAL_QA_REQUEST_ID || undefined,
+    correlationId: process.env.CORRELATION_ID || undefined,
+    environment: process.env.QA_ENVIRONMENT || undefined,
+    artifactRef: process.env.ARTIFACT_REF || undefined,
   };
 }

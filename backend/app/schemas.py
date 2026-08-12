@@ -199,16 +199,31 @@ class TestCaseOut(BaseModel):
 
 class RunnerTokenCreate(BaseModel):
     label: str
+    project_slug: Optional[str] = None  # QA-E7: None = unscoped (legacy behavior)
 
 
 class RunnerTokenOut(BaseModel):
     id: int
     label: str
     token: str  # raw token — returned once, at creation, never again
+    project_slug: Optional[str] = None
 
 
 class HybridRunCreate(BaseModel):
     label: Optional[str] = None
+    # QA-E7 runner identity / execution provenance — all optional. HYB-0's
+    # own spike does not populate the snapshot fields (it isn't tied to a
+    # published revision); provided so a caller that does have this
+    # context can record it.
+    runner_instance_id: Optional[str] = None
+    runner_version: Optional[str] = None
+    external_qa_request_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    test_cycle_id: Optional[int] = None
+    cycle_test_result_id: Optional[int] = None
+    environment: Optional[str] = None
+    target_base_url: Optional[str] = None
+    artifact_ref: Optional[str] = None
 
 
 class HybridRunOut(BaseModel):
@@ -219,8 +234,36 @@ class HybridRunOut(BaseModel):
     ended_at: Optional[datetime] = None
     created_at: datetime
 
+    runner_token_id: Optional[int] = None
+    runner_label: Optional[str] = None
+    runner_instance_id: Optional[str] = None
+    runner_version: Optional[str] = None
+
+    external_qa_request_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    test_cycle_id: Optional[int] = None
+    cycle_test_result_id: Optional[int] = None
+
+    environment: Optional[str] = None
+    target_base_url: Optional[str] = None
+    artifact_ref: Optional[str] = None
+
+    browser_name: Optional[str] = None
+    browser_version: Optional[str] = None
+    os_platform: Optional[str] = None
+
     class Config:
         from_attributes = True
+
+
+class HybridRunProvenanceUpdate(BaseModel):
+    """QA-E7.4 — set only once Playwright has actually launched a browser
+    and reported real values. Every field optional so a partial update
+    (e.g. browser info arrives before OS info) is allowed."""
+
+    browser_name: Optional[str] = None
+    browser_version: Optional[str] = None
+    os_platform: Optional[str] = None
 
 
 class HybridRunEventCreate(BaseModel):
@@ -244,6 +287,7 @@ class HybridRunEventOut(BaseModel):
 class HybridRunDetailOut(HybridRunOut):
     events: list[HybridRunEventOut] = []
     latest_decision: Optional["HybridCheckpointDecisionOut"] = None
+    evidence: list["HybridRunEvidenceOut"] = []
 
 
 class HybridCheckpointDecisionCreate(BaseModel):

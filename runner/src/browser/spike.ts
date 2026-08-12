@@ -32,6 +32,15 @@ export async function runSpike(config: RunnerConfig): Promise<void> {
   const browser = await chromium.launch({ headless: false, slowMo: 300 });
 
   try {
+    // QA-E7.4 — report real, just-launched browser identity. chromium.name()
+    // and browser.version() are what Playwright itself reports, never a
+    // hard-coded guess; process.platform is Node's own OS identifier.
+    await client.reportProvenance(run.id, {
+      browser_name: chromium.name(),
+      browser_version: browser.version(),
+      os_platform: process.platform,
+    });
+
     const page = await browser.newPage();
 
     console.log("[runner] step 1: NAVIGATE");

@@ -340,7 +340,13 @@ class RunnerToken(MasterBase):
     """A revocable credential a QA Runner process presents on every
     request — deliberately not the full `runners` registration table
     from the hybrid doc's section 8.5 (no heartbeat/capabilities/platform
-    yet, that's HYB-2). Stored hashed, same pattern as RefreshToken."""
+    yet, that's HYB-2). Stored hashed, same pattern as RefreshToken.
+
+    project_slug (QA-E7) is optional scoping: nullable so every token
+    minted before this existed keeps working unscoped (global, matching
+    prior behavior exactly); when set, get_current_runner() rejects use
+    of this token against any other project's hybrid endpoints
+    (QA_RUNNER_IDENTITY / lease-ownership trust boundary)."""
 
     __tablename__ = "runner_tokens"
 
@@ -348,10 +354,20 @@ class RunnerToken(MasterBase):
     label = Column(String, nullable=False)
     token_hash = Column(String, nullable=False, index=True)
     revoked = Column(Boolean, default=False)
+    project_slug = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class HybridRun(ProjectBase):
+    """QA-E7 adds optional execution provenance (runner identity, source
+    QARequest/TestCycle/TestCase snapshot linkage, browser/environment/
+    artifact) — all nullable. HYB-0's own spike scenario does not
+    populate the TestCycle/TestCase fields (it isn't tied to a published
+    revision), so unknown stays unknown rather than fabricated; the
+    columns exist so a caller that *does* have this context can record it
+    verifiably, and so a future HYB-2 orchestration can populate them
+    without a schema change."""
+
     __tablename__ = "hybrid_runs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -360,6 +376,35 @@ class HybridRun(ProjectBase):
     started_at = Column(DateTime, default=datetime.utcnow)
     ended_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Runner identity (E7.1) — denormalized label/instance/version so
+    # provenance survives token revocation/relabeling; runner_token_id is
+    # a reference (master DB), not a cross-DB foreign key.
+    runner_token_id = Column(Integer, nullable=True)
+    runner_label = Column(String, nullable=True)
+    runner_instance_id = Column(String, nullable=True)
+    runner_version = Column(String, nullable=True)
+
+    # Execution provenance (E7.2/E7.3) — references, not copies. Set at
+    # run creation, validated against this project's own domain (see
+    # routers/hybrid.py::create_run) when supplied.
+    external_qa_request_id = Column(String, nullable=True)
+    correlation_id = Column(String, nullable=True)
+    test_cycle_id = Column(Integer, ForeignKey("test_cycles.id"), nullable=True)
+    cycle_test_result_id = Column(Integer, ForeignKey("cycle_test_results.id"), nullable=True)
+
+    # Environment / artifact provenance (E7.5) — plain references only;
+    # never a secret/credential value (see routers/hybrid.py docstring).
+    environment = Column(String, nullable=True)
+    target_base_url = Column(String, nullable=True)
+    artifact_ref = Column(String, nullable=True)
+
+    # Browser provenance (E7.4) — only ever set from what Playwright
+    # itself reports post-launch (see PATCH .../provenance), never
+    # hard-coded.
+    browser_name = Column(String, nullable=True)
+    browser_version = Column(String, nullable=True)
+    os_platform = Column(String, nullable=True)
 
 
 class HybridRunEvent(ProjectBase):

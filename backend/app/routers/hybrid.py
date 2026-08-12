@@ -2,6 +2,8 @@ import hashlib
 import os
 from datetime import datetime
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -43,20 +45,106 @@ def _add_event(db: Session, run_id: int, event_type: str, actor_type: str, paylo
     db.add(models.HybridRunEvent(run_id=run_id, event_type=event_type, actor_type=actor_type, payload_json=payload_json))
 
 
+def _validate_snapshot_linkage(db: Session, payload: schemas.HybridRunCreate) -> None:
+    """QA-E7.3/E7.9 — a supplied test_cycle_id/cycle_test_result_id must be
+    real and mutually consistent (provenance mismatch is rejected, not
+    silently stored). Unsupplied stays unsupplied — HYB-0's own spike
+    scenario has no published revision to point at, and that is an honest
+    unknown, not an error."""
+    if payload.cycle_test_result_id is not None:
+        result = (
+            db.query(models.CycleTestResult)
+            .filter(models.CycleTestResult.id == payload.cycle_test_result_id)
+            .first()
+        )
+        if not result:
+            raise HTTPException(status_code=400, detail=f"cycle_test_result_id {payload.cycle_test_result_id} not found in this project")
+        if payload.test_cycle_id is not None and result.cycle_id != payload.test_cycle_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"cycle_test_result_id {payload.cycle_test_result_id} does not belong to test_cycle_id {payload.test_cycle_id}",
+            )
+    elif payload.test_cycle_id is not None:
+        cycle = db.query(models.TestCycle).filter(models.TestCycle.id == payload.test_cycle_id).first()
+        if not cycle:
+            raise HTTPException(status_code=400, detail=f"test_cycle_id {payload.test_cycle_id} not found in this project")
+
+
 @router.post("", response_model=schemas.HybridRunOut)
 def create_run(
     slug: str,
     payload: schemas.HybridRunCreate,
     db: Session = Depends(get_project_db),
-    _runner: models.RunnerToken = Depends(get_current_runner),
+    runner: models.RunnerToken = Depends(get_current_runner),
 ):
-    run = models.HybridRun(status="RUNNING", label=payload.label)
+    _validate_snapshot_linkage(db, payload)
+
+    run = models.HybridRun(
+        status="RUNNING",
+        label=payload.label,
+        runner_token_id=runner.id,
+        runner_label=runner.label,
+        runner_instance_id=payload.runner_instance_id,
+        runner_version=payload.runner_version,
+        external_qa_request_id=payload.external_qa_request_id,
+        correlation_id=payload.correlation_id,
+        test_cycle_id=payload.test_cycle_id,
+        cycle_test_result_id=payload.cycle_test_result_id,
+        environment=payload.environment,
+        target_base_url=payload.target_base_url,
+        artifact_ref=payload.artifact_ref,
+    )
     db.add(run)
     db.flush()
     _add_event(db, run.id, "RUN_CLAIMED", "RUNNER")
     db.commit()
     db.refresh(run)
     return run
+
+
+@router.patch("/{run_id}/provenance", response_model=schemas.HybridRunOut)
+def update_provenance(
+    slug: str,
+    run_id: int,
+    payload: schemas.HybridRunProvenanceUpdate,
+    db: Session = Depends(get_project_db),
+    _runner: models.RunnerToken = Depends(get_current_runner),
+):
+    """QA-E7.4 — browser identity is only knowable after Playwright has
+    actually launched a browser, so it arrives here rather than at run
+    creation. Runner-only (not human-editable); rejected once the run has
+    ended, matching the immutability discipline used for terminal runs
+    elsewhere in this router."""
+    run = _get_run(db, run_id)
+    if run.status in TERMINAL_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Run {run_id} already ended (status: {run.status}) — provenance is now immutable")
+
+    updates = payload.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(run, key, value)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+@router.get("", response_model=list[schemas.HybridRunOut])
+def list_runs(
+    slug: str,
+    cycle_test_result_id: Optional[int] = None,
+    test_cycle_id: Optional[int] = None,
+    db: Session = Depends(get_project_db),
+    _user: models.User = Depends(get_current_user),
+):
+    """QA-E8.4/E8.5 — lets the UI show "this test case has an automated
+    run" without a new reporting product: filter by the same snapshot
+    linkage QA-E7 records at run creation. Unfiltered call lists every
+    run in the project, newest first."""
+    q = db.query(models.HybridRun)
+    if cycle_test_result_id is not None:
+        q = q.filter(models.HybridRun.cycle_test_result_id == cycle_test_result_id)
+    if test_cycle_id is not None:
+        q = q.filter(models.HybridRun.test_cycle_id == test_cycle_id)
+    return q.order_by(models.HybridRun.created_at.desc()).all()
 
 
 @router.get("/{run_id}", response_model=schemas.HybridRunDetailOut)
@@ -77,9 +165,16 @@ def get_run(
         .order_by(models.HybridCheckpointDecision.id.desc())
         .first()
     )
+    evidence = (
+        db.query(models.HybridRunEvidence)
+        .filter(models.HybridRunEvidence.run_id == run_id)
+        .order_by(models.HybridRunEvidence.id)
+        .all()
+    )
     result = schemas.HybridRunDetailOut.model_validate(run)
     result.events = events
     result.latest_decision = latest_decision
+    result.evidence = evidence
     return result
 
 

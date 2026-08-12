@@ -41,8 +41,28 @@ MASTER_COLUMN_PATCHES: dict[str, dict[str, str]] = {
     "users": {
         "tenant_id": "TEXT",
     },
+    "runner_tokens": {
+        "project_slug": "TEXT",
+    },
 }
-PROJECT_COLUMN_PATCHES: dict[str, dict[str, str]] = {}
+PROJECT_COLUMN_PATCHES: dict[str, dict[str, str]] = {
+    "hybrid_runs": {
+        "runner_token_id": "INTEGER",
+        "runner_label": "TEXT",
+        "runner_instance_id": "TEXT",
+        "runner_version": "TEXT",
+        "external_qa_request_id": "TEXT",
+        "correlation_id": "TEXT",
+        "test_cycle_id": "INTEGER",
+        "cycle_test_result_id": "INTEGER",
+        "environment": "TEXT",
+        "target_base_url": "TEXT",
+        "artifact_ref": "TEXT",
+        "browser_name": "TEXT",
+        "browser_version": "TEXT",
+        "os_platform": "TEXT",
+    },
+}
 
 # Additive index patches (docs/PERFORMANCE_FAST_PASS.md) — `CREATE INDEX
 # IF NOT EXISTS` is safe against both a fresh database (created via
@@ -73,6 +93,7 @@ PROJECT_INDEXES: dict[str, list[str]] = {
     "defects": ["cycle_id"],
     "sign_offs": ["cycle_id"],
     "activity_log": ["changed_at"],
+    "hybrid_runs": ["test_cycle_id", "cycle_test_result_id"],
 }
 
 

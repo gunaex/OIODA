@@ -211,16 +211,23 @@ require_admin = require_roles("ADMIN")
 # docs/hybrid/HYB-0-GAP-ANALYSIS.md section 5 decision 2.
 
 
-def issue_runner_token(db: Session, label: str) -> tuple[str, models.RunnerToken]:
+def issue_runner_token(db: Session, label: str, project_slug: str | None = None) -> tuple[str, models.RunnerToken]:
     raw_token = secrets.token_urlsafe(32)
-    record = models.RunnerToken(label=label, token_hash=_hash_token(raw_token))
+    record = models.RunnerToken(label=label, token_hash=_hash_token(raw_token), project_slug=project_slug)
     db.add(record)
     db.commit()
     db.refresh(record)
     return raw_token, record
 
 
-def get_current_runner(request: Request, db: Session = Depends(get_master_db)) -> models.RunnerToken:
+def get_current_runner(slug: str, request: Request, db: Session = Depends(get_master_db)) -> models.RunnerToken:
+    """`slug` is auto-resolved from the path parameter of the same name,
+    same convention as get_project_db. QA-E7: a token minted with a
+    project_slug is only valid against that project's hybrid endpoints —
+    presenting it against any other project is a 403, not a silent
+    pass-through. A token with no project_slug (every token minted before
+    QA-E7, or one deliberately left global) keeps working everywhere,
+    matching its pre-existing behavior exactly."""
     raw_token = request.headers.get("X-Runner-Token")
     if not raw_token:
         raise HTTPException(status_code=401, detail="Missing X-Runner-Token header")
@@ -231,4 +238,6 @@ def get_current_runner(request: Request, db: Session = Depends(get_master_db)) -
     )
     if not record:
         raise HTTPException(status_code=401, detail="Invalid or revoked runner token")
+    if record.project_slug and record.project_slug != slug:
+        raise HTTPException(status_code=403, detail=f"Runner token {record.label!r} is not authorized for project {slug!r}")
     return record

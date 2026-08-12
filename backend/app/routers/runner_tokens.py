@@ -16,6 +16,7 @@ def create_runner_token(
 ):
     """Mints a runner token and returns the raw value once — it is never
     retrievable again (only its hash is stored, same discipline as
-    refresh tokens)."""
-    raw_token, record = issue_runner_token(db, payload.label)
-    return schemas.RunnerTokenOut(id=record.id, label=record.label, token=raw_token)
+    refresh tokens). project_slug (QA-E7) scopes the token to one
+    project's hybrid endpoints; omit for the prior unscoped behavior."""
+    raw_token, record = issue_runner_token(db, payload.label, payload.project_slug)
+    return schemas.RunnerTokenOut(id=record.id, label=record.label, token=raw_token, project_slug=record.project_slug)
