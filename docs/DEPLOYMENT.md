@@ -9,7 +9,7 @@ here.
 
 | Environment | Frontend | Backend | Storage | Purpose |
 |---|---|---|---|---|
-| **Local** | `npm run dev` (Vite, `localhost:5173`) | `uvicorn` on `127.0.0.1:8000` | `STORAGE_BACKEND=filesystem` (zero-config) | Day-to-day development. No real secrets needed. |
+| **Local** | `npm run dev` (Vite, `localhost:5173`) | `uvicorn` on `127.0.0.1:8002` (canonical local port — do not use `:8000`, which is PM Again's) | `STORAGE_BACKEND=filesystem` (zero-config) | Day-to-day development. No real secrets needed. |
 | **Staging** | A Cloudflare Pages preview deployment (or a dedicated `staging.qaagain.*` domain) | A separate Fly app (e.g. `qa-again-backend-staging`) with its own volume | `STORAGE_BACKEND=r2` against a **separate** staging R2 bucket — never share a bucket between staging and production | Rehearse deploys, run the R2 staging smoke test (below), validate a release before it reaches real users. |
 | **Production** | `qaagain.kanphong.com` on Cloudflare Pages | `qa-again-backend` on Fly.io | `STORAGE_BACKEND=r2` against the production bucket | Real usage. |
 
