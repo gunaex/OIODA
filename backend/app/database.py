@@ -36,6 +36,10 @@ MASTER_COLUMN_PATCHES: dict[str, dict[str, str]] = {
     "projects": {
         "storage_quota_bytes": "INTEGER DEFAULT 5368709120",
         "storage_warning_thresholds": "TEXT DEFAULT '[70, 85, 95, 100]'",
+        "tenant_id": "TEXT",
+    },
+    "users": {
+        "tenant_id": "TEXT",
     },
 }
 PROJECT_COLUMN_PATCHES: dict[str, dict[str, str]] = {}

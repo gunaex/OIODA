@@ -25,6 +25,10 @@ class Project(MasterBase):
     # global constant per requirement 9.
     storage_quota_bytes = Column(Integer, default=5 * 1024 * 1024 * 1024)
     storage_warning_thresholds = Column(String, default="[70, 85, 95, 100]")
+    # Ecosystem tenant ownership (QA-E6) — nullable, see MASTER_COLUMN_PATCHES.
+    # A project created before ecosystem mode, or a purely local one, has no
+    # tenant and is exempt from tenant-boundary enforcement.
+    tenant_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -37,6 +41,8 @@ class User(MasterBase):
     role = Column(String, nullable=False)  # ADMIN | TESTER | VIEWER
     active = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
+    # Ecosystem tenant membership (QA-E6) — nullable, see MASTER_COLUMN_PATCHES.
+    tenant_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -485,6 +491,22 @@ class ExternalQARequest(MasterBase):
     status = Column(String, default="RECEIVED")  # see EXTERNAL_QA_REQUEST_STATUSES
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ExternalQAProjectLink(MasterBase):
+    """Idempotent workPackageId -> QA project mapping (QA-E4). Every
+    QARequest for a given workPackageId is executed against the same QA
+    project, mirroring PM Again's businessIntentId -> project link. Kept
+    as its own small table rather than overloading ExternalQARequest,
+    which is scoped to one QARequest, not the project it resolves to."""
+
+    __tablename__ = "external_qa_project_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    work_package_id = Column(String, nullable=False, unique=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    tenant_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class QAExecutionAttempt(ProjectBase):

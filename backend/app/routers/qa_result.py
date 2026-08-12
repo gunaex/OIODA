@@ -10,11 +10,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..auth import get_current_user
 from ..database import get_master_db, get_project_db
+from ..ecosystem.ecosystem_auth import require_project_tenant_match
 from ..qa_result_service import QAResultNotAvailableError, build_qa_result
 
-router = APIRouter(prefix="/api/{slug}/cycles", tags=["qa-result"], dependencies=[Depends(get_current_user)])
+# require_project_tenant_match is a no-op unless ECOSYSTEM_MODE=true and the
+# project actually carries a tenant_id (see ecosystem/ecosystem_auth.py) —
+# it also subsumes get_current_user, so this stays the only auth dependency.
+router = APIRouter(prefix="/api/{slug}/cycles", tags=["qa-result"], dependencies=[Depends(require_project_tenant_match)])
 
 
 @router.get("/{cycle_id}/qa-result")
