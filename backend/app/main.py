@@ -147,4 +147,4 @@ app.include_router(note_pages.router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "service": "PM_AGAIN"}

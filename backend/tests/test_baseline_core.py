@@ -7,7 +7,7 @@ project-DB isolation."""
 def test_health(client):
     resp = client.get("/api/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.json() == {"status": "ok", "service": "PM_AGAIN"}
 
 
 def test_login_requires_valid_credentials(client, admin_user):
