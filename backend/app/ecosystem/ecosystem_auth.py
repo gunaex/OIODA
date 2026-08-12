@@ -63,9 +63,14 @@ def require_ecosystem_identity(
 
 def require_project_tenant_match(slug: str, request: Request, identity: EcosystemIdentity = Depends(require_ecosystem_identity)) -> EcosystemIdentity:
     """Layered on top of require_ecosystem_identity for slug-scoped routes.
-    A project with no tenant_id (pre-ecosystem-mode data) is exempt — see
-    projects.tenant_id backfill note. 404, not 403, on mismatch: matches
-    Conductor's own convention of not leaking cross-tenant existence."""
+    Only actually enforced when ECOSYSTEM_MODE=true — a project can carry a
+    tenant_id (recorded at ecosystem intake time regardless of mode) without
+    that yet gating a local dev human session that isn't presenting any
+    tenant context of its own. A project with no tenant_id at all is always
+    exempt. 404, not 403, on mismatch: matches Conductor's own convention of
+    not leaking cross-tenant existence."""
+    if not ECOSYSTEM_MODE:
+        return identity
     with MasterSessionLocal() as master_db:
         project = master_db.query(models.Project).filter(models.Project.slug == slug).first()
         if project and project.tenant_id and project.tenant_id != identity.tenant_id:

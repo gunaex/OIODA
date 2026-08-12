@@ -9,8 +9,17 @@ import pytest
 from app.main import app
 from app.database import MasterSessionLocal
 from app import models
+from app.ecosystem import ecosystem_auth
 from app.ecosystem.ecosystem_auth import require_ecosystem_identity, EcosystemIdentity
 from app.ecosystem.service_auth import require_conductor_service_identity
+
+
+@pytest.fixture(autouse=True)
+def _ecosystem_mode_on(monkeypatch):
+    # require_project_tenant_match only actually enforces when
+    # ECOSYSTEM_MODE=true (see ecosystem_auth.py) — these tests are
+    # specifically exercising that live enforcement path.
+    monkeypatch.setattr(ecosystem_auth, "ECOSYSTEM_MODE", True)
 
 
 def _identity_for(tenant_id):

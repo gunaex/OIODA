@@ -22,14 +22,20 @@ def project_ecosystem_source(slug: str, master_db: Session = Depends(get_master_
     if not project:
         return None
 
-    reference = (
+    # Prefer the work-package-level reference (real correlationId/workPackageId)
+    # over the business-intent-level one used purely for project reuse
+    # bookkeeping (see mapping_service._find_or_create_project).
+    references = (
         master_db.query(models.ExternalWorkReference)
         .filter(models.ExternalWorkReference.project_id == project.id)
         .order_by(models.ExternalWorkReference.created_at.asc())
-        .first()
+        .all()
     )
-    if not reference:
+    if not references:
         return None
+    reference = next(
+        (r for r in references if r.source_object_type == "DELIVERY_WORK_PACKAGE"), references[0]
+    )
 
     return {
         "sourceSystem": reference.source_system,
