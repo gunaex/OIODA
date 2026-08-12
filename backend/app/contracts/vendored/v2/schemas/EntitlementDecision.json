@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v2/EntitlementDecision.json",
+  "title": "EntitlementDecision",
+  "description": "Authorization decision from Account Again. Answers: may this subject/service use this product/capability/provider? Authority: Account Again (not Local AI Control Center). Reconciled in E4.1 against Account Again's actual v1.0 runtime (account_again/services/entitlement_engine.py) — this is a pre-freeze v2.1.0 correction, not a v1 change (v1 remains untouched and frozen).",
+  "type": "object",
+  "version": "2.1.0",
+  "required": [
+    "entitlementDecisionId",
+    "decision",
+    "reasonCode",
+    "evaluatedAt"
+  ],
+  "properties": {
+    "entitlementDecisionId": {
+      "type": "string",
+      "description": "Unique, immutable identifier for this entitlement decision. Generated once per evaluation (ALLOW or DENY) and referenced by downstream evidence/audit records for traceability."
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Correlation ID linking to the business/AI-execution flow."
+    },
+    "accountId": {
+      "type": ["string", "null"],
+      "description": "Account Again account identifier. Legitimately absent (null) for service-identity-only evaluations that have no human account in scope — e.g. a Specialist OS acting under a ServiceIdentity with no bound subject."
+    },
+    "tenantId": {
+      "type": ["string", "null"],
+      "description": "Tenant/organization scope. Present whenever the decision resolves to a tenant; absent only for requests that supplied no tenant-resolvable identity at all."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["ALLOW", "DENY", "CONDITIONAL"],
+      "description": "Authorization decision. CONDITIONAL is reserved for future use (e.g. step-up auth); the current engine only emits ALLOW/DENY."
+    },
+    "reasonCode": {
+      "type": "string",
+      "enum": [
+        "ENTITLED",
+        "TENANT_NOT_FOUND",
+        "TENANT_SUSPENDED",
+        "TENANT_DISABLED",
+        "TENANT_MISMATCH",
+        "SUBJECT_NOT_FOUND",
+        "SUBJECT_DISABLED",
+        "ACCOUNT_NOT_FOUND",
+        "ACCOUNT_DISABLED",
+        "SERVICE_IDENTITY_NOT_FOUND",
+        "REVOKED_SERVICE_IDENTITY",
+        "PRODUCT_NOT_ENTITLED",
+        "CAPABILITY_NOT_ENTITLED",
+        "PROVIDER_NOT_ALLOWED",
+        "MODEL_NOT_ALLOWED",
+        "CLOUD_NOT_ALLOWED",
+        "QUOTA_EXCEEDED"
+      ],
+      "description": "Machine-readable reason for the decision. This enum is generated to match account_again/services/entitlement_engine.py's REASON_CODES exactly (single source of truth is the Python runtime, not this schema — see scripts/export-reason-codes.py in ACCOUNT-AGAIN). A schema/runtime drift test in ACCOUNT-AGAIN (test_e4_1_reason_codes_canonical.py) fails the build if the engine ever emits a code outside this set."
+    },
+    "reasonMessage": {
+      "type": "string",
+      "description": "Human-readable explanation of the decision."
+    },
+    "capability": {
+      "type": "string",
+      "description": "Requested AI capability (e.g., AI_CODE, AI_CHAT, AI_ARCHITECTURE, AI_QA, AI_INFRA_PLANNING, AI_RAG, AI_AGENT)."
+    },
+    "providerConstraints": {
+      "type": "object",
+      "description": "Allowed providers for this capability, if constrained. Runtime shape: a single `allowed` array (not separate allowed/denied lists — the engine expresses constraint as an allowlist, absence of the key means unconstrained).",
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "modelConstraints": {
+      "type": "object",
+      "description": "Allowed models for this capability, if constrained. Same allowlist shape as providerConstraints.",
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "localOnly": {
+      "type": "boolean",
+      "description": "If true, only local (non-network-egress) providers are permitted for this capability. Top-level field in the runtime response (not nested under modelConstraints)."
+    },
+    "cloudAllowed": {
+      "type": "boolean",
+      "description": "If false, no cloud provider may be selected for this capability regardless of provider/model allowlists. Enforced by the engine as of E4.1 — a cloud provider request when cloudAllowed=false or localOnly=true yields reasonCode=CLOUD_NOT_ALLOWED."
+    },
+    "quotaRef": {
+      "type": "string",
+      "description": "Reference to the quota/budget policy that was evaluated."
+    },
+    "quotaRemaining": {
+      "type": ["integer", "null"],
+      "description": "Remaining quota units after this decision (if applicable)."
+    },
+    "policyVersion": {
+      "type": "string",
+      "description": "Version of the entitlement policy/engine that produced this decision."
+    },
+    "evaluatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the decision was evaluated."
+    },
+    "evidenceRef": {
+      "type": ["string", "null"],
+      "description": "Reference to the entitlement evaluation evidence, if a durable evidence record was produced beyond the audit log."
+    }
+  }
+}

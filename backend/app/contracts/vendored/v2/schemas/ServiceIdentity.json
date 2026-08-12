@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v2/ServiceIdentity.json",
+  "title": "ServiceIdentity",
+  "description": "Service-to-service identity for inter-OS communication. Identifies the calling system and its authorized context. Reconciled in E4.1 against Account Again's actual runtime (account_again/models/service_identity.py) — pre-freeze v2.1.0 correction. Transport authentication mechanics (binding this domain object to a cryptographic caller identity) remain an E5 concern (see E5_IDENTITY_AND_SERVICE_AUTH.md); this schema describes the domain record only.",
+  "type": "object",
+  "version": "2.1.0",
+  "required": [
+    "serviceIdentityId",
+    "systemId",
+    "status",
+    "createdAt"
+  ],
+  "properties": {
+    "serviceIdentityId": {
+      "type": "string",
+      "description": "Unique identifier for this service identity record."
+    },
+    "systemId": {
+      "type": "string",
+      "enum": [
+        "CONDUCTOR_MAIN",
+        "PM_AGAIN",
+        "IDEA_TO_CODE",
+        "INFRA_AGAIN",
+        "QA_AGAIN",
+        "LOCAL_AI_CONTROL_CENTER",
+        "ACCOUNT_AGAIN"
+      ],
+      "description": "Specialist OS this identity represents. RUNTIME_CORRECT_SCHEMA_WRONG finding from E4.1: the prior schema used field name `callingSystem` with lowercase-kebab enum values (e.g. `conductor-main`); the real runtime (VALID_SYSTEM_IDS in account_again/models/service_identity.py) has always used `systemId` with SCREAMING_SNAKE_CASE values, and every E3/E4 test and API call uses that shape."
+    },
+    "tenantId": {
+      "type": ["string", "null"],
+      "description": "Tenant this service identity is scoped to, if tenant-bound. Null means the identity may act across tenants at the transport level (domain-level tenant checks on the specific resource being accessed still apply — see EntitlementDecision/CredentialRef)."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["ACTIVE", "REVOKED"],
+      "description": "Current status. RUNTIME_CORRECT_SCHEMA_WRONG finding: the prior schema had no status field at all, despite REVOKED being a core, tested runtime state (revoked service identities are rejected by the entitlement engine)."
+    },
+    "allowedCapabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "AI capabilities this service identity is authorized to request. Empty array means unconstrained by this field (constraint is enforced via AIEntitlement, not here, in the current runtime)."
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Correlation ID linking to the business/AI-execution flow, if this identity assertion is being referenced from a specific request rather than looked up standalone."
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when this service identity was created. RUNTIME_CORRECT_SCHEMA_WRONG finding: the prior schema used `issuedAt`; the real field is `createdAt`."
+    },
+    "revokedAt": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when this service identity was revoked, if REVOKED."
+    }
+  }
+}

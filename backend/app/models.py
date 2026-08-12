@@ -447,3 +447,61 @@ class SignOff(ProjectBase):
     comment_md = Column(Text, nullable=True)
     actor = Column(String, nullable=False)
     acted_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- Ecosystem integration mapping (QA-E2) ----------
+# Master-DB (cross-project) state: a Conductor Main QARequest arrives before
+# QA Again has decided which project/cycle it maps to, and idempotency must
+# be checkable without already knowing the project. Everything past mapping
+# (test_cycle_id, qa_project_slug) lives here as a reference, not a copy —
+# the actual QA domain state stays in the per-project DB per ADR-0001.
+
+EXTERNAL_QA_REQUEST_STATUSES = ("RECEIVED", "MAPPED", "EXECUTING", "COMPLETED", "FAILED")
+
+
+class ExternalQARequest(MasterBase):
+    """One row per distinct (idempotencyKey) QARequest received from
+    Conductor Main. Idempotent replay of the same key+payload returns the
+    existing row; same key with a different payload is a 409 conflict
+    (QA-E2 §18). Explicit re-run is a separate QAExecutionAttempt row, not
+    a new ExternalQARequest — see §19."""
+
+    __tablename__ = "external_qa_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(String, nullable=True, index=True)
+    source_system = Column(String, nullable=False)  # e.g. CONDUCTOR_MAIN
+    qa_request_id = Column(String, nullable=False, index=True)  # canonical QARequest.qaRequestId
+    correlation_id = Column(String, nullable=False, index=True)
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)
+    delivery_run_id = Column(String, nullable=True)
+    business_intent_id = Column(String, nullable=True)
+    engineering_result_ref = Column(String, nullable=True)
+    infrastructure_result_ref = Column(String, nullable=True)
+    qa_project_slug = Column(String, nullable=True)  # set once mapped to a QA project (QA-E4)
+    test_cycle_id = Column(Integer, nullable=True)  # set once mapped to a TestCycle (QA-E4)
+    payload_fingerprint = Column(String, nullable=False)  # sha256 of the canonical QARequest payload
+    payload_json = Column(Text, nullable=False)  # the canonical QARequest payload, verbatim
+    status = Column(String, default="RECEIVED")  # see EXTERNAL_QA_REQUEST_STATUSES
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class QAExecutionAttempt(ProjectBase):
+    """One row per execution attempt against a mapped TestCycle. The first
+    attempt is created when the ExternalQARequest is mapped; each explicit
+    re-run (QA-E2 §19) adds another row rather than mutating the cycle in
+    place, so re-run history stays auditable and distinct from idempotent
+    replay (which creates zero new rows)."""
+
+    __tablename__ = "qa_execution_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_id = Column(Integer, ForeignKey("test_cycles.id"), nullable=False)
+    external_qa_request_idempotency_key = Column(String, nullable=False, index=True)
+    attempt_no = Column(Integer, nullable=False)  # 1 = initial mapping, 2+ = explicit re-run
+    trigger = Column(String, nullable=False, default="INITIAL")  # INITIAL | EXPLICIT_RERUN
+    triggered_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("cycle_id", "attempt_no", name="uq_qa_attempt_cycle_no"),)

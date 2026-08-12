@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/QARequest.json",
+  "title": "QARequest",
+  "description": "Independent quality validation request sent to QA Again.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": [
+    "qaRequestId",
+    "correlationId",
+    "workPackageId",
+    "releaseCandidate",
+    "acceptanceCriteria",
+    "createdAt"
+  ],
+  "properties": {
+    "qaRequestId": {
+      "type": "string",
+      "examples": ["qar-001"]
+    },
+    "correlationId": {
+      "type": "string",
+      "examples": ["e2e-golden-001"]
+    },
+    "workPackageId": {
+      "type": "string",
+      "examples": ["wp-001"]
+    },
+    "releaseCandidate": {
+      "type": "object",
+      "description": "The release candidate to validate.",
+      "required": ["repo", "branch", "commit"],
+      "properties": {
+        "repo": { "type": "string" },
+        "branch": { "type": "string" },
+        "commit": { "type": "string" },
+        "tag": { "type": "string" },
+        "dockerImage": { "type": "string" }
+      }
+    },
+    "acceptanceCriteria": {
+      "type": "object",
+      "properties": {
+        "business": {
+          "type": "array",
+          "description": "Business acceptance criteria.",
+          "items": { "type": "string" }
+        },
+        "technical": {
+          "type": "array",
+          "description": "Technical acceptance criteria.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "engineeringResultReference": {
+      "type": "string",
+      "description": "Reference to the EngineeringResult for context.",
+      "examples": ["er-001"]
+    },
+    "infrastructureResultReference": {
+      "type": "string",
+      "description": "Reference to the InfrastructureResult for context.",
+      "examples": ["ifr-001"]
+    },
+    "knownIssues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "description": { "type": "string" },
+          "severity": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"] }
+        }
+      }
+    },
+    "recommendedRegressionAreas": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Areas recommended for focused regression testing."
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

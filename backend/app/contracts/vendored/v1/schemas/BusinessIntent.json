@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/BusinessIntent.json",
+  "title": "BusinessIntent",
+  "description": "Formalized business intent entering the AGAIN Ecosystem.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": ["businessIntentId", "correlationId", "title", "description", "priority", "createdAt"],
+  "properties": {
+    "businessIntentId": { "type": "string", "examples": ["bi-001"] },
+    "correlationId": { "type": "string", "examples": ["e2e-golden-001"] },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "priority": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+    "requester": { "type": "string" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "createdAt": { "type": "string", "format": "date-time" }
+  }
+}

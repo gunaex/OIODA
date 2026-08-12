@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v2/AIExecutionRequest.json",
+  "title": "AIExecutionRequest",
+  "description": "Provider-neutral AI capability request from a Specialist OS to Local AI Control Center. Expresses capability intent, NOT provider implementation. NO reasoning_content, NO chain-of-thought, NO raw provider secrets.",
+  "type": "object",
+  "version": "2.0.0",
+  "required": [
+    "requestId",
+    "capability",
+    "correlationId"
+  ],
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "Unique identifier for this AI execution request."
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Correlation ID linking to the business/delivery flow."
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "description": "Ensures duplicate requests do not trigger duplicate AI execution."
+    },
+    "capability": {
+      "type": "string",
+      "enum": [
+        "CODE_PLANNING",
+        "CODE_EXECUTION",
+        "CODE_VERIFICATION",
+        "INFRASTRUCTURE_PLANNING",
+        "QA_ANALYSIS",
+        "DOCUMENT_GENERATION",
+        "BUSINESS_ANALYSIS",
+        "GENERAL_REASONING"
+      ],
+      "description": "Requested AI capability."
+    },
+    "inputRef": {
+      "type": "string",
+      "description": "Reference to the input data (URI or system-internal reference)."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Inline payload when input is small enough for direct inclusion."
+    },
+    "constraints": {
+      "type": "object",
+      "description": "Execution constraints.",
+      "properties": {
+        "maxTokens": { "type": "integer" },
+        "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+        "timeoutMs": { "type": "integer" }
+      }
+    },
+    "dataSensitivity": {
+      "type": "string",
+      "enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"],
+      "description": "Data sensitivity classification for the request."
+    },
+    "privacy": {
+      "type": "string",
+      "enum": ["LOCAL_REQUIRED", "LOCAL_PREFERRED", "CLOUD_ALLOWED"],
+      "description": "Privacy/routing constraint."
+    },
+    "modelPreference": {
+      "type": "object",
+      "description": "Optional model preference (advisory only; Local AI Control Center may override).",
+      "properties": {
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+    "identityClaimsRef": {
+      "type": "string",
+      "description": "Reference to the IdentityClaims for this request."
+    },
+    "entitlementDecisionRef": {
+      "type": "string",
+      "description": "Reference to the EntitlementDecision authorizing this request."
+    },
+    "credentialRefs": {
+      "type": "array",
+      "description": "Credential references needed for AI provider access (references only, NO raw keys).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string" },
+          "credentialRef": { "type": "string" }
+        }
+      }
+    },
+    "budgetContext": {
+      "type": "object",
+      "description": "Budget/quota context for this request.",
+      "properties": {
+        "maxCostCents": { "type": "integer" },
+        "quotaRef": { "type": "string" }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
