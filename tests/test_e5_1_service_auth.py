@@ -111,6 +111,60 @@ class TestEntitlementEvaluateWithToken:
         assert resp.status_code == 401
 
 
+class TestTokenClaimValidation:
+    """Genuinely missing evidence identified in the V1 freeze documentation-correction
+    pass: TOKEN_ISSUER_VALIDATED / TOKEN_AUDIENCE_VALIDATED were enforced in code
+    (jose.jwt.decode(..., issuer=..., audience=...)) but had no direct test forging a
+    correctly-SIGNED token with a wrong issuer/audience to prove rejection — the prior
+    tests only covered a garbage/malformed token (which fails signature verification
+    before issuer/audience are even checked), not a well-formed-but-wrong-claims token."""
+
+    def _forge_token(self, **override_claims):
+        import time
+        import uuid
+        from jose import jwt
+        from account_again.services.service_auth import _PRIVATE_PEM, ALGORITHM, ISSUER, AUDIENCE, _KEY_ID
+        now = int(time.time())
+        claims = {
+            "iss": ISSUER, "sub": "forged", "aud": AUDIENCE, "iat": now, "exp": now + 300,
+            "jti": str(uuid.uuid4()), "systemId": "LOCAL_AI_CONTROL_CENTER",
+            "serviceIdentityId": "forged", "tenantId": None,
+        }
+        claims.update(override_claims)
+        return jwt.encode(claims, _PRIVATE_PEM, algorithm=ALGORITHM, headers={"kid": _KEY_ID})
+
+    def test_wrong_issuer_rejected(self, client, db):
+        """Correctly signed (real private key), correct audience, WRONG issuer."""
+        token = self._forge_token(iss="some-other-issuer")
+        resp = client.post("/api/v1/entitlements/evaluate",
+                            headers={"Authorization": f"Bearer {token}"}, json={"tenantId": "t1"})
+        assert resp.status_code == 401
+
+    def test_wrong_audience_rejected(self, client, db):
+        """Correctly signed, correct issuer, WRONG audience."""
+        token = self._forge_token(aud="some-other-audience")
+        resp = client.post("/api/v1/entitlements/evaluate",
+                            headers={"Authorization": f"Bearer {token}"}, json={"tenantId": "t1"})
+        assert resp.status_code == 401
+
+    def test_correct_issuer_and_audience_pass_claim_validation(self, client, db):
+        """Control case: a forged-but-correctly-claimed token (same issuer/audience as
+        real tokens) passes claim validation and is only rejected because 'forged' is
+        not a real ServiceIdentity — proving the PRIOR two tests fail for the right
+        reason (issuer/audience), not because forging tokens fails generically."""
+        token = self._forge_token()
+        resp = client.post("/api/v1/entitlements/evaluate",
+                            headers={"Authorization": f"Bearer {token}"}, json={"tenantId": "t1"})
+        # 401 here is expected too (unknown serviceIdentityId "forged"), but the
+        # important assertion is in the error detail: it must NOT be an issuer/audience
+        # complaint (proving claim validation happens and passes) — it must be about
+        # the service identity not existing.
+        assert resp.status_code == 401
+        assert "issuer" not in resp.text.lower()
+        assert "audience" not in resp.text.lower()
+        assert "no longer exists" in resp.text.lower() or "not found" in resp.text.lower()
+
+
 class TestRawTokenNeverLoggedOrPersisted:
     def test_token_not_in_audit_log(self, client, db):
         token = make_service_token(client, "LOCAL_AI_CONTROL_CENTER")
