@@ -102,3 +102,25 @@ def test_two_work_packages_same_business_intent_share_one_project(client):
         json=dict(VALID_DWP, workPackageId="wp-e4-shared-2", businessIntentId="bi-e4-shared"),
     )
     assert resp1.json()["projectSlug"] == resp2.json()["projectSlug"]
+
+
+def test_pm_status_by_work_package_lookup(client):
+    _override_conductor_identity()
+    intake = client.post(
+        "/api/ecosystem/delivery-work-packages",
+        json=dict(VALID_DWP, workPackageId="wp-e5-status"),
+    )
+    assert intake.status_code == 200
+
+    resp = client.get("/api/ecosystem/pm-status", params={"workPackageId": "wp-e5-status"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["workPackageId"] == "wp-e5-status"
+    assert body["correlationId"] == "corr-e4-001"
+    assert body["projectStatus"] in ("NOT_STARTED", "IN_PROGRESS")
+
+
+def test_pm_status_by_work_package_unknown_is_404(client):
+    _override_conductor_identity()
+    resp = client.get("/api/ecosystem/pm-status", params={"workPackageId": "wp-does-not-exist"})
+    assert resp.status_code == 404
