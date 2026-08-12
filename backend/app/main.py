@@ -43,6 +43,7 @@ from .routers import (
     workflows,
     diagrams,
     pm_status,
+    ecosystem_intake,
 )
 from .seed import seed_document_templates, seed_bootstrap_admin, seed_thai_holidays
 from .rate_limit import limiter
@@ -105,6 +106,7 @@ async def security_headers(request: Request, call_next):
 # RESERVED_SLUGS in routers/projects.py, which prevents that slug from ever
 # being assigned in the first place, belt-and-suspenders with this order).
 app.include_router(auth.router)
+app.include_router(ecosystem_intake.router)
 app.include_router(projects.router)
 app.include_router(resources.router)
 app.include_router(dashboard.global_router)

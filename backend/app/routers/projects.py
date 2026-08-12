@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depe
 # A project slug matching one of these would permanently collide with a
 # fixed-literal-prefix router (/api/resources/..., /api/dashboard/global) —
 # reserved so slugify() always routes around them instead.
-RESERVED_SLUGS = {"resources", "dashboard", "auth", "projects", "health", "holidays", "business-days", "workflows"}
+RESERVED_SLUGS = {"resources", "dashboard", "auth", "projects", "health", "holidays", "business-days", "workflows", "ecosystem"}
 
 MANDATORY_COLUMN_BY_CATEGORY = {
     "critical": "mandatory_critical",
