@@ -1,0 +1,22 @@
+# Bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Database files
+*.db
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache/
