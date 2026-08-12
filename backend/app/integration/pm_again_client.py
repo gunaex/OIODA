@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 import httpx
 
-from app.integration.account_again_client import AccountAgainClient
+from app.integration.account_again_client import AccountAgainClient, AccountAgainUnavailableError
 
 PM_AGAIN_URL = os.getenv("PM_AGAIN_URL", "http://localhost:8000/api")
 TIMEOUT_SECONDS = 5.0
@@ -42,19 +42,26 @@ class PMAgainClient:
 
     @staticmethod
     def dispatch_delivery_work_package(
-        *, delivery_work_package: dict[str, Any], idempotency_key: str,
+        *, delivery_work_package: dict[str, Any], idempotency_key: str, tenant_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Sends a canonical DeliveryWorkPackage to PM Again's intake
         endpoint. Raises PMAgainUnavailableError on transport failure or a
         non-2xx response — caller decides fallback policy, this client never
-        silently swallows a failed dispatch."""
+        silently swallows a failed dispatch.
+
+        tenant_id, when given, is forwarded as X-Tenant-Id — the actual
+        DeliveryRun's tenant, which governs which PM tenant this work is
+        attributed to. PM Again prefers this over CONDUCTOR_MAIN's own
+        (often-null) registered service-identity tenant."""
         try:
             headers = {**_auth_headers(), "Idempotency-Key": idempotency_key}
+            if tenant_id:
+                headers["X-Tenant-Id"] = tenant_id
             resp = httpx.post(
                 f"{PM_AGAIN_URL}/ecosystem/delivery-work-packages",
                 json=delivery_work_package, headers=headers, timeout=TIMEOUT_SECONDS,
             )
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, AccountAgainUnavailableError) as e:
             raise PMAgainUnavailableError(f"PM Again unreachable: {e}") from e
         if resp.status_code == 409:
             raise PMAgainUnavailableError(f"PM Again rejected as an idempotency conflict: {resp.text}")
@@ -74,7 +81,7 @@ class PMAgainClient:
                 f"{PM_AGAIN_URL}/ecosystem/pm-status",
                 params={"workPackageId": work_package_id}, headers=headers, timeout=TIMEOUT_SECONDS,
             )
-        except httpx.HTTPError:
+        except (httpx.HTTPError, AccountAgainUnavailableError):
             return None
         if resp.status_code == 404:
             return None

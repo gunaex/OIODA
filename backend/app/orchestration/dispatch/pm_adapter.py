@@ -31,7 +31,7 @@ def dispatch(*, run, delivery_work_package: dict[str, Any]) -> dict[str, Any]:
     policy, same convention as the other REAL_RUNTIME adapters."""
     idempotency_key = f"pm-{run.run_id}"
     return PMAgainClient.dispatch_delivery_work_package(
-        delivery_work_package=delivery_work_package, idempotency_key=idempotency_key,
+        delivery_work_package=delivery_work_package, idempotency_key=idempotency_key, tenant_id=run.tenant_id,
     )
 
 
