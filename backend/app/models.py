@@ -72,6 +72,9 @@ class ProjectRegistry(MasterBase):
     name = Column(String(255), nullable=False)
     description = Column(Text, default="")
     status = Column(String(50), default="active")  # active, archived, deleted
+    # E8-C tenant isolation: owning Account Again tenant. Defaults to "local-tenant"
+    # for pre-E8 projects created before tenant scoping existed (LEGACY_LOCAL_AUTH path).
+    tenant_id = Column(String(100), nullable=False, default="local-tenant", index=True)
     created_by = Column(String(36), ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)

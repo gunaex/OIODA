@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link, Outlet, useLocation } from 'react-router-dom';
 import { LayoutDashboard, BookOpen, Shield, Zap, Network, Gavel, FileText, FolderOpen,
-  Plus, ArrowRight, Target, Clock, Sparkles, CheckCircle2, Link2,
+  Plus, ArrowRight, Target, Clock, Sparkles, CheckCircle2, Link2, GitBranch,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { listVisions, listRequirements, createVision } from '../api/client';
@@ -18,6 +18,7 @@ import IntakePage from './IntakePage';
 import RequirementsPage from './RequirementsPage';
 import VisionPage from './VisionPage';
 import IntegrationPage from './IntegrationPage';
+import OrchestrationPage from './OrchestrationPage';
 
 const tabs = [
   { to: '', end: true, label: 'Dashboard', icon: LayoutDashboard },
@@ -28,6 +29,7 @@ const tabs = [
   { to: '/deliberation', label: 'Deliberation', icon: Gavel },
   { to: '/intake', label: 'Intake', icon: FileText },
   { to: '/integration', label: 'Integration', icon: Link2 },
+  { to: '/orchestration', label: 'Orchestration', icon: GitBranch },
 ];
 
 export default function ProjectDashboard() {
@@ -106,6 +108,7 @@ export default function ProjectDashboard() {
     else if (path.startsWith('/deliberation')) setActiveTab('deliberation');
     else if (path.startsWith('/intake')) setActiveTab('intake');
     else if (path.startsWith('/integration')) setActiveTab('integration');
+    else if (path.startsWith('/orchestration')) setActiveTab('orchestration');
   }, [location.pathname, slug]);
 
   const handleSaveVision = async (e) => {
@@ -381,6 +384,7 @@ export default function ProjectDashboard() {
 
       {activeTab === 'intake' && <IntakePage slug={slug} />}
       {activeTab === 'integration' && <IntegrationPage slug={slug} />}
+      {activeTab === 'orchestration' && <OrchestrationPage slug={slug} />}
     </div>
   );
 }

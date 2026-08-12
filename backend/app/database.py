@@ -86,6 +86,7 @@ def get_project_db(slug: str):
 
 def ensure_master_db():
     """Create master tables on startup."""
+    from app.orchestration import models as _orch_models  # noqa: F401  (registers orch_* tables)
     MasterBase.metadata.create_all(bind=master_engine)
 
 

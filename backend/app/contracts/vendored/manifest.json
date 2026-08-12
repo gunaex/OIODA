@@ -1,0 +1,36 @@
+{
+  "canonicalAuthority": "AGAIN-ECOSYSTEM",
+  "sourceRepo": "/Users/kanphong/AGAIN-ECOSYSTEM",
+  "sourceCommit": "893cd254e9665e7dd3fe5ea35dcc210489eb91cf",
+  "vendoredAt": "2026-08-12",
+  "vendoredBy": "CONDUCTOR-AGAIN E8-A",
+  "note": "This is a controlled vendored copy of contracts/v1 and contracts/v2 JSON Schemas from AGAIN-ECOSYSTEM at the recorded commit. AGAIN-ECOSYSTEM remains the canonical contract authority. Conductor Main does not define, fork, or independently version these schemas. Re-run scripts/check_contract_drift.py against the source repo to detect drift.",
+  "v1": {
+    "version": "1.0.0",
+    "contracts": [
+      "OSMessageEnvelope",
+      "BusinessIntent",
+      "DeliveryWorkPackage",
+      "PMStatus",
+      "EngineeringWorkPackage",
+      "EngineeringResult",
+      "InfrastructureRequest",
+      "InfrastructureResult",
+      "QARequest",
+      "QAResult",
+      "DeliveryReadinessResult"
+    ]
+  },
+  "v2": {
+    "version": "2.x",
+    "contracts": [
+      "IdentityClaims",
+      "ServiceIdentity",
+      "CredentialRef",
+      "EntitlementDecision",
+      "AIExecutionRequest",
+      "AIExecutionResult",
+      "EvidenceReference"
+    ]
+  }
+}

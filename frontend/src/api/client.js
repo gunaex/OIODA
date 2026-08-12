@@ -61,3 +61,35 @@ export const listRequirements = (slug) =>
 
 export const createRequirement = (slug, data) =>
   api.post(`/${slug}/requirements`, data).then((r) => r.data);
+
+// ── Orchestration (E8) ─────────────────────────────────────
+// Real backend state only — every call hits the live orchestration API
+// (BusinessIntent -> DeliveryRun -> specialist dispatch -> readiness).
+const ORCH_HEADERS = { 'X-Tenant-Id': 'local-tenant' };
+
+export const listIntents = () =>
+  api.get('/orchestration/intents', { headers: ORCH_HEADERS }).then((r) => r.data);
+
+export const createIntent = (data) =>
+  api.post('/orchestration/intents', data, { headers: ORCH_HEADERS }).then((r) => r.data);
+
+export const createRun = (businessIntentId, data) =>
+  api.post(`/orchestration/intents/${businessIntentId}/runs`, data, { headers: ORCH_HEADERS }).then((r) => r.data);
+
+export const getRun = (runId) =>
+  api.get(`/orchestration/runs/${runId}`, { headers: ORCH_HEADERS }).then((r) => r.data);
+
+export const dispatchEngineering = (runId, data) =>
+  api.post(`/orchestration/runs/${runId}/dispatch-engineering`, data, { headers: ORCH_HEADERS }).then((r) => r.data);
+
+export const executeEngineering = (runId, engineeringRunId) =>
+  api.post(`/orchestration/runs/${runId}/execute-engineering`, { engineering_run_id: engineeringRunId }, { headers: ORCH_HEADERS }).then((r) => r.data);
+
+export const dispatchInfrastructure = (runId, data = {}) =>
+  api.post(`/orchestration/runs/${runId}/dispatch-infrastructure`, data, { headers: ORCH_HEADERS }).then((r) => r.data);
+
+export const dispatchQA = (runId, data = {}) =>
+  api.post(`/orchestration/runs/${runId}/dispatch-qa`, data, { headers: ORCH_HEADERS }).then((r) => r.data);
+
+export const computeReadiness = (runId) =>
+  api.post(`/orchestration/runs/${runId}/readiness`, {}, { headers: ORCH_HEADERS }).then((r) => r.data);

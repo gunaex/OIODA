@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/OSMessageEnvelope.json",
+  "title": "OSMessageEnvelope",
+  "description": "Standard envelope for all inter-OS messages in the AGAIN Ecosystem.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": [
+    "envelopeId",
+    "correlationId",
+    "messageType",
+    "source",
+    "timestamp",
+    "payload"
+  ],
+  "properties": {
+    "envelopeId": {
+      "type": "string",
+      "description": "Unique identifier for this envelope instance.",
+      "examples": ["env-abc123-def456"]
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Survives the complete flow from Business Intent to Delivery Decision.",
+      "examples": ["e2e-golden-001"]
+    },
+    "causationId": {
+      "type": ["string", "null"],
+      "description": "ID of the message that directly caused this message. Null for initial messages.",
+      "examples": ["env-previous-xyz"]
+    },
+    "messageType": {
+      "type": "string",
+      "description": "The contract type name of the payload.",
+      "enum": [
+        "BusinessIntent",
+        "DeliveryWorkPackage",
+        "PMStatus",
+        "EngineeringWorkPackage",
+        "EngineeringResult",
+        "InfrastructureRequest",
+        "InfrastructureResult",
+        "QARequest",
+        "QAResult",
+        "DeliveryReadinessResult"
+      ]
+    },
+    "contractVersion": {
+      "type": "string",
+      "description": "Semver version of the payload contract.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "examples": ["1.0.0"]
+    },
+    "source": {
+      "type": "string",
+      "description": "Specialist OS that produced this message.",
+      "enum": [
+        "conductor-main",
+        "pm-again",
+        "idea-to-code",
+        "infrastructure-again",
+        "qa-again",
+        "local-ai-control-center"
+      ]
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "description": "Ensures duplicate messages do not duplicate work. Required for state-changing messages.",
+      "examples": ["idem-xyz789"]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of message creation."
+    },
+    "payload": {
+      "type": "object",
+      "description": "The contract-specific payload. Schema determined by messageType."
+    },
+    "traceContext": {
+      "type": "object",
+      "description": "Optional distributed tracing context.",
+      "properties": {
+        "traceId": {
+          "type": "string"
+        },
+        "spanId": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

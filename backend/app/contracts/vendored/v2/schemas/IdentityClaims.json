@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v2/IdentityClaims.json",
+  "title": "IdentityClaims",
+  "description": "Transport-safe identity claims for cross-system authorization. Communicates claims, NOT credential secrets. NO password, NO raw session secret, NO raw API key.",
+  "type": "object",
+  "version": "2.0.0",
+  "required": [
+    "identityClaimsId",
+    "accountId",
+    "subjectId",
+    "issuer",
+    "issuedAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "identityClaimsId": {
+      "type": "string",
+      "description": "Unique identifier for this claims instance."
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Correlation ID linking to the business flow."
+    },
+    "accountId": {
+      "type": "string",
+      "description": "Account Again account identifier."
+    },
+    "tenantId": {
+      "type": "string",
+      "description": "Tenant/organization scope for multi-tenant contexts."
+    },
+    "subjectId": {
+      "type": "string",
+      "description": "Authenticated subject (user or service) identifier."
+    },
+    "subjectType": {
+      "type": "string",
+      "enum": ["USER", "SERVICE", "SYSTEM"],
+      "description": "Type of authenticated subject."
+    },
+    "roles": {
+      "type": "array",
+      "description": "Assigned roles for this identity.",
+      "items": { "type": "string" }
+    },
+    "productEntitlements": {
+      "type": "array",
+      "description": "Product-level entitlements granted to this identity.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "productId": { "type": "string" },
+          "entitlement": { "type": "string", "enum": ["FULL", "READ_ONLY", "RESTRICTED"] },
+          "grantedAt": { "type": "string", "format": "date-time" },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "sessionRef": {
+      "type": "string",
+      "description": "Opaque reference to the session context (NOT a session token)."
+    },
+    "issuer": {
+      "type": "string",
+      "description": "System that issued these claims.",
+      "enum": ["account-again"]
+    },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when claims were issued."
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when claims expire."
+    }
+  }
+}

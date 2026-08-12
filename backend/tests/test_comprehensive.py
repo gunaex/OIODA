@@ -414,7 +414,7 @@ def test_integration_services():
     assert get_service("pm-again")["name"] == "PM Again"
     assert get_service("qa-again")["name"] == "QA Again"
     assert get_service("dev-again")["name"] == "Dev Again"
-    assert get_service("pm-again")["base_url"] == "https://pm-again.vercel.app"
+    assert get_service("pm-again")["base_url"] == "https://pmagain.kanphong.com"
 
 
 # ── Test 26: Integration router endpoints ─────────────────
