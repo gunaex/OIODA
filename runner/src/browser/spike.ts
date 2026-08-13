@@ -29,7 +29,12 @@ export async function runSpike(config: RunnerConfig): Promise<void> {
 
   // headless: false — gate criterion 1: the browser must be actually
   // visible, not a headless process claiming to have "seen" something.
-  const browser = await chromium.launch({ headless: false, slowMo: 300 });
+  // QA_RUNNER_HEADLESS=true is an explicit override for deployment smoke
+  // runs, where a visible window on a shared desktop can be navigated away
+  // mid-run (the checkpoint wait holds the login page open). Headless
+  // Chromium still renders the page for real; it is only not visible.
+  const headless = process.env.QA_RUNNER_HEADLESS === "true";
+  const browser = await chromium.launch({ headless, slowMo: 300 });
 
   try {
     // QA-E7.4 — report real, just-launched browser identity. chromium.name()
