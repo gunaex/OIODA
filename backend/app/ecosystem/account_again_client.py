@@ -21,11 +21,11 @@ _JWKS_CACHE_TTL_SECONDS = 300
 _ENTITLEMENT_CACHE_TTL_SECONDS = 30
 _TOKEN_TIMEOUT_SECONDS = 5.0
 
-# Account Again's local dev service-auth issuer/audience — see
-# ACCOUNT-AGAIN/account_again/services/service_auth.py. Matches PM Again's
-# and Conductor's own expectation exactly; this is not QA Again's own value
-# to define.
-EXPECTED_ISSUER = "account-again-local"
+# Account Again's service-auth issuer/audience — see
+# ACCOUNT-AGAIN/account_again/services/service_auth.py. Defaults to the local
+# dev issuer; production sets ACCOUNT_AGAIN_ISSUER to the canonical online
+# issuer (https://api-account.kanphong.com) via Fly secrets.
+EXPECTED_ISSUER = os.environ.get("ACCOUNT_AGAIN_ISSUER", "account-again-local")
 EXPECTED_AUDIENCE = "again-ecosystem-services"
 
 
