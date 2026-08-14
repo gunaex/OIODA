@@ -21,6 +21,9 @@ REVOCATION_BEHAVIOR:        token signature/expiry alone is NOT sufficient — e
                              even with an unexpired, correctly-signed token.
 """
 
+import base64
+import hashlib
+import os
 import time
 import uuid
 from typing import Optional
@@ -28,16 +31,39 @@ from jose import jwt, JWTError
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 
-ISSUER = "account-again-local"
-AUDIENCE = "again-ecosystem-services"
+ISSUER = os.getenv("ACCOUNT_AGAIN_ISSUER", "account-again-local")
+AUDIENCE = os.getenv("ACCOUNT_AGAIN_AUDIENCE", "again-ecosystem-services")
 TOKEN_TTL_SECONDS = 300
 ALGORITHM = "RS256"
 
-# Ephemeral runtime-generated RSA keypair (E5.1 §18: "generate ephemeral runtime keys...
-# never commit production-like private keys"). Regenerated on every process start —
-# tokens do not survive a restart, which is the correct behavior for a dev-mode issuer
-# with no persistence story of its own.
-_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+# Signing key loading (R2A deployment):
+#   - If ACCOUNT_AGAIN_SIGNING_KEY_B64 is set (Fly secret): load the persistent
+#     PKCS8 PEM RSA private key from base64. Production path — the key survives
+#     restarts, so issued tokens and the published JWKS stay consistent.
+#   - Otherwise: generate an ephemeral runtime RSA keypair (E5.1 §18). Dev-mode path —
+#     regenerated on every process start, so tokens do not survive a restart, which is
+#     correct for a local dev issuer with no persistence story of its own.
+# A configured key MUST parse or the process fails closed at import time — it never
+# silently falls back to an ephemeral key in production (which would rotate the signing
+# identity and break every in-flight verification).
+_ENV_KEY_B64 = os.getenv("ACCOUNT_AGAIN_SIGNING_KEY_B64")
+_ENV_KEY_ID = os.getenv("ACCOUNT_AGAIN_SIGNING_KEY_ID")
+
+
+def _load_private_key():
+    if _ENV_KEY_B64:
+        try:
+            pem_bytes = base64.b64decode(_ENV_KEY_B64)
+            return serialization.load_pem_private_key(pem_bytes, password=None)
+        except Exception as e:
+            raise RuntimeError(
+                "ACCOUNT_AGAIN_SIGNING_KEY_B64 is set but cannot be loaded as a "
+                f"PKCS8 PEM private key: {e}"
+            ) from e
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+_private_key = _load_private_key()
 _public_key = _private_key.public_key()
 
 _PRIVATE_PEM = _private_key.private_bytes(
@@ -50,7 +76,22 @@ _PUBLIC_PEM = _public_key.public_bytes(
     format=serialization.PublicFormat.SubjectPublicKeyInfo,
 )
 
-_KEY_ID = "account-again-local-1"
+
+def _derive_kid() -> str:
+    """Stable key id. Explicit env override wins; for a persistent key the kid is a
+    fingerprint of the public key so it is identical across restarts."""
+    if _ENV_KEY_ID:
+        return _ENV_KEY_ID
+    if _ENV_KEY_B64:
+        der = _public_key.public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return "account-again-" + hashlib.sha256(der).hexdigest()[:12]
+    return "account-again-local-1"
+
+
+_KEY_ID = _derive_kid()
 
 
 class ServiceTokenError(Exception):

@@ -6,6 +6,10 @@ __pycache__/
 # Database files
 *.db
 
+# Environment / secrets (never commit an actual .env)
+.env
+*.pem
+
 # Virtual environment
 .venv/
 venv/

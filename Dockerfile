@@ -9,7 +9,7 @@ COPY pyproject.toml ./
 COPY account_again ./account_again
 COPY alembic ./alembic
 
-RUN pip install --no-cache-dir -e ".[dev]"
+RUN pip install --no-cache-dir .
 
 EXPOSE 8001
 ENV ACCOUNT_AGAIN_DATABASE_URL=sqlite:////data/account_again.db
