@@ -18,7 +18,9 @@ from app.integration.account_again_client import AccountAgainClient, AccountAgai
 from app.integration.service_health import check_service_identity
 
 PM_AGAIN_URL = os.getenv("PM_AGAIN_URL", "http://localhost:8000/api")
-TIMEOUT_SECONDS = 5.0
+# Fly auto-stop cold starts can exceed 5s; a bounded 30s timeout keeps the first
+# dispatch from failing permanently on a cold target (R2B.1 cold-start check).
+TIMEOUT_SECONDS = 30.0
 EXPECTED_SERVICE = "PM_AGAIN"
 
 

@@ -21,7 +21,9 @@ from app.integration.service_health import check_service_identity
 # own default must never collide with it — :8002 is QA Again's canonical
 # local port. Explicit QA_AGAIN_URL still takes precedence over this default.
 QA_AGAIN_URL = os.getenv("QA_AGAIN_URL", "http://localhost:8002/api")
-TIMEOUT_SECONDS = 5.0
+# Fly auto-stop cold starts can exceed 5s; a bounded 30s timeout keeps the first
+# dispatch from failing permanently on a cold target (R2B.1 cold-start check).
+TIMEOUT_SECONDS = 30.0
 EXPECTED_SERVICE = "QA_AGAIN"
 
 

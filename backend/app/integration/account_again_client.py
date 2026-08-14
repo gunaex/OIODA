@@ -25,7 +25,9 @@ from app.integration.service_health import check_service_identity
 ACCOUNT_AGAIN_URL = os.getenv("ACCOUNT_AGAIN_URL", "http://localhost:8001/api/v1")
 SYSTEM_ID = os.getenv("ACCOUNT_AGAIN_SYSTEM_ID", "CONDUCTOR_MAIN")
 CLIENT_SECRET = os.getenv("ACCOUNT_AGAIN_CLIENT_SECRET", "")
-TIMEOUT_SECONDS = 5.0
+# Account Again is the trust authority and also auto-stops on Fly; give it a
+# bounded 15s timeout so a cold trust call fails closed rather than timing out.
+TIMEOUT_SECONDS = 15.0
 EXPECTED_SERVICE = "account-again"
 
 
