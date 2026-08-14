@@ -24,6 +24,17 @@ async def lifespan(app: FastAPI):
     # Startup
     from app.database import ensure_master_db
     ensure_master_db()
+
+    # Bootstrap the local operator account (LEGACY_LOCAL_AUTH) if absent. This
+    # is non-fatal and idempotent: in ecosystem mode this account only supplies
+    # human session identity — Account Again remains authoritative for tenant
+    # and product entitlement (see app/orchestration/ecosystem_auth.py).
+    try:
+        from app.seed import seed
+        seed()
+    except Exception:  # pragma: no cover - never block startup on bootstrap
+        pass
+
     yield
     # Shutdown
     from app.database import dispose_all_engines
@@ -53,7 +64,10 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "app": "Conductor Again"}
+    # Stable service identity (ECOSYSTEM-H1 / R2B.4): sibling services and the
+    # Fly health check use the `service` field to prove *which* service answered,
+    # not merely that some HTTP 200 responder is reachable.
+    return {"status": "ok", "service": "CONDUCTOR_MAIN", "app": "Conductor Again"}
 
 
 # Register routers

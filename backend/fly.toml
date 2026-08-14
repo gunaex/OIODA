@@ -3,7 +3,6 @@ app = "conductor-again-backend"
 primary_region = "sin"
 
 [build]
-  image = "python:3.11-slim"
 
 [mounts]
   source = "conductor_data"
