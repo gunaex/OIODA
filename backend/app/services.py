@@ -675,6 +675,73 @@ def implement_change_request(
     return {"change_request": cr, "spawned_revisions": spawned}
 
 
+def change_request_detail(db: Session, change_request_id: str) -> dict:
+    """Full CR view: affected objects, deterministic impact, spawned revisions."""
+    cr = get_or_404(db, m.ChangeRequest, change_request_id, "ChangeRequest")
+    links = [l.semantic_id for l in cr.links]
+
+    affected = []
+    for sid in links:
+        so = db.execute(
+            select(m.SemanticObject).where(
+                m.SemanticObject.project_id == cr.project_id,
+                m.SemanticObject.semantic_id == sid,
+            )
+        ).scalar_one_or_none()
+        affected.append({
+            "semantic_id": sid,
+            "object_type": so.object_type.value if so else None,
+            "display_name": so.display_name if so else None,
+        })
+
+    impact = {sid: impact_of(db, cr.project_id, sid) for sid in links}
+
+    spawned = []
+    traces = db.execute(
+        select(m.TraceLink).where(
+            m.TraceLink.project_id == cr.project_id,
+            m.TraceLink.source_semantic_id == cr.code,
+            m.TraceLink.relation_type == m.TraceRelationType.GENERATED_FROM,
+        )
+    ).scalars().all()
+    for t in traces:
+        so = db.execute(
+            select(m.SemanticObject).where(
+                m.SemanticObject.project_id == cr.project_id,
+                m.SemanticObject.semantic_id == t.target_semantic_id,
+            )
+        ).scalar_one_or_none()
+        if so and so.entity_ref:
+            rev = db.get(m.ArtifactRevision, so.entity_ref)
+            if rev:
+                spawned.append({
+                    "revision_id": rev.id,
+                    "revision_number": rev.revision_number,
+                    "artifact_id": rev.artifact_id,
+                    "artifact_title": rev.artifact.title,
+                    "status": rev.status.value,
+                    "based_on_revision_id": rev.based_on_revision_id,
+                })
+
+    return {
+        "id": cr.id,
+        "code": cr.code,
+        "project_id": cr.project_id,
+        "requested_by": cr.requested_by,
+        "reason": cr.reason,
+        "requested_change": cr.requested_change,
+        "status": cr.status.value,
+        "target_release": cr.target_release,
+        "schedule_impact": cr.schedule_impact,
+        "commercial_impact": cr.commercial_impact,
+        "created_at": cr.created_at.isoformat(),
+        "created_by": cr.created_by,
+        "affected": affected,
+        "impact": impact,
+        "spawned_revisions": spawned,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Database design (structured model; diagram is a view over it)
 # ---------------------------------------------------------------------------

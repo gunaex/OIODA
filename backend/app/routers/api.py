@@ -480,6 +480,11 @@ def create_cr(body: CRIn, db: Session = Depends(db_session), actor=Depends(actor
     return cr_out(svc.create_change_request(db, **body.model_dump(), actor=actor))
 
 
+@router.get("/change-requests/{change_request_id}")
+def get_cr(change_request_id: str, db: Session = Depends(db_session)):
+    return svc.change_request_detail(db, change_request_id)
+
+
 class CRImplementIn(BaseModel):
     artifact_revision_map: dict[str, dict] | None = None
 
