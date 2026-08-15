@@ -697,6 +697,83 @@ def design_snapshot(schema_id: str, db: Session = Depends(db_session)):
     return svc.db_design_snapshot(db, schema_id)
 
 
+# ---------------------------------------------------------------------------
+# Process flow designer
+# ---------------------------------------------------------------------------
+
+
+class FlowIn(BaseModel):
+    project_id: str
+    name: str
+    semantic_id: str
+    description: str | None = None
+
+
+class FlowStepIn(BaseModel):
+    flow_id: str
+    name: str
+    step_type: str = "ACTION"
+    semantic_id: str | None = None
+    description: str | None = None
+
+
+class FlowTransitionIn(BaseModel):
+    flow_id: str
+    from_step_semantic_id: str
+    to_step_semantic_id: str
+    label: str | None = None
+    condition: str | None = None
+
+
+class FlowLayoutIn(BaseModel):
+    layout: dict
+
+
+@router.get("/projects/{project_id}/flows")
+def list_flows(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_flows(db, project_id)
+
+
+@router.post("/flows", status_code=201)
+def create_flow(body: FlowIn, db: Session = Depends(db_session), actor=Depends(actor)):
+    f = svc.create_flow(db, **body.model_dump(), actor=actor)
+    return {"id": f.id, "semantic_id": f.semantic_id, "name": f.name}
+
+
+@router.post("/flow-steps", status_code=201)
+def add_flow_step(body: FlowStepIn, db: Session = Depends(db_session)):
+    s = svc.add_flow_step(db, **body.model_dump())
+    return {"id": s.id, "semantic_id": s.semantic_id, "name": s.name, "step_type": s.step_type}
+
+
+@router.post("/flow-transitions", status_code=201)
+def add_flow_transition(body: FlowTransitionIn, db: Session = Depends(db_session)):
+    t = svc.add_flow_transition(db, **body.model_dump())
+    return {"id": t.id, "semantic_id": t.semantic_id}
+
+
+@router.delete("/flow-steps/{step_id}", status_code=204)
+def delete_flow_step(step_id: str, db: Session = Depends(db_session)):
+    svc.delete_flow_step(db, step_id)
+
+
+@router.delete("/flow-transitions/{transition_id}", status_code=204)
+def delete_flow_transition(transition_id: str, db: Session = Depends(db_session)):
+    svc.delete_flow_transition(db, transition_id)
+
+
+@router.get("/flows/{flow_id}/layout")
+def get_flow_layout(flow_id: str, db: Session = Depends(db_session)):
+    f = svc.get_or_404(db, m.ProcessFlow, flow_id, "ProcessFlow")
+    return f.layout or {}
+
+
+@router.put("/flows/{flow_id}/layout")
+def save_flow_layout(flow_id: str, body: FlowLayoutIn, db: Session = Depends(db_session)):
+    svc.save_flow_layout(db, flow_id, body.layout)
+    return {"ok": True}
+
+
 @router.get("/db-schemas/{schema_id}/data-dictionary")
 def data_dictionary(schema_id: str, db: Session = Depends(db_session)):
     return svc.data_dictionary(db, schema_id)

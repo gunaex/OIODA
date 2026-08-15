@@ -517,6 +517,7 @@ class ProcessFlow(Base):
     semantic_id: Mapped[str] = mapped_column(String(200), unique=True)
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    layout: Mapped[dict | None] = mapped_column(JSON, default=dict, nullable=True)  # flow node positions only
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     steps: Mapped[list["ProcessStep"]] = relationship(
@@ -536,6 +537,21 @@ class ProcessStep(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
 
     flow: Mapped[ProcessFlow] = relationship(back_populates="steps")
+
+
+class ProcessTransition(Base):
+    """Explicit structured transition between two process steps."""
+
+    __tablename__ = "process_transitions"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("trs"))
+    flow_id: Mapped[str] = mapped_column(ForeignKey("process_flows.id"), index=True)
+    semantic_id: Mapped[str] = mapped_column(String(200))
+    from_step_semantic_id: Mapped[str] = mapped_column(String(200))
+    to_step_semantic_id: Mapped[str] = mapped_column(String(200))
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    condition: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class APIEndpoint(Base):

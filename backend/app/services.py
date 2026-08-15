@@ -273,21 +273,19 @@ def flow_snapshot(db: Session, flow_id: str) -> dict:
         .where(m.ProcessStep.flow_id == flow_id)
         .order_by(m.ProcessStep.position)
     ).scalars().all()
-    out: dict = {
+    transitions = db.execute(
+        select(m.ProcessTransition).where(m.ProcessTransition.flow_id == flow_id)
+    ).scalars().all()
+    return {
         "name": flow.name,
         "description": flow.description,
         "steps": {s.semantic_id: {"name": s.name, "step_type": s.step_type, "position": s.position} for s in steps},
-    }
-    if hasattr(m, "ProcessTransition"):
-        transitions = db.execute(
-            select(m.ProcessTransition).where(m.ProcessTransition.flow_id == flow_id)
-        ).scalars().all()
-        out["transitions"] = {
+        "transitions": {
             t.semantic_id: {"from": t.from_step_semantic_id, "to": t.to_step_semantic_id,
                             "label": t.label, "condition": t.condition}
             for t in transitions
-        }
-    return out
+        },
+    }
 
 
 def api_endpoint_snapshot(api: m.APIEndpoint) -> dict:
@@ -1821,3 +1819,138 @@ def search_semantic(db: Session, project_id: str, query: str, limit: int = 60) -
             })
 
     return results[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Process flow designer (structured; diagram is a view over this)
+# ---------------------------------------------------------------------------
+
+FLOW_STEP_TYPES = {"START", "ACTION", "DECISION", "APPROVAL", "SYSTEM", "MANUAL", "END"}
+
+
+def create_flow(
+    db: Session, *, project_id: str, name: str, semantic_id: str, description=None, actor="local-user"
+) -> m.ProcessFlow:
+    flow = m.ProcessFlow(project_id=project_id, semantic_id=semantic_id, name=name, description=description)
+    db.add(flow)
+    db.flush()
+    ensure_semantic_object(
+        db, project_id=project_id, semantic_id=semantic_id,
+        object_type=m.SemanticObjectType.PROCESS_FLOW, display_name=name, entity_ref=flow.id,
+    )
+    db.commit()
+    return flow
+
+
+def add_flow_step(
+    db: Session, *, flow_id: str, name: str, step_type: str = "ACTION",
+    semantic_id: str | None = None, description=None,
+) -> m.ProcessStep:
+    flow = get_or_404(db, m.ProcessFlow, flow_id, "ProcessFlow")
+    if step_type not in FLOW_STEP_TYPES:
+        raise DomainError(f"Unknown step type '{step_type}'", status_code=422)
+    semantic_id = semantic_id or f"flow_step_{name.lower().replace(' ', '_').replace('-', '_')}"
+    existing = db.execute(
+        select(m.ProcessStep.id).where(
+            m.ProcessStep.flow_id == flow_id, m.ProcessStep.semantic_id == semantic_id
+        )
+    ).scalar_one_or_none()
+    if existing:
+        raise DomainError(f"Step semantic id '{semantic_id}' already exists in this flow")
+    position = (
+        db.execute(select(m.ProcessStep.id).where(m.ProcessStep.flow_id == flow_id)).scalars().all()
+    )
+    step = m.ProcessStep(
+        flow_id=flow_id, semantic_id=semantic_id, name=name, step_type=step_type,
+        description=description, position=len(position),
+    )
+    db.add(step)
+    db.flush()
+    ensure_semantic_object(
+        db, project_id=flow.project_id, semantic_id=semantic_id,
+        object_type=m.SemanticObjectType.PROCESS_STEP, display_name=name, entity_ref=step.id,
+    )
+    db.commit()
+    return step
+
+
+def add_flow_transition(
+    db: Session, *, flow_id: str, from_step_semantic_id: str, to_step_semantic_id: str,
+    label: str | None = None, condition: str | None = None,
+) -> m.ProcessTransition:
+    flow = get_or_404(db, m.ProcessFlow, flow_id, "ProcessFlow")
+    for sid in (from_step_semantic_id, to_step_semantic_id):
+        exists = db.execute(
+            select(m.ProcessStep.id).where(
+                m.ProcessStep.flow_id == flow_id, m.ProcessStep.semantic_id == sid
+            )
+        ).scalar_one_or_none()
+        if not exists:
+            raise DomainError(f"Unknown step '{sid}' in this flow", status_code=422)
+    semantic_id = f"flow_transition_{from_step_semantic_id}__{to_step_semantic_id}"
+    t = m.ProcessTransition(
+        flow_id=flow_id, semantic_id=semantic_id,
+        from_step_semantic_id=from_step_semantic_id, to_step_semantic_id=to_step_semantic_id,
+        label=label, condition=condition,
+    )
+    db.add(t)
+    db.commit()
+    return t
+
+
+def delete_flow_step(db: Session, step_id: str) -> None:
+    step = get_or_404(db, m.ProcessStep, step_id, "ProcessStep")
+    flow_id = step.flow_id
+    db.execute(
+        delete(m.ProcessTransition).where(
+            or_(
+                m.ProcessTransition.from_step_semantic_id == step.semantic_id,
+                m.ProcessTransition.to_step_semantic_id == step.semantic_id,
+            )
+        )
+    )
+    db.delete(step)
+    db.commit()
+
+
+def delete_flow_transition(db: Session, transition_id: str) -> None:
+    t = get_or_404(db, m.ProcessTransition, transition_id, "ProcessTransition")
+    db.delete(t)
+    db.commit()
+
+
+def save_flow_layout(db: Session, flow_id: str, layout: dict) -> m.ProcessFlow:
+    flow = get_or_404(db, m.ProcessFlow, flow_id, "ProcessFlow")
+    flow.layout = layout or {}
+    db.commit()
+    return flow
+
+
+def list_flows(db: Session, project_id: str) -> list[dict]:
+    flows = db.execute(
+        select(m.ProcessFlow).where(m.ProcessFlow.project_id == project_id)
+    ).scalars().all()
+    out = []
+    for f in flows:
+        steps = db.execute(
+            select(m.ProcessStep).where(m.ProcessStep.flow_id == f.id).order_by(m.ProcessStep.position)
+        ).scalars().all()
+        transitions = db.execute(
+            select(m.ProcessTransition).where(m.ProcessTransition.flow_id == f.id)
+        ).scalars().all()
+        out.append({
+            "id": f.id, "semantic_id": f.semantic_id, "name": f.name,
+            "description": f.description, "layout": f.layout or {},
+            "steps": [
+                {"id": s.id, "semantic_id": s.semantic_id, "name": s.name,
+                 "step_type": s.step_type, "position": s.position, "description": s.description}
+                for s in steps
+            ],
+            "transitions": [
+                {"id": t.id, "semantic_id": t.semantic_id,
+                 "from": t.from_step_semantic_id, "to": t.to_step_semantic_id,
+                 "label": t.label, "condition": t.condition}
+                for t in transitions
+            ],
+        })
+    return out
