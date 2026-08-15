@@ -1391,3 +1391,53 @@ def revision_diff(db: Session, rev_a_id: str, rev_b_id: str) -> dict:
         "document_diff": document_diff(db, rev_a_id, rev_b_id),
         "database_diff": db_diff,
     }
+
+
+# ---------------------------------------------------------------------------
+# Deterministic impact analysis (graph/rule based, no AI)
+# ---------------------------------------------------------------------------
+
+
+def _graph_adjacency(edges) -> tuple[dict, dict]:
+    out: dict[str, list[tuple[str, str]]] = {}
+    inc: dict[str, list[tuple[str, str]]] = {}
+    for e in edges:
+        out.setdefault(e.source_semantic_id, []).append((e.target_semantic_id, e.relation_type.value))
+        inc.setdefault(e.target_semantic_id, []).append((e.source_semantic_id, e.relation_type.value))
+    return out, inc
+
+
+def impact_paths(db: Session, project_id: str, semantic_id: str, max_depth: int = 3) -> dict:
+    """Bounded transitive impact with relation-path explanation.
+
+    Only TraceLink rows are traversed — nothing is inferred.
+    """
+    edges = db.execute(
+        select(m.TraceLink).where(m.TraceLink.project_id == project_id)
+    ).scalars().all()
+    out, inc = _graph_adjacency(edges)
+
+    def walk(adj):
+        results: list[list[dict]] = []
+        queue: list[tuple[str, list[dict]]] = [(semantic_id, [])]
+        while queue:
+            node, path = queue.pop(0)
+            for nxt, rel in adj.get(node, []):
+                new_path = path + [{"semantic_id": nxt, "relation": rel}]
+                results.append(new_path)
+                if len(new_path) < max_depth:
+                    queue.append((nxt, new_path))
+        return results
+
+    return {"downstream": walk(out), "upstream": walk(inc)}
+
+
+def impact_analysis(db: Session, project_id: str, semantic_id: str, max_depth: int = 3) -> dict:
+    direct = impact_of(db, project_id, semantic_id)
+    paths = impact_paths(db, project_id, semantic_id, max_depth=max_depth)
+    return {
+        "semantic_id": semantic_id,
+        "max_depth": max_depth,
+        "direct": direct,
+        "paths": paths,
+    }

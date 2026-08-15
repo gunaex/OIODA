@@ -12,6 +12,7 @@ import { Placeholder } from "./pages/Placeholder.jsx";
 import { Reviews } from "./pages/Reviews.jsx";
 import { Compare } from "./pages/Compare.jsx";
 import { TraceExplorer } from "./pages/TraceExplorer.jsx";
+import { ImpactAnalysis } from "./pages/ImpactAnalysis.jsx";
 import { ContextPanel } from "./components/ContextPanel.jsx";
 
 /*
@@ -78,6 +79,7 @@ export default function App() {
                 <Route path="/design/database/*" element={<Database />} />
                 <Route path="/design/compare" element={<Compare />} />
                 <Route path="/design/trace" element={<TraceExplorer />} />
+                <Route path="/design/impact" element={<ImpactAnalysis />} />
                 <Route path="/design/flows" element={<Placeholder title="Process Flows" note="Flow editor engine arrives post-P0. Flows live as semantic objects (flow_…, flow_step_…) so traces and annotations already bind to them." />} />
                 <Route path="/design/apis" element={<Placeholder title="API Design" note="api_endpoints table + semantic IDs (api_order_approve) exist in the domain model; the interactive API designer is P1." />} />
                 <Route path="/design/architecture" element={<Placeholder title="Architecture" note="Architecture nodes are registered as semantic objects; the diagram canvas is a later view over them." />} />
@@ -131,6 +133,7 @@ const NAV = [
   { to: "requirements/ur", label: "UR" },
   { section: "DESIGN" },
   { to: "design/dr", label: "DR" },
+  { to: "design/impact", label: "Impact" },
   { to: "design/trace", label: "Trace" },
   { to: "design/compare", label: "Compare" },
   { to: "design/database", label: "Database" },

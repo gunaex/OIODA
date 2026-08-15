@@ -343,6 +343,13 @@ def impact(project_id: str, semantic_id: str, db: Session = Depends(db_session))
     return svc.impact_of(db, project_id, semantic_id)
 
 
+@router.get("/projects/{project_id}/impact-analysis/{semantic_id}")
+def impact_analysis(
+    project_id: str, semantic_id: str, depth: int = 3, db: Session = Depends(db_session)
+):
+    return svc.impact_analysis(db, project_id, semantic_id, max_depth=min(max(depth, 1), 5))
+
+
 @router.get("/projects/{project_id}/trace-graph")
 def trace_graph(project_id: str, db: Session = Depends(db_session)):
     return svc.trace_graph(db, project_id)
