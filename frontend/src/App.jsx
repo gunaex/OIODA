@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { NavLink, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { api } from "./api/client.js";
 import { Projects } from "./pages/Projects.jsx";
 import { Requirements } from "./pages/Requirements.jsx";
@@ -30,7 +30,6 @@ export default function App() {
   );
   const [project, setProject] = useState(null);
   const [focus, setFocus] = useState(null); // { semanticId, label }
-  const navigate = useNavigate();
 
   useEffect(() => {
     api.get("/projects").then((rows) => {
@@ -81,10 +80,10 @@ export default function App() {
                 <Route path="/design/compare" element={<Compare />} />
                 <Route path="/design/trace" element={<TraceExplorer />} />
                 <Route path="/design/impact" element={<ImpactAnalysis />} />
-                <Route path="/design/flows" element={<Placeholder title="Process Flows" note="Flow editor engine arrives post-P0. Flows live as semantic objects (flow_…, flow_step_…) so traces and annotations already bind to them." />} />
-                <Route path="/design/apis" element={<Placeholder title="API Design" note="api_endpoints table + semantic IDs (api_order_approve) exist in the domain model; the interactive API designer is P1." />} />
-                <Route path="/design/architecture" element={<Placeholder title="Architecture" note="Architecture nodes are registered as semantic objects; the diagram canvas is a later view over them." />} />
-                <Route path="/decisions" element={<Placeholder title="Decisions" note="Decision / assumption / clarification records are persisted by the domain layer; the review surface ships in P1." />} />
+                <Route path="/design/flows" element={<Placeholder title="Process Flows" note="Flow editor engine ships in P2. Flows live as semantic objects (flow_…, flow_step_…) so traces and annotations already bind to them." />} />
+                <Route path="/design/apis" element={<Placeholder title="API Design" note="api_endpoints table + semantic IDs (api_order_approve) exist in the domain model; the interactive API designer is P2." />} />
+                <Route path="/design/architecture" element={<Placeholder title="Architecture" note="Architecture nodes are registered as semantic objects; the diagram canvas is a P2 view over them." />} />
+                <Route path="/decisions" element={<Placeholder title="Decisions" note="Decision / assumption / clarification records are persisted by the domain layer; the review surface ships in P2." />} />
                 <Route path="/reviews" element={<Reviews />} />
                 <Route path="/comments" element={<Comments />} />
                 <Route path="/change-requests" element={<ChangeRequests />} />
@@ -135,13 +134,13 @@ const NAV = [
   { to: "requirements/ur", label: "UR" },
   { section: "DESIGN" },
   { to: "design/dr", label: "DR" },
-  { to: "design/impact", label: "Impact" },
-  { to: "design/trace", label: "Trace" },
-  { to: "design/compare", label: "Compare" },
   { to: "design/database", label: "Database" },
   { to: "design/flows", label: "Process Flows" },
   { to: "design/apis", label: "APIs" },
   { to: "design/architecture", label: "Architecture" },
+  { to: "design/compare", label: "Compare" },
+  { to: "design/trace", label: "Trace" },
+  { to: "design/impact", label: "Impact" },
   { section: "GOVERNANCE" },
   { to: "decisions", label: "Decisions" },
   { to: "reviews", label: "Reviews" },
