@@ -206,38 +206,124 @@ def confirm_revision(
     evidence: dict | None = None,
     supersede_confirmed: bool = True,
 ) -> tuple[m.ArtifactRevision, m.Confirmation]:
-    """Confirm = freeze. If an older CONFIRMED revision of the same artifact
-    exists, it becomes SUPERSEDED (still readable, still bound in old baselines)."""
+    """Confirm = freeze. Atomic: technical design is snapshotted into the
+    revision in the same transaction; any failure rolls everything back so
+    a half-confirmed state is impossible.
+
+    If an older CONFIRMED revision of the same artifact exists, it becomes
+    SUPERSEDED (still readable, still bound in old baselines).
+    """
     revision = get_or_404(db, m.ArtifactRevision, revision_id, "Revision")
     if revision.status not in (RevisionStatus.IN_REVIEW, RevisionStatus.DRAFT):
         raise DomainError(
             f"Cannot confirm a revision in status {revision.status.value}"
         )
-    revision.status = RevisionStatus.CONFIRMED
-    revision.confirmed_at = m.utcnow()
-    revision.confirmed_by = actor
-
-    if supersede_confirmed:
-        siblings = db.execute(
-            select(m.ArtifactRevision).where(
-                m.ArtifactRevision.artifact_id == revision.artifact_id,
-                m.ArtifactRevision.id != revision.id,
-                m.ArtifactRevision.status == RevisionStatus.CONFIRMED,
+    try:
+        # Technical-design artifacts freeze their bound designs at confirm time.
+        if revision.artifact.type in (
+            m.ArtifactType.DR,
+            m.ArtifactType.DATABASE_SCHEMA,
+            m.ArtifactType.ARCHITECTURE,
+        ):
+            snapshot = dict(revision.snapshot or {})
+            snapshot["technical_design"] = snapshot_technical_design(
+                db, revision.artifact.project_id
             )
-        ).scalars().all()
-        for sib in siblings:
-            sib.status = RevisionStatus.SUPERSEDED
+            revision.snapshot = snapshot
 
-    confirmation = m.Confirmation(
-        project_id=revision.artifact.project_id,
-        artifact_revision_id=revision.id,
-        confirmed_by=actor,
-        comment=comment,
-        evidence=evidence,
-    )
-    db.add(confirmation)
-    db.commit()
+        revision.status = RevisionStatus.CONFIRMED
+        revision.confirmed_at = m.utcnow()
+        revision.confirmed_by = actor
+
+        if supersede_confirmed:
+            siblings = db.execute(
+                select(m.ArtifactRevision).where(
+                    m.ArtifactRevision.artifact_id == revision.artifact_id,
+                    m.ArtifactRevision.id != revision.id,
+                    m.ArtifactRevision.status == RevisionStatus.CONFIRMED,
+                )
+            ).scalars().all()
+            for sib in siblings:
+                sib.status = RevisionStatus.SUPERSEDED
+
+        confirmation = m.Confirmation(
+            project_id=revision.artifact.project_id,
+            artifact_revision_id=revision.id,
+            confirmed_by=actor,
+            comment=comment,
+            evidence=evidence,
+        )
+        db.add(confirmation)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return revision, confirmation
+
+
+# ---------------------------------------------------------------------------
+# Technical design snapshot (auto-frozen into DR revisions at confirmation)
+# ---------------------------------------------------------------------------
+
+
+def flow_snapshot(db: Session, flow_id: str) -> dict:
+    flow = get_or_404(db, m.ProcessFlow, flow_id, "ProcessFlow")
+    steps = db.execute(
+        select(m.ProcessStep)
+        .where(m.ProcessStep.flow_id == flow_id)
+        .order_by(m.ProcessStep.position)
+    ).scalars().all()
+    out: dict = {
+        "name": flow.name,
+        "description": flow.description,
+        "steps": {s.semantic_id: {"name": s.name, "step_type": s.step_type, "position": s.position} for s in steps},
+    }
+    if hasattr(m, "ProcessTransition"):
+        transitions = db.execute(
+            select(m.ProcessTransition).where(m.ProcessTransition.flow_id == flow_id)
+        ).scalars().all()
+        out["transitions"] = {
+            t.semantic_id: {"from": t.from_step_semantic_id, "to": t.to_step_semantic_id,
+                            "label": t.label, "condition": t.condition}
+            for t in transitions
+        }
+    return out
+
+
+def api_endpoint_snapshot(api: m.APIEndpoint) -> dict:
+    return {
+        "method": api.method,
+        "path": api.path,
+        "summary": api.summary,
+        "request_spec": api.request_spec,
+        "response_spec": api.response_spec,
+    }
+
+
+def snapshot_technical_design(db: Session, project_id: str) -> dict:
+    """Freeze the exact current structured designs for a project.
+
+    The result is embedded into a confirmed DR revision snapshot, so a
+    historical export can always reproduce the design as it was then.
+    """
+    designs: dict = {}
+
+    schemas = db.execute(
+        select(m.DatabaseSchema).where(m.DatabaseSchema.project_id == project_id)
+    ).scalars().all()
+    designs["db_schemas"] = {s.semantic_id: db_design_snapshot(db, s.id) for s in schemas}
+
+    flows = db.execute(
+        select(m.ProcessFlow).where(m.ProcessFlow.project_id == project_id)
+    ).scalars().all()
+    designs["flows"] = {f.semantic_id: flow_snapshot(db, f.id) for f in flows}
+
+    apis = db.execute(
+        select(m.APIEndpoint).where(m.APIEndpoint.project_id == project_id)
+    ).scalars().all()
+    designs["api_endpoints"] = {a.semantic_id: api_endpoint_snapshot(a) for a in apis}
+
+    return designs
 
 
 # ---------------------------------------------------------------------------

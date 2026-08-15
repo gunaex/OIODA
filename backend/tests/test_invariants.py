@@ -154,7 +154,9 @@ def test_baseline_retains_bound_child_revision(db, project):
 
     resolved = svc.resolve_baseline(db, baseline.id)
     assert resolved.bindings[0].artifact_revision_id == rev1.id  # still v7, not v8
-    assert db.get(m.ArtifactRevision, frozen).snapshot == {"db": "v7"}
+    assert db.get(m.ArtifactRevision, frozen).snapshot["db"] == "v7"
+    # P2: DR confirmation also freezes technical design atomically
+    assert "technical_design" in db.get(m.ArtifactRevision, frozen).snapshot
     assert rev1.status == m.RevisionStatus.SUPERSEDED  # readable history
 
 
@@ -290,7 +292,7 @@ def test_superseded_history_readable(db, project):
 
     old = db.get(m.ArtifactRevision, rev1.id)
     assert old.status == m.RevisionStatus.SUPERSEDED
-    assert old.snapshot == {"v": 1}  # history preserved verbatim
+    assert old.snapshot["v"] == 1  # history preserved verbatim
     with pytest.raises(svc.DomainError, match="Illegal transition"):
         svc.transition_revision(db, old.id, m.RevisionStatus.DRAFT)
 
