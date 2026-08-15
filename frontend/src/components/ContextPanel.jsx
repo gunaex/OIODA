@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import { useWorkspace } from "../App.jsx";
 import { Button, StatusBadge, inputClass } from "./ui.jsx";
+import { GLOSSARY } from "../tokens/glossary.js";
 
 /*
  * Right context panel — the project's memory layer, bound to the focused
@@ -250,11 +251,34 @@ export function ContextPanel() {
                 <p><b className="text-slate-200">Who changed it, when, which revision?</b> — History.</p>
                 <p><b className="text-slate-200">Is it confirmed?</b> — the status badge above.</p>
                 <p className="text-slate-500">All of this is structured project data — nothing here is invented.</p>
+                <Glossary />
               </div>
             )}
           </>
         )}
       </div>
     </aside>
+  );
+}
+
+function Glossary() {
+  const [detailed, setDetailed] = useState(false);
+  return (
+    <div className="mt-3 border-t border-line pt-3">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Glossary</p>
+        <button className="rounded px-2 py-0.5 text-[11px] text-brand-300 hover:bg-surface-2" onClick={() => setDetailed((d) => !d)}>
+          {detailed ? "simple" : "detailed"}
+        </button>
+      </div>
+      <dl className="space-y-1.5">
+        {GLOSSARY.map((g) => (
+          <div key={g.term}>
+            <dt className="text-slate-200">{g.term}</dt>
+            <dd className="text-[11px] text-slate-500">{detailed ? g.detailed : g.simple}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }

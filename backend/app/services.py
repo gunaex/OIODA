@@ -1805,6 +1805,42 @@ def semantic_context(db: Session, project_id: str, semantic_id: str) -> dict:
                     ).scalars()
                 ]
 
+    elif so.object_type == m.SemanticObjectType.PROCESS_FLOW and so.entity_ref:
+        flow = db.get(m.ProcessFlow, so.entity_ref)
+        if flow:
+            out["status"] = "live"
+            out["owner"] = {"type": "Process flow", "name": flow.name, "description": flow.description}
+    elif so.object_type == m.SemanticObjectType.PROCESS_STEP and so.entity_ref:
+        step = db.get(m.ProcessStep, so.entity_ref)
+        if step:
+            out["status"] = "live"
+            out["owner"] = {"type": "Process step", "name": step.name, "step_type": step.step_type, "flow": step.flow.name}
+    elif so.object_type == m.SemanticObjectType.API_ENDPOINT and so.entity_ref:
+        api = db.get(m.APIEndpoint, so.entity_ref)
+        if api:
+            out["status"] = "live"
+            out["owner"] = {"type": "API endpoint", "method": api.method, "path": api.path, "summary": api.summary}
+    elif so.object_type == m.SemanticObjectType.ARCHITECTURE_NODE and so.entity_ref:
+        node = db.get(m.ArchitectureNode, so.entity_ref)
+        if node:
+            out["status"] = "live"
+            out["owner"] = {"type": "Architecture node", "name": node.name, "node_type": node.node_type, "technology": node.technology}
+    elif so.object_type == m.SemanticObjectType.DECISION and so.entity_ref:
+        d = db.get(m.Decision, so.entity_ref)
+        if d:
+            out["status"] = "recorded"
+            out["owner"] = {"type": "Decision", "title": d.title, "decided_by": d.decided_by, "content": d.content}
+    elif so.object_type == m.SemanticObjectType.ASSUMPTION and so.entity_ref:
+        a = db.get(m.Assumption, so.entity_ref)
+        if a:
+            out["status"] = a.status
+            out["owner"] = {"type": "Assumption", "content": a.content}
+    elif so.object_type == m.SemanticObjectType.CLARIFICATION and so.entity_ref:
+        c = db.get(m.Clarification, so.entity_ref)
+        if c:
+            out["status"] = "resolved" if c.resolved else "open"
+            out["owner"] = {"type": "Clarification", "question": c.question, "answer": c.answer}
+
     # annotations on this object
     anns = db.execute(
         select(m.Annotation).where(
