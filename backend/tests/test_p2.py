@@ -108,3 +108,23 @@ def test_atomic_confirm_is_all_or_nothing(db, project):
     assert rev.status == m.RevisionStatus.CONFIRMED
     assert conf.confirmed_by == "bob"
     assert "technical_design" in rev.snapshot
+
+
+# ---------------------------------------------------------------------------
+# P2-H account identity
+# ---------------------------------------------------------------------------
+
+
+def test_actor_identity_resolution(client, db, project):
+    svc.ensure_semantic_object(db, project_id=project.id, semantic_id="REQ-0001",
+                               object_type=m.SemanticObjectType.REQUIREMENT, display_name="req")
+    r = client.post("/api/annotations", json={
+        "project_id": project.id, "anchor_object_type": "REQUIREMENT",
+        "anchor_semantic_id": "REQ-0001", "content": "hi",
+    }, headers={"X-Account-Id": "acc-123", "X-Actor-Name": "Alice", "X-Tenant-Id": "t-1"})
+    assert r.status_code == 201
+    ann = db.execute(select(m.Annotation)).scalars().one()
+    assert ann.actor_id == "acc-123"
+    assert ann.created_by == "Alice"
+    actor_row = db.get(m.ActorIdentity, "acc-123")
+    assert actor_row is not None and actor_row.source == "ACCOUNT_AGAIN" and actor_row.tenant_id == "t-1"

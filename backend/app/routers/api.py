@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from .. import services as svc
-from .deps import actor, db_session
+from .deps import actor, actor_ctx, db_session
 
 router = APIRouter(prefix="/api")
 
@@ -186,11 +186,12 @@ class ConfirmIn(BaseModel):
 @router.post("/revisions/{revision_id}/confirm")
 def confirm(
     revision_id: str, body: ConfirmIn | None = None, db: Session = Depends(db_session),
-    actor=Depends(actor),
+    actor=Depends(actor), actx=Depends(actor_ctx),
 ):
     body = body or ConfirmIn()
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
     rev, confirmation = svc.confirm_revision(
-        db, revision_id, actor=actor, comment=body.comment, evidence=body.evidence
+        db, revision_id, actor=actx.name, comment=body.comment, evidence=body.evidence, actor_id=actx.id
     )
     return {
         "revision": revision_out(rev),
@@ -223,8 +224,9 @@ def list_baselines(project_id: str, db: Session = Depends(db_session)):
 
 
 @router.post("/baselines", status_code=201)
-def create_baseline(body: BaselineIn, db: Session = Depends(db_session), actor=Depends(actor)):
-    return baseline_out(svc.create_baseline(db, **body.model_dump(), actor=actor))
+def create_baseline(body: BaselineIn, db: Session = Depends(db_session), actor=Depends(actor), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return baseline_out(svc.create_baseline(db, **body.model_dump(), actor=actx.name, actor_id=actx.id))
 
 
 @router.get("/baselines/{baseline_id}")
@@ -402,8 +404,9 @@ def list_annotations(project_id: str, db: Session = Depends(db_session)):
 
 
 @router.post("/annotations", status_code=201)
-def create_annotation(body: AnnotationIn, db: Session = Depends(db_session), actor=Depends(actor)):
-    return annotation_out(svc.create_annotation(db, **body.model_dump(), actor=actor))
+def create_annotation(body: AnnotationIn, db: Session = Depends(db_session), actor=Depends(actor), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return annotation_out(svc.create_annotation(db, **body.model_dump(), actor=actx.name, actor_id=actx.id))
 
 
 @router.post("/annotations/{annotation_id}/status/{status}")
@@ -486,8 +489,9 @@ def list_crs(project_id: str, db: Session = Depends(db_session)):
 
 
 @router.post("/change-requests", status_code=201)
-def create_cr(body: CRIn, db: Session = Depends(db_session), actor=Depends(actor)):
-    return cr_out(svc.create_change_request(db, **body.model_dump(), actor=actor))
+def create_cr(body: CRIn, db: Session = Depends(db_session), actor=Depends(actor), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return cr_out(svc.create_change_request(db, **body.model_dump(), actor=actx.name, actor_id=actx.id))
 
 
 @router.get("/change-requests/{change_request_id}")
@@ -986,8 +990,9 @@ def list_project_memory(project_id: str, db: Session = Depends(db_session)):
 
 
 @router.post("/decisions", status_code=201)
-def create_decision(body: DecisionIn, db: Session = Depends(db_session), actor=Depends(actor)):
-    d = svc.create_decision(db, **body.model_dump(), actor=actor)
+def create_decision(body: DecisionIn, db: Session = Depends(db_session), actor=Depends(actor), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    d = svc.create_decision(db, **body.model_dump(), actor=actx.name, actor_id=actx.id)
     return {"id": d.id, "code": d.semantic_id, "title": d.title}
 
 

@@ -202,6 +202,7 @@ class ArtifactRevision(Base):
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     confirmed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)  # stable Account Again subject id
 
     artifact: Mapped[Artifact] = relationship(
         back_populates="revisions", foreign_keys=[artifact_id]
@@ -229,6 +230,7 @@ class Baseline(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     bindings: Mapped[list["BaselineBinding"]] = relationship(
         back_populates="baseline", cascade="all, delete-orphan"
@@ -340,6 +342,7 @@ class Annotation(Base):
         ForeignKey("comment_threads.id"), nullable=True, index=True
     )
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     thread: Mapped["CommentThread | None"] = relationship(back_populates="annotations")
@@ -386,6 +389,7 @@ class Confirmation(Base):
     )
     confirmed_by: Mapped[str] = mapped_column(String(100), default="local-user")
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
@@ -412,6 +416,7 @@ class ChangeRequest(Base):
     commercial_impact: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     links: Mapped[list["ChangeRequestLink"]] = relationship(
         back_populates="change_request", cascade="all, delete-orphan"
@@ -696,6 +701,7 @@ class Decision(Base):
     content: Mapped[str] = mapped_column(Text)
     decided_by: Mapped[str] = mapped_column(String(100), default="local-user")
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     supersedes_semantic_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
@@ -732,3 +738,19 @@ class Release(Base):
     baseline_id: Mapped[str | None] = mapped_column(ForeignKey("baselines.id"), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ActorIdentity(Base):
+    """Resolved actor (Account Again subject) seen by Document Again.
+
+    Records the stable identity + display name + tenant for audit; it is
+    a cache of the Account Again identity, never a replacement for it.
+    """
+
+    __tablename__ = "actor_identities"
+
+    actor_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(200))
+    tenant_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source: Mapped[str] = mapped_column(String(40), default="LOCAL")  # ACCOUNT_AGAIN | LOCAL
+    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -108,6 +108,7 @@ def create_revision(
     snapshot: dict | None = None,
     based_on_revision_id: str | None = None,
     actor="local-user",
+    actor_id: str | None = None,
 ) -> m.ArtifactRevision:
     """Clone-as-new-revision. Confirmed history is never touched."""
     artifact = get_or_404(db, m.Artifact, artifact_id, "Artifact")
@@ -141,6 +142,7 @@ def create_revision(
         snapshot=snapshot if snapshot is not None else base_snapshot,
         title=base_title,
         created_by=actor,
+        actor_id=actor_id,
     )
     db.add(revision)
     db.flush()
@@ -205,6 +207,7 @@ def confirm_revision(
     comment: str | None = None,
     evidence: dict | None = None,
     supersede_confirmed: bool = True,
+    actor_id: str | None = None,
 ) -> tuple[m.ArtifactRevision, m.Confirmation]:
     """Confirm = freeze. Atomic: technical design is snapshotted into the
     revision in the same transaction; any failure rolls everything back so
@@ -252,6 +255,7 @@ def confirm_revision(
             confirmed_by=actor,
             comment=comment,
             evidence=evidence,
+            actor_id=actor_id,
         )
         db.add(confirmation)
         db.commit()
@@ -373,6 +377,7 @@ def create_baseline(
     description: str | None = None,
     artifact_revision_ids: list[str],
     actor="local-user",
+    actor_id: str | None = None,
 ) -> m.Baseline:
     """Freeze the exact artifact→revision pairs given at creation time.
 
@@ -399,7 +404,7 @@ def create_baseline(
         seen[rev.artifact_id] = rev
 
     baseline = m.Baseline(
-        project_id=project_id, name=name, description=description, created_by=actor
+        project_id=project_id, name=name, description=description, created_by=actor, actor_id=actor_id
     )
     db.add(baseline)
     db.flush()
@@ -597,6 +602,7 @@ def create_annotation(
     drawing_payload: dict | None = None,
     thread_id: str | None = None,
     actor="local-user",
+    actor_id: str | None = None,
 ) -> m.Annotation:
     anchored = db.execute(
         select(m.SemanticObject.id).where(
@@ -626,6 +632,7 @@ def create_annotation(
         drawing_payload=drawing_payload,
         thread_id=thread_id,
         created_by=actor,
+        actor_id=actor_id,
     )
     db.add(annotation)
     db.commit()
@@ -724,6 +731,7 @@ def create_change_request(
     schedule_impact=None,
     commercial_impact=None,
     actor="local-user",
+    actor_id: str | None = None,
 ) -> m.ChangeRequest:
     for sid in affected_semantic_ids:
         exists = db.execute(
@@ -747,6 +755,7 @@ def create_change_request(
         schedule_impact=schedule_impact,
         commercial_impact=commercial_impact,
         created_by=actor,
+        actor_id=actor_id,
     )
     db.add(cr)
     db.flush()
@@ -2217,9 +2226,10 @@ def _next_code(db: Session, project_id: str, prefix: str, model) -> str:
 def create_decision(
     db: Session, *, project_id: str, title: str, content: str,
     decided_by="local-user", related_semantic_ids: list[str] | None = None, actor="local-user",
+    actor_id: str | None = None,
 ) -> m.Decision:
     code = _next_code(db, project_id, "DEC", m.Decision)
-    d = m.Decision(project_id=project_id, semantic_id=code, title=title, content=content, decided_by=decided_by)
+    d = m.Decision(project_id=project_id, semantic_id=code, title=title, content=content, decided_by=decided_by, actor_id=actor_id)
     db.add(d)
     db.flush()
     ensure_semantic_object(
@@ -2337,3 +2347,17 @@ def promote_annotation(db: Session, *, annotation_id: str, to_kind: str, actor="
     ann.status = m.AnnotationStatus.RESOLVED
     db.commit()
     return result
+
+
+def record_actor(db: Session, actor_id: str, display_name: str, tenant_id: str | None = None, source: str = "LOCAL") -> None:
+    """Cache a resolved actor identity (idempotent upsert)."""
+    existing = db.get(m.ActorIdentity, actor_id)
+    if existing:
+        existing.display_name = display_name
+        if tenant_id:
+            existing.tenant_id = tenant_id
+        existing.source = source
+        existing.resolved_at = m.utcnow()
+    else:
+        db.add(m.ActorIdentity(actor_id=actor_id, display_name=display_name, tenant_id=tenant_id, source=source))
+    db.commit()
