@@ -1,23 +1,32 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, lazy, Suspense, useContext, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { api } from "./api/client.js";
-import { Projects } from "./pages/Projects.jsx";
-import { Requirements } from "./pages/Requirements.jsx";
-import { Artifacts } from "./pages/Artifacts.jsx";
-import { Database } from "./pages/Database.jsx";
-import { ChangeRequests } from "./pages/ChangeRequests.jsx";
-import { Baselines } from "./pages/Baselines.jsx";
-import { Comments } from "./pages/Comments.jsx";
-import { Reviews } from "./pages/Reviews.jsx";
-import { Compare } from "./pages/Compare.jsx";
-import { TraceExplorer } from "./pages/TraceExplorer.jsx";
-import { ImpactAnalysis } from "./pages/ImpactAnalysis.jsx";
-import { Search } from "./pages/Search.jsx";
-import { FlowDesigner } from "./pages/FlowDesigner.jsx";
-import { ApiDesign } from "./pages/ApiDesign.jsx";
-import { Architecture } from "./pages/Architecture.jsx";
-import { Decisions } from "./pages/Decisions.jsx";
 import { ContextPanel } from "./components/ContextPanel.jsx";
+
+/*
+ * Heavy workspace pages are code-split with React.lazy so the initial
+ * bundle stays small and each design workspace loads only when opened.
+ */
+const Projects = lazy(() => import("./pages/Projects.jsx"));
+const Requirements = lazy(() => import("./pages/Requirements.jsx"));
+const Artifacts = lazy(() => import("./pages/Artifacts.jsx"));
+const Database = lazy(() => import("./pages/Database.jsx"));
+const ChangeRequests = lazy(() => import("./pages/ChangeRequests.jsx"));
+const Baselines = lazy(() => import("./pages/Baselines.jsx"));
+const Comments = lazy(() => import("./pages/Comments.jsx"));
+const Reviews = lazy(() => import("./pages/Reviews.jsx"));
+const Compare = lazy(() => import("./pages/Compare.jsx"));
+const TraceExplorer = lazy(() => import("./pages/TraceExplorer.jsx"));
+const ImpactAnalysis = lazy(() => import("./pages/ImpactAnalysis.jsx"));
+const Search = lazy(() => import("./pages/Search.jsx"));
+const FlowDesigner = lazy(() => import("./pages/FlowDesigner.jsx"));
+const ApiDesign = lazy(() => import("./pages/ApiDesign.jsx"));
+const Architecture = lazy(() => import("./pages/Architecture.jsx"));
+const Decisions = lazy(() => import("./pages/Decisions.jsx"));
+
+function PageFallback() {
+  return <div className="p-10 text-[13px] text-slate-500">Loading workspace page…</div>;
+}
 
 /*
  * Workspace state: the active project and the "focus" semantic object
@@ -74,25 +83,27 @@ export default function App() {
           <Nav />
           <main className="min-w-0 flex-1 overflow-y-auto p-4">
             {project ? (
-              <Routes>
-                <Route path="/" element={<Navigate to="requirements" replace />} />
-                <Route path="/requirements" element={<Requirements />} />
-                <Route path="/requirements/ur" element={<Artifacts type="UR" />} />
-                <Route path="/design/dr" element={<Artifacts type="DR" />} />
-                <Route path="/design/database/*" element={<Database />} />
-                <Route path="/design/compare" element={<Compare />} />
-                <Route path="/design/trace" element={<TraceExplorer />} />
-                <Route path="/design/impact" element={<ImpactAnalysis />} />
-                <Route path="/design/flows" element={<FlowDesigner />} />
-                <Route path="/design/apis" element={<ApiDesign />} />
-                <Route path="/design/architecture" element={<Architecture />} />
-                <Route path="/decisions" element={<Decisions />} />
-                <Route path="/reviews" element={<Reviews />} />
-                <Route path="/comments" element={<Comments />} />
-                <Route path="/change-requests" element={<ChangeRequests />} />
-                <Route path="/search" element={<Search />} />
-                <Route path="/baselines" element={<Baselines />} />
-              </Routes>
+              <Suspense fallback={<PageFallback />}>
+                <Routes>
+                  <Route path="/" element={<Navigate to="requirements" replace />} />
+                  <Route path="/requirements" element={<Requirements />} />
+                  <Route path="/requirements/ur" element={<Artifacts type="UR" />} />
+                  <Route path="/design/dr" element={<Artifacts type="DR" />} />
+                  <Route path="/design/database/*" element={<Database />} />
+                  <Route path="/design/compare" element={<Compare />} />
+                  <Route path="/design/trace" element={<TraceExplorer />} />
+                  <Route path="/design/impact" element={<ImpactAnalysis />} />
+                  <Route path="/design/flows" element={<FlowDesigner />} />
+                  <Route path="/design/apis" element={<ApiDesign />} />
+                  <Route path="/design/architecture" element={<Architecture />} />
+                  <Route path="/decisions" element={<Decisions />} />
+                  <Route path="/reviews" element={<Reviews />} />
+                  <Route path="/comments" element={<Comments />} />
+                  <Route path="/change-requests" element={<ChangeRequests />} />
+                  <Route path="/search" element={<Search />} />
+                  <Route path="/baselines" element={<Baselines />} />
+                </Routes>
+              </Suspense>
             ) : (
               <p className="text-[13px] text-slate-500">Select a project…</p>
             )}
