@@ -186,3 +186,102 @@ def test_delivery_idempotent_and_duplicate_safe(db, project):
     svc.deliver_due_events(db, lambda o: delivered.append(o.id))
     assert len(delivered) == 1  # second pass: already SENT, not re-delivered
     assert len(db.execute(select(m.OutboxEvent)).scalars().all()) == 1
+
+# ---------------------------------------------------------------------------
+# P3-C PM execution handoff
+# ---------------------------------------------------------------------------
+
+
+def test_execution_handoff_snapshots_and_emits(db, project):
+    h = svc.create_execution_handoff(
+        db, project_id=project.id, source_revision_id="rev-9",
+        change_request_id="cr-1", target_service="pm-again", actor="alice", actor_id="acc-1",
+    )
+    assert h["status"] == "DRAFT" and h["target_service"] == "pm-again"
+    assert h["payload_snapshot"]["sourceRevisionId"] == "rev-9"
+    assert h["payload_snapshot"]["changeRequestId"] == "cr-1"
+    assert h["actor_id"] == "acc-1"
+
+    outbox = db.execute(select(m.OutboxEvent)).scalars().all()
+    assert {o.target_service for o in outbox} == {"pm-again"}
+    assert all(o.status == "PENDING" for o in outbox)
+    ev = db.execute(select(m.EcosystemEvent)).scalars().one()
+    assert ev.event_type == "EXECUTION_REQUESTED"
+    assert ev.correlation_id == h["correlation_id"]
+
+
+def test_execution_handoff_status_transitions(db, project):
+    h = svc.create_execution_handoff(db, project_id=project.id)
+    h2 = svc.mark_handoff_status(db, h["id"], "execution", "SENT", external_reference="pm-task-42")
+    assert h2["status"] == "SENT" and h2["external_reference"] == "pm-task-42"
+    assert h2["delivered_at"] is not None
+
+
+def test_execution_handoff_rejects_bad_status(db, project):
+    with pytest.raises(ValueError):
+        svc.create_execution_handoff(db, project_id=project.id, status="NONSENSE")
+
+
+# ---------------------------------------------------------------------------
+# P3-D QA validation handoff
+# ---------------------------------------------------------------------------
+
+
+def test_qa_handoff_snapshots_and_emits(db, project):
+    h = svc.create_qa_validation_handoff(
+        db, project_id=project.id, requirement_ids=["REQ-0001"],
+        semantic_object_ids=["REQ-0001"], target_release="v1.0", actor="bob", actor_id="acc-2",
+    )
+    assert h["target_service"] == "qa-again" and h["status"] == "DRAFT"
+    assert h["payload_snapshot"]["requirementIds"] == ["REQ-0001"]
+    assert h["payload_snapshot"]["targetRelease"] == "v1.0"
+    ev = db.execute(select(m.EcosystemEvent)).scalars().one()
+    assert ev.event_type == "QA_VALIDATION_REQUESTED"
+    outbox = db.execute(select(m.OutboxEvent)).scalars().one()
+    assert outbox.target_service == "qa-again"
+
+
+def test_qa_handoff_rejects_bad_status(db, project):
+    with pytest.raises(ValueError):
+        svc.create_qa_validation_handoff(db, project_id=project.id, status="BOGUS")
+
+
+# ---------------------------------------------------------------------------
+# P3-E external references (cross-ecosystem trace)
+# ---------------------------------------------------------------------------
+
+
+def test_external_reference_upsert_is_idempotent(db, project):
+    svc.ensure_semantic_object(db, project_id=project.id, semantic_id="REQ-0001",
+                               object_type=m.SemanticObjectType.REQUIREMENT, display_name="r")
+    r1 = svc.create_external_reference(
+        db, project_id=project.id, semantic_id="REQ-0001", service="pm-again",
+        external_id="PM-42", relation_type="IMPLEMENTED_BY", object_type="task",
+    )
+    r2 = svc.create_external_reference(
+        db, project_id=project.id, semantic_id="REQ-0001", service="pm-again",
+        external_id="PM-42", relation_type="TRACKED_BY",
+    )
+    assert r1["id"] == r2["id"]
+    assert r2["relation_type"] == "TRACKED_BY"
+    assert len(svc.list_external_references(db, project_id=project.id)) == 1
+
+
+def test_external_reference_rejects_bad_relation(db, project):
+    with pytest.raises(ValueError):
+        svc.create_external_reference(
+            db, project_id=project.id, semantic_id="REQ-0001", service="pm-again",
+            external_id="PM-43", relation_type="NOPE",
+        )
+
+
+def test_external_reference_list_filters_by_semantic(db, project):
+    for sem in ["REQ-0001", "REQ-0002"]:
+        svc.ensure_semantic_object(db, project_id=project.id, semantic_id=sem,
+                                   object_type=m.SemanticObjectType.REQUIREMENT, display_name=sem)
+    svc.create_external_reference(db, project_id=project.id, semantic_id="REQ-0001",
+                                  service="pm-again", external_id="PM-1")
+    svc.create_external_reference(db, project_id=project.id, semantic_id="REQ-0002",
+                                  service="qa-again", external_id="QA-1")
+    refs = svc.list_external_references(db, project_id=project.id, semantic_id="REQ-0001")
+    assert [r["external_id"] for r in refs] == ["PM-1"]

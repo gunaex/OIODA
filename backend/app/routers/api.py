@@ -1052,6 +1052,74 @@ def list_outbox(db: Session = Depends(db_session)):
     return svc.list_outbox(db)
 
 
+# ---------------------------------------------------------------------------
+# PM / QA handoff contracts and external references
+# ---------------------------------------------------------------------------
+
+
+class ExecutionHandoffIn(BaseModel):
+    project_id: str
+    baseline_id: str | None = None
+    source_revision_id: str | None = None
+    change_request_id: str | None = None
+    target_service: str = "pm-again"
+    status: str = "DRAFT"
+
+
+class QAHandoffIn(BaseModel):
+    project_id: str
+    baseline_id: str | None = None
+    requirement_ids: list[str] | None = None
+    semantic_object_ids: list[str] | None = None
+    design_revision_ids: list[str] | None = None
+    target_release: str | None = None
+    target_service: str = "qa-again"
+    status: str = "DRAFT"
+
+
+class ExternalReferenceIn(BaseModel):
+    project_id: str
+    semantic_id: str
+    service: str
+    external_id: str
+    relation_type: str = "TRACKED_BY"
+    object_type: str | None = None
+    url: str | None = None
+    metadata: dict | None = None
+
+
+@router.post("/handoffs/execution")
+def create_execution_handoff(body: ExecutionHandoffIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.create_execution_handoff(db, **body.model_dump(), actor=actx.name, actor_id=actx.id)
+
+
+@router.get("/projects/{project_id}/handoffs/execution")
+def list_execution_handoffs(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_execution_handoffs(db, project_id=project_id)
+
+
+@router.post("/handoffs/qa")
+def create_qa_handoff(body: QAHandoffIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.create_qa_validation_handoff(db, **body.model_dump(), actor=actx.name, actor_id=actx.id)
+
+
+@router.get("/projects/{project_id}/handoffs/qa")
+def list_qa_handoffs(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_qa_handoffs(db, project_id=project_id)
+
+
+@router.post("/external-references")
+def create_external_reference(body: ExternalReferenceIn, db: Session = Depends(db_session)):
+    return svc.create_external_reference(db, **body.model_dump())
+
+
+@router.get("/projects/{project_id}/external-references")
+def list_external_references(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_external_references(db, project_id=project_id)
+
+
 @router.get("/db-schemas/{schema_id}/data-dictionary")
 def data_dictionary(schema_id: str, db: Session = Depends(db_session)):
     return svc.data_dictionary(db, schema_id)

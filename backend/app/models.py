@@ -797,3 +797,78 @@ class OutboxEvent(Base):
     external_reference: Mapped[str | None] = mapped_column(String(300), nullable=True)
     correlation_id: Mapped[str] = mapped_column(String(200), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ExecutionHandoff(Base):
+    """First-class handoff of a confirmed design baseline to PM Again.
+
+    Document Again remains the design authority; PM Again is the execution
+    authority. Only immutable references (baseline/revision/semantic ids)
+    are sent — never a mutable copy of execution state.
+    """
+
+    __tablename__ = "execution_handoffs"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("pmh"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    baseline_id: Mapped[str | None] = mapped_column(ForeignKey("baselines.id"), nullable=True)
+    source_revision_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    change_request_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    target_service: Mapped[str] = mapped_column(String(60), default="pm-again")
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")  # DRAFT|READY|SENT|ACKNOWLEDGED|FAILED|CANCELLED
+    external_reference: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    payload_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(200), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class QAValidationHandoff(Base):
+    """First-class validation handoff of exact baseline context to QA Again.
+
+    QA Again remains the verification authority; Document Again stores only
+    references to QA test cases / runs / results.
+    """
+
+    __tablename__ = "qa_validation_handoffs"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("qah"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    baseline_id: Mapped[str | None] = mapped_column(ForeignKey("baselines.id"), nullable=True)
+    requirement_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # list[str]
+    semantic_object_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    design_revision_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    target_release: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    target_service: Mapped[str] = mapped_column(String(60), default="qa-again")
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    external_reference: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    payload_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(200), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ExternalReference(Base):
+    """A revision-correct external reference into another AGAIN service.
+
+    Links an internal semantic object to an external object (PM task, QA
+    test case, …) without overloading semantic ids with foreign ids.
+    """
+
+    __tablename__ = "external_references"
+    __table_args__ = (UniqueConstraint("project_id", "service", "external_id"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("ext"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    semantic_id: Mapped[str] = mapped_column(String(200), index=True)  # internal semantic object
+    relation_type: Mapped[str] = mapped_column(String(40), default="TRACKED_BY")
+    service: Mapped[str] = mapped_column(String(60))
+    external_id: Mapped[str] = mapped_column(String(200))
+    object_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

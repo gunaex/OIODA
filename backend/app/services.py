@@ -2556,6 +2556,277 @@ def list_outbox(db: Session, project_id: str | None = None, limit: int = 200) ->
 
 
 # ---------------------------------------------------------------------------
+# Ecosystem handoffs (PM / QA) and external references
+# ---------------------------------------------------------------------------
+
+EXECUTION_HANDOFF_STATUSES = {"DRAFT", "READY", "SENT", "ACKNOWLEDGED", "FAILED", "CANCELLED"}
+QA_HANDOFF_STATUSES = {"DRAFT", "READY", "SENT", "ACKNOWLEDGED", "FAILED", "CANCELLED"}
+EXTERNAL_RELATION_TYPES = {"IMPLEMENTED_BY", "VALIDATED_BY", "TRACKED_BY", "RELEASED_IN", "HANDED_OFF_TO"}
+
+
+def create_execution_handoff(
+    db: Session,
+    project_id: str,
+    baseline_id: str | None = None,
+    source_revision_id: str | None = None,
+    change_request_id: str | None = None,
+    target_service: str = "pm-again",
+    actor: str = "local-user",
+    actor_id: str | None = None,
+    status: str = "DRAFT",
+) -> dict:
+    """Snapshot the exact baseline context and emit a durable PM handoff.
+
+    The payload holds only immutable references so that PM Again can fetch
+    the authoritative design by id; Document Again never hands out a copy of
+    mutable execution state.
+    """
+    if status not in EXECUTION_HANDOFF_STATUSES:
+        raise ValueError(f"invalid execution handoff status: {status}")
+    baseline_id = baseline_id or _latest_baseline_id(db, project_id)
+    source_revision_id = source_revision_id or _latest_design_revision_id(db, project_id)
+    payload = {
+        "baselineId": baseline_id,
+        "sourceRevisionId": source_revision_id,
+        "changeRequestId": change_request_id,
+        "projectId": project_id,
+    }
+    correlation_id = f"pm:{project_id}:{baseline_id or source_revision_id or 'adhoc'}"
+    handoff = m.ExecutionHandoff(
+        project_id=project_id,
+        baseline_id=baseline_id,
+        source_revision_id=source_revision_id,
+        change_request_id=change_request_id,
+        target_service=target_service,
+        status=status,
+        payload_snapshot=payload,
+        correlation_id=correlation_id,
+        created_by=actor,
+        actor_id=actor_id,
+    )
+    db.add(handoff)
+    db.flush()
+    emit_event(
+        db,
+        event_type="EXECUTION_REQUESTED",
+        project_id=project_id,
+        tenant_id=None,
+        source_object_id=handoff.id,
+        source_revision=source_revision_id,
+        actor_id=actor_id,
+        payload=payload,
+        correlation_id=correlation_id,
+        target_services=[target_service],
+    )
+    db.commit()
+    db.refresh(handoff)
+    return _execution_handoff_dict(handoff)
+
+
+def create_qa_validation_handoff(
+    db: Session,
+    project_id: str,
+    baseline_id: str | None = None,
+    requirement_ids: list[str] | None = None,
+    semantic_object_ids: list[str] | None = None,
+    design_revision_ids: list[str] | None = None,
+    target_release: str | None = None,
+    target_service: str = "qa-again",
+    actor: str = "local-user",
+    actor_id: str | None = None,
+    status: str = "DRAFT",
+) -> dict:
+    if status not in QA_HANDOFF_STATUSES:
+        raise ValueError(f"invalid qa handoff status: {status}")
+    baseline_id = baseline_id or _latest_baseline_id(db, project_id)
+    payload = {
+        "baselineId": baseline_id,
+        "requirementIds": requirement_ids or [],
+        "semanticObjectIds": semantic_object_ids or [],
+        "designRevisionIds": design_revision_ids or [],
+        "targetRelease": target_release,
+        "projectId": project_id,
+    }
+    correlation_id = f"qa:{project_id}:{baseline_id or 'adhoc'}"
+    handoff = m.QAValidationHandoff(
+        project_id=project_id,
+        baseline_id=baseline_id,
+        requirement_ids=requirement_ids or [],
+        semantic_object_ids=semantic_object_ids or [],
+        design_revision_ids=design_revision_ids or [],
+        target_release=target_release,
+        target_service=target_service,
+        status=status,
+        payload_snapshot=payload,
+        correlation_id=correlation_id,
+        created_by=actor,
+        actor_id=actor_id,
+    )
+    db.add(handoff)
+    db.flush()
+    emit_event(
+        db,
+        event_type="QA_VALIDATION_REQUESTED",
+        project_id=project_id,
+        tenant_id=None,
+        source_object_id=handoff.id,
+        source_revision=None,
+        actor_id=actor_id,
+        payload=payload,
+        correlation_id=correlation_id,
+        target_services=[target_service],
+    )
+    db.commit()
+    db.refresh(handoff)
+    return _qa_handoff_dict(handoff)
+
+
+def mark_handoff_status(
+    db: Session, handoff_id: str, kind: str, status: str, external_reference: str | None = None
+) -> dict:
+    model = m.ExecutionHandoff if kind == "execution" else m.QAValidationHandoff
+    valid = EXECUTION_HANDOFF_STATUSES if kind == "execution" else QA_HANDOFF_STATUSES
+    if status not in valid:
+        raise ValueError(f"invalid {kind} handoff status: {status}")
+    row = db.get(model, handoff_id)
+    if row is None:
+        raise KeyError(f"{kind} handoff not found: {handoff_id}")
+    row.status = status
+    if external_reference:
+        row.external_reference = external_reference
+    if status in {"SENT", "ACKNOWLEDGED"} and row.delivered_at is None:
+        row.delivered_at = m.utcnow()
+    db.commit()
+    db.refresh(row)
+    return _execution_handoff_dict(row) if kind == "execution" else _qa_handoff_dict(row)
+
+
+def list_execution_handoffs(db: Session, project_id: str | None = None) -> list[dict]:
+    q = select(m.ExecutionHandoff).order_by(m.ExecutionHandoff.created_at.desc())
+    if project_id:
+        q = q.where(m.ExecutionHandoff.project_id == project_id)
+    return [_execution_handoff_dict(h) for h in db.execute(q).scalars().all()]
+
+
+def list_qa_handoffs(db: Session, project_id: str | None = None) -> list[dict]:
+    q = select(m.QAValidationHandoff).order_by(m.QAValidationHandoff.created_at.desc())
+    if project_id:
+        q = q.where(m.QAValidationHandoff.project_id == project_id)
+    return [_qa_handoff_dict(h) for h in db.execute(q).scalars().all()]
+
+
+def _execution_handoff_dict(h: m.ExecutionHandoff) -> dict:
+    return {
+        "id": h.id, "project_id": h.project_id, "baseline_id": h.baseline_id,
+        "source_revision_id": h.source_revision_id, "change_request_id": h.change_request_id,
+        "target_service": h.target_service, "status": h.status,
+        "external_reference": h.external_reference, "payload_snapshot": h.payload_snapshot,
+        "correlation_id": h.correlation_id, "created_at": h.created_at.isoformat(),
+        "created_by": h.created_by, "actor_id": h.actor_id,
+        "delivered_at": h.delivered_at.isoformat() if h.delivered_at else None,
+    }
+
+
+def _qa_handoff_dict(h: m.QAValidationHandoff) -> dict:
+    return {
+        "id": h.id, "project_id": h.project_id, "baseline_id": h.baseline_id,
+        "requirement_ids": h.requirement_ids, "semantic_object_ids": h.semantic_object_ids,
+        "design_revision_ids": h.design_revision_ids, "target_release": h.target_release,
+        "target_service": h.target_service, "status": h.status,
+        "external_reference": h.external_reference, "payload_snapshot": h.payload_snapshot,
+        "correlation_id": h.correlation_id, "created_at": h.created_at.isoformat(),
+        "created_by": h.created_by, "actor_id": h.actor_id,
+        "delivered_at": h.delivered_at.isoformat() if h.delivered_at else None,
+    }
+
+
+def _latest_baseline_id(db: Session, project_id: str) -> str | None:
+    row = db.execute(
+        select(m.Baseline.id)
+        .where(m.Baseline.project_id == project_id)
+        .order_by(m.Baseline.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return row
+
+
+def _latest_design_revision_id(db: Session, project_id: str) -> str | None:
+    row = db.execute(
+        select(m.ArtifactRevision.id)
+        .join(m.Artifact, m.Artifact.id == m.ArtifactRevision.artifact_id)
+        .where(m.Artifact.project_id == project_id)
+        .order_by(m.ArtifactRevision.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return row
+
+
+def create_external_reference(
+    db: Session,
+    project_id: str,
+    semantic_id: str,
+    service: str,
+    external_id: str,
+    relation_type: str = "TRACKED_BY",
+    object_type: str | None = None,
+    url: str | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    if relation_type not in EXTERNAL_RELATION_TYPES:
+        raise ValueError(f"invalid external relation type: {relation_type}")
+    existing = db.execute(
+        select(m.ExternalReference).where(
+            m.ExternalReference.project_id == project_id,
+            m.ExternalReference.service == service,
+            m.ExternalReference.external_id == external_id,
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.relation_type = relation_type
+        existing.semantic_id = semantic_id
+        existing.object_type = object_type or existing.object_type
+        existing.url = url or existing.url
+        existing.metadata_json = metadata or existing.metadata_json
+        db.commit()
+        db.refresh(existing)
+        return _external_reference_dict(existing)
+    ref = m.ExternalReference(
+        project_id=project_id,
+        semantic_id=semantic_id,
+        service=service,
+        external_id=external_id,
+        relation_type=relation_type,
+        object_type=object_type,
+        url=url,
+        metadata_json=metadata,
+    )
+    db.add(ref)
+    db.commit()
+    db.refresh(ref)
+    return _external_reference_dict(ref)
+
+
+def list_external_references(
+    db: Session, project_id: str | None = None, semantic_id: str | None = None
+) -> list[dict]:
+    q = select(m.ExternalReference).order_by(m.ExternalReference.created_at.desc())
+    if project_id:
+        q = q.where(m.ExternalReference.project_id == project_id)
+    if semantic_id:
+        q = q.where(m.ExternalReference.semantic_id == semantic_id)
+    return [_external_reference_dict(r) for r in db.execute(q).scalars().all()]
+
+
+def _external_reference_dict(r: m.ExternalReference) -> dict:
+    return {
+        "id": r.id, "project_id": r.project_id, "semantic_id": r.semantic_id,
+        "relation_type": r.relation_type, "service": r.service, "external_id": r.external_id,
+        "object_type": r.object_type, "url": r.url, "metadata": r.metadata_json,
+        "created_at": r.created_at.isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Reproducible export (from versioned structured state, never live state)
 # ---------------------------------------------------------------------------
 
