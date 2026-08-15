@@ -13,6 +13,7 @@ import io as _io
 import json as _json
 import zipfile as _zipfile
 from collections import Counter
+from datetime import timedelta
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -2401,6 +2402,157 @@ def record_actor(db: Session, actor_id: str, display_name: str, tenant_id: str |
     else:
         db.add(m.ActorIdentity(actor_id=actor_id, display_name=display_name, tenant_id=tenant_id, source=source))
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Ecosystem event + outbox (durable, idempotent delivery)
+# ---------------------------------------------------------------------------
+
+ECOSYSTEM_EVENT_TYPES = {
+    "REQUIREMENT_BASELINED", "DESIGN_BASELINED", "CHANGE_REQUEST_APPROVED",
+    "DESIGN_CHANGED", "EXECUTION_REQUESTED", "QA_VALIDATION_REQUESTED",
+    "QA_RESULT_RECEIVED", "RELEASE_LINKED",
+}
+
+OUTBOX_STATUSES = {"PENDING", "SENT", "ACKNOWLEDGED", "FAILED"}
+
+
+def emit_event(
+    db: Session,
+    *,
+    event_type: str,
+    project_id: str,
+    payload: dict | None = None,
+    target_services: list[str] | None = None,
+    correlation_id: str | None = None,
+    source_object_id: str | None = None,
+    source_revision: str | None = None,
+    actor_id: str | None = None,
+    tenant_id: str | None = None,
+) -> m.EcosystemEvent:
+    """Record an ecosystem event and enqueue durable delivery, atomically.
+
+    The domain change and its outbox rows commit together; delivery never
+    depends on a fire-and-forget HTTP call.
+    """
+    if event_type not in ECOSYSTEM_EVENT_TYPES:
+        raise DomainError(f"Unknown event type '{event_type}'", status_code=422)
+    correlation_id = correlation_id or m.new_id("corr")
+    event = m.EcosystemEvent(
+        event_type=event_type, project_id=project_id, tenant_id=tenant_id,
+        source_service="document-again", source_object_id=source_object_id,
+        source_revision=source_revision, actor_id=actor_id,
+        payload_version="1.0", payload=payload, correlation_id=correlation_id,
+    )
+    db.add(event)
+    db.flush()
+    for ts in (target_services or []):
+        db.add(m.OutboxEvent(event_id=event.id, target_service=ts, correlation_id=correlation_id))
+    db.commit()
+    return event
+
+
+def due_outbox(db: Session, limit: int = 50) -> list[m.OutboxEvent]:
+    now = m.utcnow()
+    rows = db.execute(
+        select(m.OutboxEvent).where(
+            m.OutboxEvent.status.in_(["PENDING", "FAILED"]),
+            (m.OutboxEvent.next_attempt_at.is_(None)) | (m.OutboxEvent.next_attempt_at <= now),
+        ).order_by(m.OutboxEvent.created_at).limit(limit)
+    ).scalars().all()
+    return rows
+
+
+def _backoff_seconds(attempt_count: int) -> int:
+    return min(5 * (2 ** max(attempt_count, 1)), 300)
+
+
+def mark_outbox_sent(db: Session, outbox_id: str, external_reference: str | None = None) -> m.OutboxEvent:
+    out = get_or_404(db, m.OutboxEvent, outbox_id, "OutboxEvent")
+    out.status = "SENT"
+    out.delivered_at = m.utcnow()
+    out.attempt_count += 1
+    out.last_error = None
+    out.external_reference = external_reference
+    db.commit()
+    return out
+
+
+def mark_outbox_acknowledged(db: Session, outbox_id: str) -> m.OutboxEvent:
+    out = get_or_404(db, m.OutboxEvent, outbox_id, "OutboxEvent")
+    out.status = "ACKNOWLEDGED"
+    out.delivered_at = m.utcnow()
+    db.commit()
+    return out
+
+
+def mark_outbox_failed(db: Session, outbox_id: str, error: str) -> m.OutboxEvent:
+    out = get_or_404(db, m.OutboxEvent, outbox_id, "OutboxEvent")
+    out.status = "FAILED"
+    out.attempt_count += 1
+    out.last_error = error[:2000]
+    out.next_attempt_at = m.utcnow() + timedelta(seconds=_backoff_seconds(out.attempt_count))
+    db.commit()
+    return out
+
+
+def deliver_due_events(db: Session, deliver_fn, limit: int = 50) -> dict:
+    """Dispatch due outbox events through a delivery callback.
+
+    `deliver_fn(outbox_event) -> str | None` returns an external reference
+    on success. Failures are recorded with a backoff for retry; the unique
+    (event_id, target_service) constraint keeps delivery idempotent.
+    """
+    delivered = 0
+    failed = 0
+    for out in due_outbox(db, limit):
+        try:
+            ext_ref = deliver_fn(out)
+            out.status = "SENT"
+            out.delivered_at = m.utcnow()
+            out.attempt_count += 1
+            out.last_error = None
+            if ext_ref:
+                out.external_reference = ext_ref
+            delivered += 1
+        except Exception as exc:  # noqa: BLE001 — record and retry later
+            out.status = "FAILED"
+            out.attempt_count += 1
+            out.last_error = str(exc)[:2000]
+            out.next_attempt_at = m.utcnow() + timedelta(seconds=_backoff_seconds(out.attempt_count))
+            failed += 1
+    db.commit()
+    return {"delivered": delivered, "failed": failed}
+
+
+def list_ecosystem_events(db: Session, project_id: str | None = None, limit: int = 200) -> list[dict]:
+    q = select(m.EcosystemEvent).order_by(m.EcosystemEvent.occurred_at.desc()).limit(limit)
+    if project_id:
+        q = q.where(m.EcosystemEvent.project_id == project_id)
+    rows = db.execute(q).scalars().all()
+    return [
+        {
+            "id": e.id, "event_type": e.event_type, "project_id": e.project_id,
+            "source_service": e.source_service, "source_object_id": e.source_object_id,
+            "source_revision": e.source_revision, "occurred_at": e.occurred_at.isoformat(),
+            "actor_id": e.actor_id, "payload": e.payload, "correlation_id": e.correlation_id,
+        }
+        for e in rows
+    ]
+
+
+def list_outbox(db: Session, project_id: str | None = None, limit: int = 200) -> list[dict]:
+    q = select(m.OutboxEvent).order_by(m.OutboxEvent.created_at.desc()).limit(limit)
+    rows = db.execute(q).scalars().all()
+    return [
+        {
+            "id": o.id, "event_id": o.event_id, "target_service": o.target_service,
+            "status": o.status, "attempt_count": o.attempt_count, "last_error": o.last_error,
+            "delivered_at": o.delivered_at.isoformat() if o.delivered_at else None,
+            "external_reference": o.external_reference, "correlation_id": o.correlation_id,
+        }
+        for o in rows
+    ]
 
 
 # ---------------------------------------------------------------------------

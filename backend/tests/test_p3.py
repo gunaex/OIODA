@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -134,3 +135,54 @@ def test_local_mode_isolated(client, db, project, monkeypatch):
     assert r.status_code == 201
     ann = db.execute(select(m.Annotation)).scalars().one()
     assert ann.actor_id == "local:dev"
+
+
+# ---------------------------------------------------------------------------
+# P3-B ecosystem outbox
+# ---------------------------------------------------------------------------
+
+
+def test_outbox_atomic_write(db, project):
+    event = svc.emit_event(
+        db, event_type="DESIGN_BASELINED", project_id=project.id,
+        payload={"baseline": "1.0"}, target_services=["pm-again", "qa-again"],
+        correlation_id="corr-1", actor_id="acc-1",
+    )
+    outbox = db.execute(select(m.OutboxEvent).where(m.OutboxEvent.event_id == event.id)).scalars().all()
+    assert {o.target_service for o in outbox} == {"pm-again", "qa-again"}
+    assert all(o.status == "PENDING" for o in outbox)
+    assert all(o.correlation_id == "corr-1" for o in outbox)
+
+
+def test_delivery_retry_and_backoff(db, project):
+    svc.emit_event(db, event_type="DESIGN_BASELINED", project_id=project.id,
+                   target_services=["pm-again"], correlation_id="corr-2")
+
+    def fail(o):
+        raise RuntimeError("pm down")
+
+    r = svc.deliver_due_events(db, fail)
+    assert r["failed"] == 1 and r["delivered"] == 0
+    out = db.execute(select(m.OutboxEvent)).scalars().one()
+    assert out.status == "FAILED" and out.attempt_count == 1 and out.last_error == "pm down"
+    assert out.next_attempt_at is not None
+
+    # force due
+    out.next_attempt_at = m.utcnow() - timedelta(seconds=10)
+    db.commit()
+    delivered = []
+    svc.deliver_due_events(db, lambda o: delivered.append(o.id) or "pm-ref-1")
+    assert len(delivered) == 1
+    db.expire_all()
+    out2 = db.execute(select(m.OutboxEvent)).scalars().one()
+    assert out2.status == "SENT" and out2.external_reference == "pm-ref-1"
+
+
+def test_delivery_idempotent_and_duplicate_safe(db, project):
+    svc.emit_event(db, event_type="DESIGN_BASELINED", project_id=project.id,
+                   target_services=["pm-again"], correlation_id="corr-3")
+    delivered = []
+    svc.deliver_due_events(db, lambda o: delivered.append(o.id))
+    svc.deliver_due_events(db, lambda o: delivered.append(o.id))
+    assert len(delivered) == 1  # second pass: already SENT, not re-delivered
+    assert len(db.execute(select(m.OutboxEvent)).scalars().all()) == 1

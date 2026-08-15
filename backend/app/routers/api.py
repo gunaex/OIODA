@@ -1037,6 +1037,21 @@ def export_design_package(baseline_id: str, db: Session = Depends(db_session)):
     )
 
 
+# ---------------------------------------------------------------------------
+# Ecosystem event + outbox
+# ---------------------------------------------------------------------------
+
+
+@router.get("/projects/{project_id}/ecosystem-events")
+def list_ecosystem_events(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_ecosystem_events(db, project_id=project_id)
+
+
+@router.get("/outbox")
+def list_outbox(db: Session = Depends(db_session)):
+    return svc.list_outbox(db)
+
+
 @router.get("/db-schemas/{schema_id}/data-dictionary")
 def data_dictionary(schema_id: str, db: Session = Depends(db_session)):
     return svc.data_dictionary(db, schema_id)

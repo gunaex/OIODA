@@ -754,3 +754,46 @@ class ActorIdentity(Base):
     tenant_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     source: Mapped[str] = mapped_column(String(40), default="LOCAL")  # ACCOUNT_AGAIN | LOCAL
     resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EcosystemEvent(Base):
+    """Append-only ecosystem event record (provenance, never mutated)."""
+
+    __tablename__ = "ecosystem_events"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("evt"))
+    event_type: Mapped[str] = mapped_column(String(60))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_service: Mapped[str] = mapped_column(String(60), default="document-again")
+    source_object_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_revision: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    payload_version: Mapped[str] = mapped_column(String(20), default="1.0")
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(200), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OutboxEvent(Base):
+    """Durable delivery state for an ecosystem event (DB-backed outbox).
+
+    Delivery is idempotent: (event_id, target_service) is unique, so the
+    same event is never enqueued twice for the same downstream service.
+    """
+
+    __tablename__ = "outbox_events"
+    __table_args__ = (UniqueConstraint("event_id", "target_service"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("obx"))
+    event_id: Mapped[str] = mapped_column(ForeignKey("ecosystem_events.id"), index=True)
+    target_service: Mapped[str] = mapped_column(String(60))
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")  # PENDING|SENT|ACKNOWLEDGED|FAILED
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    external_reference: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(200), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
