@@ -1606,3 +1606,56 @@ def semantic_context(db: Session, project_id: str, semantic_id: str) -> dict:
     }
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# Semantic search (favours semantic objects over file names)
+# ---------------------------------------------------------------------------
+
+
+def search_semantic(db: Session, project_id: str, query: str, limit: int = 60) -> list[dict]:
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    results: list[dict] = []
+
+    sos = db.execute(
+        select(m.SemanticObject).where(m.SemanticObject.project_id == project_id)
+    ).scalars().all()
+    for so in sos:
+        hay = f"{so.semantic_id} {so.display_name or ''}".lower()
+        if q in hay:
+            results.append({
+                "kind": "semantic_object",
+                "semantic_id": so.semantic_id,
+                "object_type": so.object_type.value,
+                "title": so.display_name or so.semantic_id,
+            })
+
+    anns = db.execute(
+        select(m.Annotation).where(m.Annotation.project_id == project_id)
+    ).scalars().all()
+    for a in anns:
+        if q in (a.content or "").lower():
+            results.append({
+                "kind": "annotation",
+                "semantic_id": a.anchor_semantic_id,
+                "object_type": a.type.value,
+                "title": (a.content or "")[:120],
+                "status": a.status.value,
+            })
+
+    crs = db.execute(
+        select(m.ChangeRequest).where(m.ChangeRequest.project_id == project_id)
+    ).scalars().all()
+    for cr in crs:
+        if q in cr.code.lower() or q in (cr.requested_change or "").lower():
+            results.append({
+                "kind": "change_request",
+                "semantic_id": cr.code,
+                "object_type": "CHANGE_REQUEST",
+                "title": (cr.requested_change or "")[:120],
+                "status": cr.status.value,
+            })
+
+    return results[:limit]

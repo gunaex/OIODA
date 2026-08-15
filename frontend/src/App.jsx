@@ -13,6 +13,7 @@ import { Reviews } from "./pages/Reviews.jsx";
 import { Compare } from "./pages/Compare.jsx";
 import { TraceExplorer } from "./pages/TraceExplorer.jsx";
 import { ImpactAnalysis } from "./pages/ImpactAnalysis.jsx";
+import { Search } from "./pages/Search.jsx";
 import { ContextPanel } from "./components/ContextPanel.jsx";
 
 /*
@@ -87,6 +88,7 @@ export default function App() {
                 <Route path="/reviews" element={<Reviews />} />
                 <Route path="/comments" element={<Comments />} />
                 <Route path="/change-requests" element={<ChangeRequests />} />
+                <Route path="/search" element={<Search />} />
                 <Route path="/baselines" element={<Baselines />} />
               </Routes>
             ) : (
@@ -144,6 +146,7 @@ const NAV = [
   { to: "decisions", label: "Decisions" },
   { to: "reviews", label: "Reviews" },
   { to: "comments", label: "Comments" },
+  { to: "search", label: "Search" },
   { to: "change-requests", label: "Change Requests" },
   { to: "baselines", label: "Baselines" },
 ];

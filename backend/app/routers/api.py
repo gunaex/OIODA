@@ -360,6 +360,11 @@ def semantic_context(project_id: str, semantic_id: str, db: Session = Depends(db
     return svc.semantic_context(db, project_id, semantic_id)
 
 
+@router.get("/projects/{project_id}/search")
+def search(project_id: str, q: str = "", db: Session = Depends(db_session)):
+    return svc.search_semantic(db, project_id, q)
+
+
 # ---------------------------------------------------------------------------
 # Annotations
 # ---------------------------------------------------------------------------
