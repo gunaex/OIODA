@@ -75,14 +75,16 @@ def test_draft_document_edit_and_reopen(db, project):
     art = svc.create_artifact(db, project_id=project.id, type=m.ArtifactType.UR, title="UR")
     rev = art.revisions[0]
     sections = [
-        {"id": f"docsec_{art.id}_0", "heading": "Overview", "blocks": [{"kind": "paragraph", "text": "hello"}]},
+        {"id": f"docsec_{art.id}_0", "heading": "Overview",
+         "content": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]}},
     ]
     svc.save_document(db, revision_id=rev.id, sections=sections)
     doc = svc.get_document(db, rev.id)
     assert doc["sections"][0]["heading"] == "Overview"
-    # reopen — persists
+    # reopen — persists, and plain_text is derived
     doc2 = svc.get_document(db, rev.id)
-    assert doc2["sections"][0]["blocks"][0]["text"] == "hello"
+    assert "hello" in doc2["sections"][0]["plain_text"]
+    assert doc2["sections"][0]["content"]["content"][0]["type"] == "paragraph"
 
 
 def test_document_section_stable_id(db, project):

@@ -920,12 +920,72 @@ def data_dictionary(db: Session, schema_id: str) -> list[dict]:
 _DOC_BLOCK_KINDS = {"heading", "paragraph", "bullet_list", "numbered_list", "table", "code"}
 
 
+def _doc_text(content: dict) -> str:
+    """Plain text derived from a ProseMirror/Tiptap doc JSON (deterministic)."""
+    if not isinstance(content, dict):
+        return ""
+    parts: list[str] = []
+
+    def walk(node) -> None:
+        if not isinstance(node, dict):
+            return
+        ntype = node.get("type")
+        if ntype == "text":
+            parts.append(node.get("text") or "")
+            return
+        for child in node.get("content") or []:
+            walk(child)
+        if ntype in ("paragraph", "heading", "codeBlock", "blockquote", "listItem", "tableRow"):
+            parts.append("\n")
+
+    walk(content)
+    return "\n".join(line.rstrip() for line in "".join(parts).splitlines())
+
+
+def _blocks_to_doc(blocks: list[dict]) -> dict:
+    """Convert the legacy P1 block model into a ProseMirror/Tiptap doc JSON."""
+    content: list[dict] = []
+    for blk in blocks:
+        kind = blk.get("kind") or "paragraph"
+        if kind == "heading":
+            content.append({"type": "heading", "attrs": {"level": blk.get("level") or 2},
+                            "content": [{"type": "text", "text": blk.get("text") or ""}]})
+        elif kind == "bullet_list":
+            content.append({"type": "bulletList", "content": [
+                {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": item}]}]}
+                for item in blk.get("items", [])
+            ]})
+        elif kind == "numbered_list":
+            content.append({"type": "orderedList", "content": [
+                {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": item}]}]}
+                for item in blk.get("items", [])
+            ]})
+        elif kind == "table":
+            rows = []
+            if blk.get("header"):
+                rows.append({"type": "tableRow", "content": [
+                    {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": h}]}]}
+                    for h in blk["header"]
+                ]})
+            for row in blk.get("rows", []):
+                rows.append({"type": "tableRow", "content": [
+                    {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": c}]}]}
+                    for c in row
+                ]})
+            content.append({"type": "table", "content": rows})
+        elif kind == "code":
+            content.append({"type": "codeBlock", "content": [{"type": "text", "text": blk.get("text") or ""}]})
+        else:
+            content.append({"type": "paragraph", "content": [{"type": "text", "text": blk.get("text") or ""}]})
+    return {"type": "doc", "content": content}
+
+
 def _normalise_sections(artifact_id: str, sections: list[dict]) -> list[dict]:
-    """Assign a stable section id where one is missing.
+    """Assign a stable section id where missing and normalise the content model.
 
     Section identity lives inside the snapshot and is preserved by the
-    editor across edits of the same draft. The id only changes if a
-    section is deleted and a new one is added — it is never reused.
+    editor across edits. Legacy P1 `blocks` are migrated to a structured
+    ProseMirror doc JSON; `plain_text` is always derived, never the truth.
     """
     out: list[dict] = []
     used: set[str] = set()
@@ -938,12 +998,14 @@ def _normalise_sections(artifact_id: str, sections: list[dict]) -> list[dict]:
             sid = f"docsec_{artifact_id}_{counter}"
         used.add(sid)
         sec["id"] = sid
-        blocks = []
-        for blk in sec.get("blocks", []):
-            blk = dict(blk)
-            blk.setdefault("kind", "paragraph")
-            blocks.append(blk)
-        sec["blocks"] = blocks
+        sec.setdefault("heading", f"Section {len(out) + 1}")
+        if sec.get("content") is None and sec.get("blocks"):
+            sec["content"] = _blocks_to_doc(sec.get("blocks", []))
+        sec.pop("blocks", None)
+        if not sec.get("content"):
+            sec["content"] = {"type": "doc", "content": [{"type": "paragraph"}]}
+        if not sec.get("plain_text"):
+            sec["plain_text"] = f"{sec.get('heading') or ''}\n{_doc_text(sec['content'])}"
         out.append(sec)
         counter += 1
     return out
@@ -1005,6 +1067,7 @@ def get_document(db: Session, revision_id: str) -> dict:
             }
             for i, sec in enumerate(legacy)
         ] if isinstance(legacy, list) else []
+    sections = _normalise_sections(revision.artifact_id, sections)
     return {
         "revision_id": revision.id,
         "artifact_id": revision.artifact_id,
@@ -1322,23 +1385,26 @@ def db_design_snapshot(db: Session, schema_id: str) -> dict:
 
 def _section_text(section: dict) -> str:
     lines: list[str] = [f"## {section.get('heading') or ''}"]
-    for blk in section.get("blocks", []):
-        kind = blk.get("kind")
-        if kind == "heading":
-            lines.append(f"{'#' * (blk.get('level') or 2)} {blk.get('text') or ''}")
-        elif kind in ("bullet_list", "numbered_list"):
-            for i, item in enumerate(blk.get("items", [])):
-                lines.append(f"- {item}")
-        elif kind == "table":
-            lines.append(" | ".join(blk.get("header", [])))
-            for row in blk.get("rows", []):
-                lines.append(" | ".join(row))
-        elif kind == "code":
-            lines.append("```")
-            lines.extend((blk.get("text") or "").splitlines())
-            lines.append("```")
-        else:
-            lines.append(blk.get("text") or "")
+    if section.get("content") is not None:
+        lines.append(_doc_text(section.get("content")))
+    else:  # legacy blocks fallback
+        for blk in section.get("blocks", []):
+            kind = blk.get("kind")
+            if kind == "heading":
+                lines.append(f"{'#' * (blk.get('level') or 2)} {blk.get('text') or ''}")
+            elif kind in ("bullet_list", "numbered_list"):
+                for item in blk.get("items", []):
+                    lines.append(f"- {item}")
+            elif kind == "table":
+                lines.append(" | ".join(blk.get("header", [])))
+                for row in blk.get("rows", []):
+                    lines.append(" | ".join(row))
+            elif kind == "code":
+                lines.append("```")
+                lines.extend((blk.get("text") or "").splitlines())
+                lines.append("```")
+            else:
+                lines.append(blk.get("text") or "")
     return "\n".join(lines)
 
 

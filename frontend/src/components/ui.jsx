@@ -104,3 +104,57 @@ export function Modal({ title, open, onClose, children, footer }) {
     </div>
   );
 }
+
+/*
+ * Shared confirmation dialog — one interaction for the whole workspace.
+ * Captures comment + evidence; confirmation is never a silent one-click.
+ */
+export function ConfirmDialog({ open, revision, onClose, onConfirm, busy, error }) {
+  const [comment, setComment] = React.useState("");
+  const [evidence, setEvidence] = React.useState("");
+  const [evidenceError, setEvidenceError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (open) { setComment(""); setEvidence(""); setEvidenceError(null); }
+  }, [open]);
+
+  function submit() {
+    let ev = null;
+    if (evidence.trim()) {
+      try { ev = JSON.parse(evidence); }
+      catch { setEvidenceError("Evidence must be valid JSON (or empty)"); return; }
+    }
+    onConfirm({ comment: comment.trim() || null, evidence: ev });
+  }
+
+  return (
+    <Modal
+      title="Confirm revision"
+      open={open}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={busy} onClick={submit}>Confirm (immutable)</Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-[13px] text-slate-300">
+          {revision?.artifact_title || revision?.title} · r{revision?.revision_number}
+          {" "}— confirming makes this revision immutable. To change it later you must clone a new revision.
+        </p>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Confirmation comment</span>
+          <textarea className={`${inputClass} min-h-16 w-full`} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="e.g. UR reviewed and approved" />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Evidence (JSON, optional)</span>
+          <textarea className={`${inputClass} min-h-16 w-full font-mono text-[12px]`} value={evidence} onChange={(e) => setEvidence(e.target.value)} placeholder='{"review": "walkthrough"}' />
+          {evidenceError && <span className="text-[12px] text-red-400">{evidenceError}</span>}
+        </label>
+        {error && <p className="text-[12px] text-red-400">{error.message || error}</p>}
+      </div>
+    </Modal>
+  );
+}
