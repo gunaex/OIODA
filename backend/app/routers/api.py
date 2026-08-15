@@ -774,6 +774,108 @@ def save_flow_layout(flow_id: str, body: FlowLayoutIn, db: Session = Depends(db_
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# API design workspace
+# ---------------------------------------------------------------------------
+
+
+class ApiIn(BaseModel):
+    project_id: str
+    method: str
+    path: str
+    summary: str | None = None
+    semantic_id: str | None = None
+    description: str | None = None
+    authentication: str = "NONE"
+
+
+class ApiPatch(BaseModel):
+    summary: str | None = None
+    description: str | None = None
+    authentication: str | None = None
+
+
+class ApiChildIn(BaseModel):
+    endpoint_id: str
+    name: str
+    data_type: str = "string"
+    required: bool = False
+    description: str | None = None
+    location: str = "query"
+    status_code: str = "200"
+    message: str | None = None
+
+
+@router.get("/projects/{project_id}/api-endpoints")
+def list_api_endpoints(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_api_endpoints(db, project_id)
+
+
+@router.post("/api-endpoints", status_code=201)
+def create_api_endpoint(body: ApiIn, db: Session = Depends(db_session), actor=Depends(actor)):
+    ep = svc.create_api_endpoint(db, **body.model_dump(), actor=actor)
+    return {"id": ep.id, "semantic_id": ep.semantic_id, "method": ep.method, "path": ep.path}
+
+
+@router.patch("/api-endpoints/{endpoint_id}")
+def update_api_endpoint(endpoint_id: str, body: ApiPatch, db: Session = Depends(db_session)):
+    changes = {k: v for k, v in body.model_dump().items() if v is not None}
+    ep = svc.update_api_endpoint(db, endpoint_id, **changes)
+    return {"id": ep.id, "semantic_id": ep.semantic_id}
+
+
+@router.post("/api-parameters", status_code=201)
+def add_api_parameter(body: ApiChildIn, db: Session = Depends(db_session)):
+    p = svc._add_api_child(db, m.ApiParameter, endpoint_id=body.endpoint_id,
+                           name=body.name, location=body.location, data_type=body.data_type,
+                           required=body.required, description=body.description)
+    return {"id": p.id, "name": p.name}
+
+
+@router.post("/api-request-fields", status_code=201)
+def add_api_request_field(body: ApiChildIn, db: Session = Depends(db_session)):
+    f = svc._add_api_child(db, m.ApiRequestField, endpoint_id=body.endpoint_id,
+                           name=body.name, data_type=body.data_type, required=body.required,
+                           description=body.description)
+    return {"id": f.id, "name": f.name}
+
+
+@router.post("/api-response-fields", status_code=201)
+def add_api_response_field(body: ApiChildIn, db: Session = Depends(db_session)):
+    f = svc._add_api_child(db, m.ApiResponseField, endpoint_id=body.endpoint_id,
+                           status_code=body.status_code, name=body.name, data_type=body.data_type,
+                           description=body.description)
+    return {"id": f.id, "name": f.name}
+
+
+@router.post("/api-error-responses", status_code=201)
+def add_api_error_response(body: ApiChildIn, db: Session = Depends(db_session)):
+    e = svc._add_api_child(db, m.ApiErrorResponse, endpoint_id=body.endpoint_id,
+                           status_code=body.status_code, message=body.message or body.name,
+                           description=body.description)
+    return {"id": e.id, "message": e.message}
+
+
+@router.delete("/api-parameters/{child_id}", status_code=204)
+def delete_api_parameter(child_id: str, db: Session = Depends(db_session)):
+    svc._delete_api_child(db, m.ApiParameter, child_id)
+
+
+@router.delete("/api-request-fields/{child_id}", status_code=204)
+def delete_api_request_field(child_id: str, db: Session = Depends(db_session)):
+    svc._delete_api_child(db, m.ApiRequestField, child_id)
+
+
+@router.delete("/api-response-fields/{child_id}", status_code=204)
+def delete_api_response_field(child_id: str, db: Session = Depends(db_session)):
+    svc._delete_api_child(db, m.ApiResponseField, child_id)
+
+
+@router.delete("/api-error-responses/{child_id}", status_code=204)
+def delete_api_error_response(child_id: str, db: Session = Depends(db_session)):
+    svc._delete_api_child(db, m.ApiErrorResponse, child_id)
+
+
 @router.get("/db-schemas/{schema_id}/data-dictionary")
 def data_dictionary(schema_id: str, db: Session = Depends(db_session)):
     return svc.data_dictionary(db, schema_id)

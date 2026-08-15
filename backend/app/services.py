@@ -293,6 +293,25 @@ def api_endpoint_snapshot(api: m.APIEndpoint) -> dict:
         "method": api.method,
         "path": api.path,
         "summary": api.summary,
+        "description": api.description,
+        "authentication": api.authentication,
+        "parameters": [
+            {"name": p.name, "location": p.location, "data_type": p.data_type,
+             "required": p.required, "description": p.description}
+            for p in api.parameters
+        ],
+        "request_fields": [
+            {"name": f.name, "data_type": f.data_type, "required": f.required, "description": f.description}
+            for f in api.request_fields
+        ],
+        "response_fields": [
+            {"status_code": f.status_code, "name": f.name, "data_type": f.data_type, "description": f.description}
+            for f in api.response_fields
+        ],
+        "error_responses": [
+            {"status_code": e.status_code, "message": e.message, "description": e.description}
+            for e in api.error_responses
+        ],
         "request_spec": api.request_spec,
         "response_spec": api.response_spec,
     }
@@ -1951,6 +1970,99 @@ def list_flows(db: Session, project_id: str) -> list[dict]:
                  "from": t.from_step_semantic_id, "to": t.to_step_semantic_id,
                  "label": t.label, "condition": t.condition}
                 for t in transitions
+            ],
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# API design workspace (structured, not free-text)
+# ---------------------------------------------------------------------------
+
+
+def _slug_path(path: str) -> str:
+    return path.strip("/").replace("/", "_").replace("{", "").replace("}", "").replace("-", "_")
+
+
+def create_api_endpoint(
+    db: Session, *, project_id: str, method: str, path: str, summary=None,
+    semantic_id: str | None = None, description=None, authentication="NONE", actor="local-user",
+) -> m.APIEndpoint:
+    semantic_id = semantic_id or f"api_{method.lower()}_{_slug_path(path)}"
+    existing = db.execute(
+        select(m.APIEndpoint.id).where(
+            m.APIEndpoint.project_id == project_id, m.APIEndpoint.semantic_id == semantic_id
+        )
+    ).scalar_one_or_none()
+    if existing:
+        raise DomainError(f"API semantic id '{semantic_id}' already exists")
+    ep = m.APIEndpoint(
+        project_id=project_id, semantic_id=semantic_id, method=method.upper(), path=path,
+        summary=summary, description=description, authentication=authentication,
+    )
+    db.add(ep)
+    db.flush()
+    ensure_semantic_object(
+        db, project_id=project_id, semantic_id=semantic_id,
+        object_type=m.SemanticObjectType.API_ENDPOINT, display_name=f"{method.upper()} {path}",
+        entity_ref=ep.id,
+    )
+    db.commit()
+    return ep
+
+
+def update_api_endpoint(db: Session, endpoint_id: str, **changes) -> m.APIEndpoint:
+    ep = get_or_404(db, m.APIEndpoint, endpoint_id, "APIEndpoint")
+    for k, v in changes.items():
+        if hasattr(ep, k):
+            setattr(ep, k, v)
+    ensure_semantic_object(
+        db, project_id=ep.project_id, semantic_id=ep.semantic_id,
+        object_type=m.SemanticObjectType.API_ENDPOINT,
+        display_name=f"{ep.method} {ep.path}", entity_ref=ep.id,
+    )
+    db.commit()
+    return ep
+
+
+def _add_api_child(db, model, *, endpoint_id, **fields):
+    get_or_404(db, m.APIEndpoint, endpoint_id, "APIEndpoint")
+    child = model(endpoint_id=endpoint_id, **fields)
+    db.add(child)
+    db.commit()
+    return child
+
+
+def _delete_api_child(db, model, child_id):
+    child = get_or_404(db, model, child_id, model.__name__)
+    db.delete(child)
+    db.commit()
+
+
+def list_api_endpoints(db: Session, project_id: str) -> list[dict]:
+    eps = db.execute(
+        select(m.APIEndpoint).where(m.APIEndpoint.project_id == project_id).order_by(m.APIEndpoint.path)
+    ).scalars().all()
+    out = []
+    for ep in eps:
+        out.append({
+            "id": ep.id, "semantic_id": ep.semantic_id, "method": ep.method, "path": ep.path,
+            "summary": ep.summary, "description": ep.description, "authentication": ep.authentication,
+            "parameters": [
+                {"id": p.id, "name": p.name, "location": p.location, "data_type": p.data_type,
+                 "required": p.required, "description": p.description} for p in ep.parameters
+            ],
+            "request_fields": [
+                {"id": f.id, "name": f.name, "data_type": f.data_type, "required": f.required,
+                 "description": f.description} for f in ep.request_fields
+            ],
+            "response_fields": [
+                {"id": f.id, "status_code": f.status_code, "name": f.name, "data_type": f.data_type,
+                 "description": f.description} for f in ep.response_fields
+            ],
+            "error_responses": [
+                {"id": e.id, "status_code": e.status_code, "message": e.message,
+                 "description": e.description} for e in ep.error_responses
             ],
         })
     return out

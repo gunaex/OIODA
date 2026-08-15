@@ -15,6 +15,7 @@ import { TraceExplorer } from "./pages/TraceExplorer.jsx";
 import { ImpactAnalysis } from "./pages/ImpactAnalysis.jsx";
 import { Search } from "./pages/Search.jsx";
 import { FlowDesigner } from "./pages/FlowDesigner.jsx";
+import { ApiDesign } from "./pages/ApiDesign.jsx";
 import { ContextPanel } from "./components/ContextPanel.jsx";
 
 /*
@@ -82,7 +83,7 @@ export default function App() {
                 <Route path="/design/trace" element={<TraceExplorer />} />
                 <Route path="/design/impact" element={<ImpactAnalysis />} />
                 <Route path="/design/flows" element={<FlowDesigner />} />
-                <Route path="/design/apis" element={<Placeholder title="API Design" note="api_endpoints table + semantic IDs (api_order_approve) exist in the domain model; the interactive API designer is P2." />} />
+                <Route path="/design/apis" element={<ApiDesign />} />
                 <Route path="/design/architecture" element={<Placeholder title="Architecture" note="Architecture nodes are registered as semantic objects; the diagram canvas is a P2 view over them." />} />
                 <Route path="/decisions" element={<Placeholder title="Decisions" note="Decision / assumption / clarification records are persisted by the domain layer; the review surface ships in P2." />} />
                 <Route path="/reviews" element={<Reviews />} />

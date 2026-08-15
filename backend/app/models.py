@@ -563,9 +563,68 @@ class APIEndpoint(Base):
     method: Mapped[str] = mapped_column(String(10))
     path: Mapped[str] = mapped_column(String(300))
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    authentication: Mapped[str] = mapped_column(String(40), default="NONE")
     request_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     response_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    parameters: Mapped[list["ApiParameter"]] = relationship(back_populates="endpoint", cascade="all, delete-orphan")
+    request_fields: Mapped[list["ApiRequestField"]] = relationship(back_populates="endpoint", cascade="all, delete-orphan")
+    response_fields: Mapped[list["ApiResponseField"]] = relationship(back_populates="endpoint", cascade="all, delete-orphan")
+    error_responses: Mapped[list["ApiErrorResponse"]] = relationship(back_populates="endpoint", cascade="all, delete-orphan")
+
+
+class ApiParameter(Base):
+    __tablename__ = "api_parameters"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("prm"))
+    endpoint_id: Mapped[str] = mapped_column(ForeignKey("api_endpoints.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    location: Mapped[str] = mapped_column(String(20), default="query")  # query|path|header|body
+    data_type: Mapped[str] = mapped_column(String(100), default="string")
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    endpoint: Mapped[APIEndpoint] = relationship(back_populates="parameters")
+
+
+class ApiRequestField(Base):
+    __tablename__ = "api_request_fields"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("rqf"))
+    endpoint_id: Mapped[str] = mapped_column(ForeignKey("api_endpoints.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    data_type: Mapped[str] = mapped_column(String(100), default="string")
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    endpoint: Mapped[APIEndpoint] = relationship(back_populates="request_fields")
+
+
+class ApiResponseField(Base):
+    __tablename__ = "api_response_fields"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("rsf"))
+    endpoint_id: Mapped[str] = mapped_column(ForeignKey("api_endpoints.id"), index=True)
+    status_code: Mapped[str] = mapped_column(String(5), default="200")
+    name: Mapped[str] = mapped_column(String(200))
+    data_type: Mapped[str] = mapped_column(String(100), default="string")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    endpoint: Mapped[APIEndpoint] = relationship(back_populates="response_fields")
+
+
+class ApiErrorResponse(Base):
+    __tablename__ = "api_error_responses"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("apierr"))
+    endpoint_id: Mapped[str] = mapped_column(ForeignKey("api_endpoints.id"), index=True)
+    status_code: Mapped[str] = mapped_column(String(5))
+    message: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    endpoint: Mapped[APIEndpoint] = relationship(back_populates="error_responses")
 
 
 # ---------------------------------------------------------------------------
