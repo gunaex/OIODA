@@ -518,11 +518,11 @@ function DictionaryPage() {
                 <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500">
                   <th className="pb-2">Table</th><th className="pb-2">Field</th><th className="pb-2">Type</th><th className="pb-2">Len</th>
                   <th className="pb-2">Null</th><th className="pb-2">Key</th><th className="pb-2">Default</th><th className="pb-2">Reference</th>
-                  <th className="pb-2">Description</th><th className="pb-2">Semantic ID</th>
+                  <th className="pb-2">Description</th><th className="pb-2">Remark</th><th className="pb-2">Revision</th><th className="pb-2">Semantic ID</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.length === 0 && <tr><td colSpan={10} className="py-2 text-slate-500">No matching rows.</td></tr>}
+                {rows.length === 0 && <tr><td colSpan={12} className="py-2 text-slate-500">No matching rows.</td></tr>}
                 {rows.map((row) => (
                   <tr key={row.field_semantic_id} className="border-t border-line/50">
                     <td className="py-1 text-slate-300">{row.table}</td>
@@ -536,11 +536,16 @@ function DictionaryPage() {
                     <td className="py-1 text-slate-500">{row.default ?? ""}</td>
                     <td className="py-1 text-slate-500">{row.reference || ""}</td>
                     <td className="py-1 text-slate-400">{row.description || ""}</td>
+                    <td className="py-1 text-slate-400">{row.remark || ""}</td>
+                    <td className="py-1 text-slate-600">live</td>
                     <td className="py-1 font-mono text-[11px] text-brand-300/80">{row.field_semantic_id}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            <p className="mt-3 text-[11px] text-slate-500">
+              Live view over the canonical schema — no second copy. Revision is frozen at the DR revision snapshot, not here.
+            </p>
           </>
         )}
       </Card>
