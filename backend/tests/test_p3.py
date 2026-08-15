@@ -482,3 +482,60 @@ def test_traceability_rows(db, project):
     rows = svc._traceability_rows(db, project.id)
     assert rows[0]["relation"] == "IMPLEMENTS"
     assert rows[0]["source_type"] == "REQUIREMENT"
+
+
+# ---------------------------------------------------------------------------
+# P3-M resilience (outage-safe outbox, no baseline corruption)
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_binding_never_re_resolved(db, project):
+    art = svc.create_artifact(db, project_id=project.id, type=m.ArtifactType.DR,
+                              title="DR v1", snapshot={"sections": []})
+    rev1 = db.execute(select(m.ArtifactRevision).where(
+        m.ArtifactRevision.artifact_id == art.id)).scalars().one()
+    svc.submit_for_review(db, rev1.id)
+    svc.confirm_revision(db, rev1.id)
+    baseline = svc.create_baseline(db, project_id=project.id, name="B1",
+                                   artifact_revision_ids=[rev1.id])
+
+    # A later confirmed revision must never change the frozen baseline.
+    rev2 = svc.create_revision(db, artifact_id=art.id)
+    svc.submit_for_review(db, rev2.id)
+    svc.confirm_revision(db, rev2.id)
+    binding = db.execute(select(m.BaselineBinding).where(
+        m.BaselineBinding.baseline_id == baseline.id)).scalars().one()
+    assert binding.artifact_revision_id == rev1.id
+    assert rev1.status == m.RevisionStatus.SUPERSEDED  # superseded but still bound
+
+
+def test_outbox_atomic_write_survives_failed_delivery(db, project):
+    svc.emit_event(db, event_type="DESIGN_BASELINED", project_id=project.id,
+                   payload={"baseline": "1.0"}, target_services=["pm-again"],
+                   correlation_id="corr-res")
+
+    def boom(o):
+        raise ConnectionError("network outage")
+
+    svc.deliver_due_events(db, boom)
+    db.expire_all()
+    assert db.execute(select(m.EcosystemEvent)).scalars().one() is not None
+    out = db.execute(select(m.OutboxEvent)).scalars().one()
+    assert out.status == "FAILED" and out.attempt_count == 1
+    # event payload is intact after failed delivery
+    assert db.execute(select(m.EcosystemEvent)).scalars().one().payload is not None
+
+
+def test_outbox_backoff_is_bounded(db, project):
+    svc.emit_event(db, event_type="DESIGN_BASELINED", project_id=project.id,
+                   target_services=["pm-again"], correlation_id="corr-bk")
+    out = db.execute(select(m.OutboxEvent)).scalars().one()
+    # after many failures backoff caps at 300s
+    for _ in range(20):
+        svc.deliver_due_events(db, lambda o: (_ for _ in ()).throw(RuntimeError("down")))
+        out.next_attempt_at = m.utcnow() - timedelta(seconds=10)
+        db.commit()
+        db.expire_all()
+        out = db.execute(select(m.OutboxEvent)).scalars().one()
+    assert out.attempt_count >= 3
+    assert svc._backoff_seconds(out.attempt_count) <= 300
