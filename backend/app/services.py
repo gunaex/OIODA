@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -331,6 +331,7 @@ def ensure_semantic_object(
         )
     ).scalar_one_or_none()
     if obj:
+        obj.display_name = display_name  # display names may change
         if entity_ref:
             obj.entity_ref = entity_ref
         db.commit()
@@ -1068,3 +1069,140 @@ def timeline(db: Session, project_id: str, semantic_id: str | None = None) -> li
 
     events.sort(key=lambda e: e["at"] or "")
     return events
+
+
+# ---------------------------------------------------------------------------
+# Database designer (CRUD over the structured model) + ERD layout
+# ---------------------------------------------------------------------------
+
+# Semantic identity of a field is fixed at creation. Renaming a field
+# (or its table) never changes the semantic id — only display names
+# change. This is what lets traces/annotations survive design edits.
+
+_FIELD_EDITABLE = {
+    "name", "data_type", "length", "nullable", "default",
+    "primary_key", "foreign_key", "reference", "description", "remark",
+}
+
+
+def rename_table(db: Session, table_id: str, name: str) -> m.DatabaseTable:
+    table = get_or_404(db, m.DatabaseTable, table_id, "Table")
+    table.name = name
+    ensure_semantic_object(
+        db,
+        project_id=table.schema.project_id,
+        semantic_id=table.semantic_id,
+        object_type=m.SemanticObjectType.DB_TABLE,
+        display_name=name,
+        entity_ref=table.id,
+    )
+    db.commit()
+    return table
+
+
+def update_field(db: Session, field_id: str, **changes) -> m.DatabaseField:
+    field = get_or_404(db, m.DatabaseField, field_id, "Field")
+    for key, value in changes.items():
+        if key not in _FIELD_EDITABLE:
+            raise DomainError(f"Cannot update field attribute '{key}'", status_code=422)
+        setattr(field, key, value)
+    ensure_semantic_object(
+        db,
+        project_id=field.table.schema.project_id,
+        semantic_id=field.semantic_id,
+        object_type=m.SemanticObjectType.DB_FIELD,
+        display_name=f"{field.table.name}.{field.name}",
+        entity_ref=field.id,
+    )
+    db.commit()
+    return field
+
+
+def delete_field(db: Session, field_id: str) -> None:
+    field = get_or_404(db, m.DatabaseField, field_id, "Field")
+    db.execute(
+        delete(m.DatabaseRelation).where(
+            or_(
+                m.DatabaseRelation.from_field_semantic_id == field.semantic_id,
+                m.DatabaseRelation.to_field_semantic_id == field.semantic_id,
+            )
+        )
+    )
+    db.delete(field)
+    db.commit()
+
+
+def delete_table(db: Session, table_id: str) -> None:
+    table = get_or_404(db, m.DatabaseTable, table_id, "Table")
+    field_ids = [f.semantic_id for f in table.fields]
+    if field_ids:
+        db.execute(
+            delete(m.DatabaseRelation).where(
+                or_(
+                    m.DatabaseRelation.from_field_semantic_id.in_(field_ids),
+                    m.DatabaseRelation.to_field_semantic_id.in_(field_ids),
+                )
+            )
+        )
+    db.delete(table)  # fields cascade via ORM relationship
+    db.commit()
+
+
+def delete_relation(db: Session, relation_id: str) -> None:
+    relation = get_or_404(db, m.DatabaseRelation, relation_id, "Relation")
+    db.delete(relation)
+    db.commit()
+
+
+def save_erd_layout(db: Session, schema_id: str, layout: dict) -> m.DatabaseSchema:
+    schema = get_or_404(db, m.DatabaseSchema, schema_id, "Schema")
+    schema.layout = layout or {}
+    db.commit()
+    return schema
+
+
+def get_erd_layout(db: Session, schema_id: str) -> dict:
+    schema = get_or_404(db, m.DatabaseSchema, schema_id, "Schema")
+    return schema.layout or {}
+
+
+def db_design_snapshot(db: Session, schema_id: str) -> dict:
+    """Canonical, semantic-id-keyed snapshot of the structured DB design.
+
+    Used by the semantic diff (P1-E): keys are stable semantic ids, so a
+    diff over two snapshots reports ADDED/REMOVED/CHANGED objects rather
+    than positional noise.
+    """
+    schema = get_or_404(db, m.DatabaseSchema, schema_id, "Schema")
+    tables: dict[str, dict] = {}
+    for t in schema.tables:
+        tables[t.semantic_id] = {
+            "name": t.name,
+            "description": t.description,
+            "fields": {
+                f.semantic_id: {
+                    "name": f.name,
+                    "data_type": f.data_type,
+                    "length": f.length,
+                    "nullable": f.nullable,
+                    "default": f.default,
+                    "primary_key": f.primary_key,
+                    "foreign_key": f.foreign_key,
+                    "reference": f.reference,
+                    "description": f.description,
+                    "remark": f.remark,
+                }
+                for f in t.fields
+            },
+        }
+    relations = {
+        r.semantic_id: {
+            "from": r.from_field_semantic_id,
+            "to": r.to_field_semantic_id,
+            "type": r.relation_type,
+        }
+        for r in db.execute(
+            select(m.DatabaseRelation).where(m.DatabaseRelation.schema_id == schema_id)
+        ).scalars()
+    }
+    return {"tables": tables, "relations": relations}

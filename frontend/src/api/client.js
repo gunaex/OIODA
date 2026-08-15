@@ -28,4 +28,6 @@ export const api = {
   get: (p) => request(p),
   post: (p, body) => request(p, { method: "POST", body: JSON.stringify(body ?? {}) }),
   put: (p, body) => request(p, { method: "PUT", body: JSON.stringify(body) }),
+  patch: (p, body) => request(p, { method: "PATCH", body: JSON.stringify(body ?? {}) }),
+  delete: (p) => request(p, { method: "DELETE" }),
 };

@@ -536,6 +536,7 @@ def list_schemas(project_id: str, db: Session = Depends(db_session)):
         out.append({
             "id": s.id, "semantic_id": s.semantic_id, "name": s.name,
             "description": s.description,
+            "layout": s.layout or {},
             "tables": [
                 {
                     "id": t.id, "semantic_id": t.semantic_id, "name": t.name,
@@ -590,6 +591,83 @@ def create_field(body: FieldIn, db: Session = Depends(db_session)):
 def create_relation(body: RelationIn, db: Session = Depends(db_session)):
     r = svc.create_relation(db, **body.model_dump())
     return {"id": r.id, "semantic_id": r.semantic_id}
+
+
+# --- DB designer CRUD ---
+
+
+class TablePatch(BaseModel):
+    name: str
+
+
+class FieldPatch(BaseModel):
+    name: str | None = None
+    data_type: str | None = None
+    length: int | None = None
+    nullable: bool | None = None
+    default: str | None = None
+    primary_key: bool | None = None
+    foreign_key: bool | None = None
+    reference: str | None = None
+    description: str | None = None
+    remark: str | None = None
+
+
+class LayoutIn(BaseModel):
+    layout: dict
+
+
+def field_out(f: m.DatabaseField) -> dict:
+    return {
+        "id": f.id, "semantic_id": f.semantic_id, "name": f.name,
+        "data_type": f.data_type, "length": f.length, "nullable": f.nullable,
+        "default": f.default, "primary_key": f.primary_key, "foreign_key": f.foreign_key,
+        "reference": f.reference, "description": f.description, "remark": f.remark,
+    }
+
+
+@router.patch("/db-tables/{table_id}")
+def rename_table(table_id: str, body: TablePatch, db: Session = Depends(db_session)):
+    t = svc.rename_table(db, table_id, body.name)
+    return {"id": t.id, "semantic_id": t.semantic_id, "name": t.name}
+
+
+@router.delete("/db-tables/{table_id}", status_code=204)
+def delete_table(table_id: str, db: Session = Depends(db_session)):
+    svc.delete_table(db, table_id)
+
+
+@router.patch("/db-fields/{field_id}")
+def update_field(field_id: str, body: FieldPatch, db: Session = Depends(db_session)):
+    changes = {k: v for k, v in body.model_dump().items() if v is not None}
+    f = svc.update_field(db, field_id, **changes)
+    return field_out(f)
+
+
+@router.delete("/db-fields/{field_id}", status_code=204)
+def delete_field(field_id: str, db: Session = Depends(db_session)):
+    svc.delete_field(db, field_id)
+
+
+@router.delete("/db-relations/{relation_id}", status_code=204)
+def delete_relation(relation_id: str, db: Session = Depends(db_session)):
+    svc.delete_relation(db, relation_id)
+
+
+@router.get("/db-schemas/{schema_id}/erd-layout")
+def get_erd_layout(schema_id: str, db: Session = Depends(db_session)):
+    return svc.get_erd_layout(db, schema_id)
+
+
+@router.put("/db-schemas/{schema_id}/erd-layout")
+def save_erd_layout(schema_id: str, body: LayoutIn, db: Session = Depends(db_session)):
+    svc.save_erd_layout(db, schema_id, body.layout)
+    return {"ok": True}
+
+
+@router.get("/db-schemas/{schema_id}/design-snapshot")
+def design_snapshot(schema_id: str, db: Session = Depends(db_session)):
+    return svc.db_design_snapshot(db, schema_id)
 
 
 @router.get("/db-schemas/{schema_id}/data-dictionary")

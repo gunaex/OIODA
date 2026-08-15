@@ -440,6 +440,7 @@ class DatabaseSchema(Base):
     semantic_id: Mapped[str] = mapped_column(String(200), unique=True)  # schema key
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    layout: Mapped[dict | None] = mapped_column(JSON, default=dict, nullable=True)  # ERD node positions only
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
 
