@@ -398,6 +398,35 @@ def create_trace_link(
     return link
 
 
+def trace_graph(db: Session, project_id: str) -> dict:
+    """Nodes + edges for the traceability explorer. Only stored links are shown."""
+    nodes = db.execute(
+        select(m.SemanticObject).where(m.SemanticObject.project_id == project_id)
+    ).scalars().all()
+    edges = db.execute(
+        select(m.TraceLink).where(m.TraceLink.project_id == project_id)
+    ).scalars().all()
+    return {
+        "nodes": [
+            {
+                "semantic_id": n.semantic_id,
+                "object_type": n.object_type.value,
+                "display_name": n.display_name,
+            }
+            for n in nodes
+        ],
+        "edges": [
+            {
+                "source": e.source_semantic_id,
+                "target": e.target_semantic_id,
+                "relation": e.relation_type.value,
+                "revision_context": e.revision_context,
+            }
+            for e in edges
+        ],
+    }
+
+
 def impact_of(db: Session, project_id: str, semantic_id: str) -> dict:
     """1-hop upstream/downstream impact using trace links only."""
     outgoing = db.execute(

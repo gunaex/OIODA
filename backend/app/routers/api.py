@@ -343,6 +343,11 @@ def impact(project_id: str, semantic_id: str, db: Session = Depends(db_session))
     return svc.impact_of(db, project_id, semantic_id)
 
 
+@router.get("/projects/{project_id}/trace-graph")
+def trace_graph(project_id: str, db: Session = Depends(db_session)):
+    return svc.trace_graph(db, project_id)
+
+
 # ---------------------------------------------------------------------------
 # Annotations
 # ---------------------------------------------------------------------------
