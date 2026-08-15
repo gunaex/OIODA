@@ -355,6 +355,11 @@ def trace_graph(project_id: str, db: Session = Depends(db_session)):
     return svc.trace_graph(db, project_id)
 
 
+@router.get("/projects/{project_id}/semantic-context/{semantic_id}")
+def semantic_context(project_id: str, semantic_id: str, db: Session = Depends(db_session)):
+    return svc.semantic_context(db, project_id, semantic_id)
+
+
 # ---------------------------------------------------------------------------
 # Annotations
 # ---------------------------------------------------------------------------

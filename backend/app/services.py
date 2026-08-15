@@ -1508,3 +1508,101 @@ def impact_analysis(db: Session, project_id: str, semantic_id: str, max_depth: i
         "direct": direct,
         "paths": paths,
     }
+
+
+# ---------------------------------------------------------------------------
+# Project memory — semantic context for the right-hand panel
+# ---------------------------------------------------------------------------
+
+_DB_OBJECT_TYPES = {
+    m.SemanticObjectType.DB_SCHEMA,
+    m.SemanticObjectType.DB_TABLE,
+    m.SemanticObjectType.DB_FIELD,
+    m.SemanticObjectType.DB_RELATION,
+}
+
+
+def semantic_context(db: Session, project_id: str, semantic_id: str) -> dict:
+    """Structured context for one semantic object. Never fabricates."""
+    so = db.execute(
+        select(m.SemanticObject).where(
+            m.SemanticObject.project_id == project_id,
+            m.SemanticObject.semantic_id == semantic_id,
+        )
+    ).scalar_one_or_none()
+    if so is None:
+        raise DomainError(f"Unknown semantic object '{semantic_id}'", status_code=404)
+
+    out: dict = {
+        "semantic_id": so.semantic_id,
+        "object_type": so.object_type.value,
+        "display_name": so.display_name,
+        "entity_ref": so.entity_ref,
+        "status": None,
+        "confirmed": None,
+        "revision": None,
+        "evidence": [],
+    }
+
+    if so.object_type == m.SemanticObjectType.REQUIREMENT and so.entity_ref:
+        req = db.get(m.Requirement, so.entity_ref)
+        if req:
+            out["status"] = req.status.value
+            out["confirmed"] = req.status.value == m.RequirementStatus.CONFIRMED.value
+            out["owner"] = {"type": "Requirement", "code": req.code, "priority": req.priority}
+    elif so.object_type in _DB_OBJECT_TYPES:
+        out["status"] = "live"
+        out["owner"] = {"type": "Database design", "note": "working model — frozen at DR revision snapshot, not here"}
+    elif so.object_type == m.SemanticObjectType.DOCUMENT_SECTION and so.entity_ref:
+        artifact = db.get(m.Artifact, so.entity_ref)
+        if artifact:
+            revs = db.execute(
+                select(m.ArtifactRevision)
+                .where(m.ArtifactRevision.artifact_id == artifact.id)
+                .order_by(m.ArtifactRevision.revision_number.desc())
+            ).scalars().all()
+            holders = [
+                r for r in revs
+                if any(s.get("id") == semantic_id for s in (r.snapshot or {}).get("sections") or [])
+            ]
+            if holders:
+                latest = holders[0]
+                out["status"] = latest.status.value
+                out["confirmed"] = latest.status.value == m.RevisionStatus.CONFIRMED.value
+                out["revision"] = {
+                    "id": latest.id,
+                    "revision_number": latest.revision_number,
+                    "artifact_title": artifact.title,
+                    "created_by": latest.created_by,
+                    "created_at": latest.created_at.isoformat(),
+                    "confirmed_by": latest.confirmed_by,
+                    "confirmed_at": latest.confirmed_at.isoformat() if latest.confirmed_at else None,
+                }
+                out["evidence"] = [
+                    {
+                        "confirmed_by": c.confirmed_by,
+                        "confirmed_at": c.confirmed_at.isoformat(),
+                        "comment": c.comment,
+                        "evidence": c.evidence,
+                    }
+                    for c in db.execute(
+                        select(m.Confirmation).where(
+                            m.Confirmation.artifact_revision_id == latest.id
+                        )
+                    ).scalars()
+                ]
+
+    # annotations on this object
+    anns = db.execute(
+        select(m.Annotation).where(
+            m.Annotation.project_id == project_id,
+            m.Annotation.anchor_semantic_id == semantic_id,
+        )
+    ).scalars().all()
+    out["annotations"] = {
+        "total": len(anns),
+        "open": sum(1 for a in anns if a.status != m.AnnotationStatus.RESOLVED),
+        "by_type": dict(Counter(a.type.value for a in anns)),
+    }
+
+    return out
