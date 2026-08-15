@@ -699,3 +699,35 @@ def save_document(
         db, revision_id=revision_id, sections=body.sections, title=body.title, actor=actor
     )
     return svc.get_document(db, revision.id)
+
+
+# ---------------------------------------------------------------------------
+# Revision compare + semantic diff
+# ---------------------------------------------------------------------------
+
+
+@router.get("/revisions/{a_id}/diff/{b_id}")
+def revision_diff(a_id: str, b_id: str, db: Session = Depends(db_session)):
+    return svc.revision_diff(db, a_id, b_id)
+
+
+class SemanticDiffIn(BaseModel):
+    a: dict
+    b: dict
+
+
+@router.post("/diff/semantic")
+def semantic_diff(body: SemanticDiffIn, db: Session = Depends(db_session)):
+    return svc.semantic_diff(body.a, body.b)
+
+
+class SnapshotDbIn(BaseModel):
+    schema_id: str
+
+
+@router.post("/revisions/{revision_id}/snapshot-database")
+def snapshot_database(
+    revision_id: str, body: SnapshotDbIn, db: Session = Depends(db_session),
+):
+    svc.snapshot_database_into_revision(db, revision_id, body.schema_id)
+    return {"ok": True}

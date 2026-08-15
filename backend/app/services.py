@@ -7,6 +7,7 @@ impossible to bypass from the HTTP edge.
 """
 from __future__ import annotations
 
+import difflib
 from collections import Counter
 
 from sqlalchemy import delete, or_, select
@@ -1206,3 +1207,158 @@ def db_design_snapshot(db: Session, schema_id: str) -> dict:
         ).scalars()
     }
     return {"tables": tables, "relations": relations}
+
+
+# ---------------------------------------------------------------------------
+# Revision compare + semantic diff
+# ---------------------------------------------------------------------------
+
+
+def _section_text(section: dict) -> str:
+    lines: list[str] = [f"## {section.get('heading') or ''}"]
+    for blk in section.get("blocks", []):
+        kind = blk.get("kind")
+        if kind == "heading":
+            lines.append(f"{'#' * (blk.get('level') or 2)} {blk.get('text') or ''}")
+        elif kind in ("bullet_list", "numbered_list"):
+            for i, item in enumerate(blk.get("items", [])):
+                lines.append(f"- {item}")
+        elif kind == "table":
+            lines.append(" | ".join(blk.get("header", [])))
+            for row in blk.get("rows", []):
+                lines.append(" | ".join(row))
+        elif kind == "code":
+            lines.append("```")
+            lines.extend((blk.get("text") or "").splitlines())
+            lines.append("```")
+        else:
+            lines.append(blk.get("text") or "")
+    return "\n".join(lines)
+
+
+def text_diff(a: str, b: str) -> list[dict]:
+    """Line-level diff (insert/delete/equal) using difflib."""
+    sm = difflib.SequenceMatcher(a=a.splitlines(), b=b.splitlines())
+    out: list[dict] = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            out.append({"op": "equal", "lines": a.splitlines()[i1:i2]})
+        elif tag == "replace":
+            out.append({"op": "delete", "lines": a.splitlines()[i1:i2]})
+            out.append({"op": "insert", "lines": b.splitlines()[j1:j2]})
+        elif tag == "delete":
+            out.append({"op": "delete", "lines": a.splitlines()[i1:i2]})
+        elif tag == "insert":
+            out.append({"op": "insert", "lines": b.splitlines()[j1:j2]})
+    return out
+
+
+def document_diff(db: Session, rev_a_id: str, rev_b_id: str) -> list[dict]:
+    """Semantic document diff keyed by stable section ids."""
+    a = {s["id"]: s for s in get_document(db, rev_a_id)["sections"]}
+    b = {s["id"]: s for s in get_document(db, rev_b_id)["sections"]}
+    changes: list[dict] = []
+    for sid in sorted(set(a) - set(b)):
+        changes.append({"kind": "REMOVED", "object": "SECTION", "semantic_id": sid, "label": a[sid].get("heading") or sid})
+    for sid in sorted(set(b) - set(a)):
+        changes.append({"kind": "ADDED", "object": "SECTION", "semantic_id": sid, "label": b[sid].get("heading") or sid})
+    for sid in sorted(set(a) & set(b)):
+        ta, tb = _section_text(a[sid]), _section_text(b[sid])
+        if ta != tb:
+            changes.append({
+                "kind": "CHANGED", "object": "SECTION", "semantic_id": sid,
+                "label": b[sid].get("heading") or sid, "text_diff": text_diff(ta, tb),
+            })
+    return changes
+
+
+def semantic_db_diff(a: dict, b: dict) -> list[dict]:
+    """Semantic diff between two canonical DB design snapshots.
+
+    Keys are stable semantic ids, so changes are reported as ADDED /
+    REMOVED / CHANGED objects and attributes — never positional noise.
+    """
+    changes: list[dict] = []
+    a_t, b_t = a.get("tables", {}), b.get("tables", {})
+    for sid in sorted(set(a_t) - set(b_t)):
+        changes.append({"kind": "REMOVED", "object": "TABLE", "semantic_id": sid, "label": a_t[sid].get("name", sid)})
+    for sid in sorted(set(b_t) - set(a_t)):
+        changes.append({"kind": "ADDED", "object": "TABLE", "semantic_id": sid, "label": b_t[sid].get("name", sid)})
+    for sid in sorted(set(a_t) & set(b_t)):
+        ta, tb = a_t[sid], b_t[sid]
+        if ta.get("name") != tb.get("name"):
+            changes.append({"kind": "CHANGED", "object": "TABLE", "semantic_id": sid, "attribute": "name", "before": ta.get("name"), "after": tb.get("name")})
+        fa, fb = ta.get("fields", {}), tb.get("fields", {})
+        for fid in sorted(set(fa) - set(fb)):
+            changes.append({"kind": "REMOVED", "object": "FIELD", "semantic_id": fid, "label": fa[fid].get("name", fid)})
+        for fid in sorted(set(fb) - set(fa)):
+            changes.append({"kind": "ADDED", "object": "FIELD", "semantic_id": fid, "label": fb[fid].get("name", fid)})
+        for fid in sorted(set(fa) & set(fb)):
+            for attr in sorted(set(fa[fid]) | set(fb[fid])):
+                if fa[fid].get(attr) != fb[fid].get(attr):
+                    changes.append({
+                        "kind": "CHANGED", "object": "FIELD", "semantic_id": fid,
+                        "attribute": attr, "before": fa[fid].get(attr), "after": fb[fid].get(attr),
+                    })
+
+    a_r, b_r = a.get("relations", {}), b.get("relations", {})
+    for rid in sorted(set(a_r) - set(b_r)):
+        changes.append({"kind": "REMOVED", "object": "RELATION", "semantic_id": rid})
+    for rid in sorted(set(b_r) - set(a_r)):
+        changes.append({"kind": "ADDED", "object": "RELATION", "semantic_id": rid})
+    for rid in sorted(set(a_r) & set(b_r)):
+        if a_r[rid].get("type") != b_r[rid].get("type"):
+            changes.append({"kind": "CHANGED", "object": "RELATION", "semantic_id": rid, "attribute": "type", "before": a_r[rid].get("type"), "after": b_r[rid].get("type")})
+    return changes
+
+
+def semantic_flow_diff(a: dict, b: dict) -> list[dict]:
+    """Approval/process step counts compared by stable step ids where available."""
+    changes: list[dict] = []
+    fa = a.get("flows", {})
+    fb = b.get("flows", {})
+    for fid in sorted(set(fa) - set(fb)):
+        changes.append({"kind": "REMOVED", "object": "FLOW", "semantic_id": fid})
+    for fid in sorted(set(fb) - set(fa)):
+        changes.append({"kind": "ADDED", "object": "FLOW", "semantic_id": fid})
+    for fid in sorted(set(fa) & set(fb)):
+        sa = fa[fid].get("steps", [])
+        sb = fb[fid].get("steps", [])
+        if len(sa) != len(sb):
+            changes.append({"kind": "CHANGED", "object": "FLOW", "semantic_id": fid, "attribute": "steps", "before": len(sa), "after": len(sb)})
+    return changes
+
+
+def semantic_diff(a: dict, b: dict) -> list[dict]:
+    """Combined semantic diff (DB design + flows) over stable ids."""
+    return semantic_db_diff(a, b) + semantic_flow_diff(a, b)
+
+
+def snapshot_database_into_revision(db: Session, revision_id: str, schema_id: str) -> m.ArtifactRevision:
+    """Embed the current canonical DB design into a DRAFT revision snapshot.
+
+    This creates versioned DB data inside the document revision so that a
+    later semantic diff can compare two points in time by stable ids.
+    Confirmed revisions are immutable and rejected.
+    """
+    revision = get_or_404(db, m.ArtifactRevision, revision_id, "Revision")
+    require_editable(revision)
+    snapshot = dict(revision.snapshot or {})
+    snapshot["database"] = db_design_snapshot(db, schema_id)
+    revision.snapshot = snapshot
+    db.commit()
+    return revision
+
+
+def revision_diff(db: Session, rev_a_id: str, rev_b_id: str) -> dict:
+    """Full comparison of two revisions: document + DB semantic diff."""
+    ra = get_or_404(db, m.ArtifactRevision, rev_a_id, "Revision")
+    rb = get_or_404(db, m.ArtifactRevision, rev_b_id, "Revision")
+    sa, sb = ra.snapshot or {}, rb.snapshot or {}
+    db_diff = semantic_diff(sa.get("database", {}), sb.get("database", {}))
+    return {
+        "a": {"id": ra.id, "revision_number": ra.revision_number, "status": ra.status.value},
+        "b": {"id": rb.id, "revision_number": rb.revision_number, "status": rb.status.value},
+        "document_diff": document_diff(db, rev_a_id, rev_b_id),
+        "database_diff": db_diff,
+    }

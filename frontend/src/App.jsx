@@ -10,6 +10,7 @@ import { Baselines } from "./pages/Baselines.jsx";
 import { Comments } from "./pages/Comments.jsx";
 import { Placeholder } from "./pages/Placeholder.jsx";
 import { Reviews } from "./pages/Reviews.jsx";
+import { Compare } from "./pages/Compare.jsx";
 import { ContextPanel } from "./components/ContextPanel.jsx";
 
 /*
@@ -74,6 +75,7 @@ export default function App() {
                 <Route path="/requirements/ur" element={<Artifacts type="UR" />} />
                 <Route path="/design/dr" element={<Artifacts type="DR" />} />
                 <Route path="/design/database/*" element={<Database />} />
+                <Route path="/design/compare" element={<Compare />} />
                 <Route path="/design/flows" element={<Placeholder title="Process Flows" note="Flow editor engine arrives post-P0. Flows live as semantic objects (flow_…, flow_step_…) so traces and annotations already bind to them." />} />
                 <Route path="/design/apis" element={<Placeholder title="API Design" note="api_endpoints table + semantic IDs (api_order_approve) exist in the domain model; the interactive API designer is P1." />} />
                 <Route path="/design/architecture" element={<Placeholder title="Architecture" note="Architecture nodes are registered as semantic objects; the diagram canvas is a later view over them." />} />
@@ -127,6 +129,7 @@ const NAV = [
   { to: "requirements/ur", label: "UR" },
   { section: "DESIGN" },
   { to: "design/dr", label: "DR" },
+  { to: "design/compare", label: "Compare" },
   { to: "design/database", label: "Database" },
   { to: "design/flows", label: "Process Flows" },
   { to: "design/apis", label: "APIs" },
