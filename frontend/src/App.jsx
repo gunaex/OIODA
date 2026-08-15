@@ -8,7 +8,6 @@ import { Database } from "./pages/Database.jsx";
 import { ChangeRequests } from "./pages/ChangeRequests.jsx";
 import { Baselines } from "./pages/Baselines.jsx";
 import { Comments } from "./pages/Comments.jsx";
-import { Placeholder } from "./pages/Placeholder.jsx";
 import { Reviews } from "./pages/Reviews.jsx";
 import { Compare } from "./pages/Compare.jsx";
 import { TraceExplorer } from "./pages/TraceExplorer.jsx";
