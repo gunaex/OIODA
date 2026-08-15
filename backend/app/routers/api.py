@@ -353,6 +353,31 @@ def impact_analysis(
     return svc.impact_analysis(db, project_id, semantic_id, max_depth=min(max(depth, 1), 5))
 
 
+@router.get("/projects/{project_id}/impact-v2/{semantic_id}")
+def impact_analysis_v2(
+    project_id: str, semantic_id: str, depth: int = 4, db: Session = Depends(db_session)
+):
+    return svc.impact_analysis_v2(db, project_id, semantic_id, max_depth=min(max(depth, 1), 6))
+
+
+class ChangeSetIn(BaseModel):
+    project_id: str
+    name: str
+    description: str | None = None
+    items: list[dict] | None = None
+
+
+@router.post("/change-sets")
+def create_change_set(body: ChangeSetIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.create_change_set(db, **body.model_dump(), actor=actx.name, actor_id=actx.id)
+
+
+@router.get("/projects/{project_id}/change-sets")
+def list_change_sets(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_change_sets(db, project_id=project_id)
+
+
 @router.get("/projects/{project_id}/trace-graph")
 def trace_graph(project_id: str, db: Session = Depends(db_session)):
     return svc.trace_graph(db, project_id)

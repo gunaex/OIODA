@@ -1725,6 +1725,145 @@ def impact_analysis(db: Session, project_id: str, semantic_id: str, max_depth: i
 
 
 # ---------------------------------------------------------------------------
+# Impact analysis v2 — named change sets + rule-based severity
+# ---------------------------------------------------------------------------
+
+CHANGE_TYPES = {"MODIFIED", "ADDED", "REMOVED", "RENAMED"}
+_SEVERITY_BY_DEPTH = {1: "DIRECT", 2: "HIGH", 3: "MEDIUM"}
+_HIGH_BLAST_RADIUS = {
+    m.SemanticObjectType.DB_SCHEMA.value,
+    m.SemanticObjectType.DB_TABLE.value,
+    m.SemanticObjectType.DB_FIELD.value,
+    m.SemanticObjectType.DB_RELATION.value,
+}
+
+
+def _severity(depth: int, object_type: str | None, change_type: str | None) -> str:
+    base = _SEVERITY_BY_DEPTH.get(depth, "LOW")
+    order = ["LOW", "MEDIUM", "HIGH", "DIRECT"]
+    idx = order.index(base)
+    if object_type in _HIGH_BLAST_RADIUS:
+        idx = min(idx + 1, len(order) - 1)
+    if change_type == "REMOVED" and object_type in {
+        m.SemanticObjectType.DB_TABLE.value,
+        m.SemanticObjectType.DB_SCHEMA.value,
+    }:
+        idx = min(idx + 1, len(order) - 1)
+    return order[idx]
+
+
+def create_change_set(
+    db: Session,
+    *,
+    project_id: str,
+    name: str,
+    description: str | None = None,
+    items: list[dict] | None = None,
+    actor="local-user",
+    actor_id: str | None = None,
+) -> dict:
+    get_or_404(db, m.Project, project_id, "Project")
+    cs = m.ChangeSet(
+        project_id=project_id, name=name, description=description,
+        created_by=actor, actor_id=actor_id,
+    )
+    db.add(cs)
+    db.flush()
+    built: list[dict] = []
+    for item in items or []:
+        ct = (item.get("change_type") or "MODIFIED").upper()
+        if ct not in CHANGE_TYPES:
+            raise DomainError(f"invalid change type: {ct}")
+        ci = m.ChangeItem(
+            change_set_id=cs.id, semantic_id=item["semantic_id"],
+            change_type=ct, rationale=item.get("rationale"),
+        )
+        db.add(ci)
+        built.append({"semantic_id": item["semantic_id"], "change_type": ct})
+    db.commit()
+    db.refresh(cs)
+    return {"id": cs.id, "project_id": cs.project_id, "name": cs.name,
+            "description": cs.description, "items": built,
+            "created_at": cs.created_at.isoformat(), "created_by": cs.created_by}
+
+
+def list_change_sets(db: Session, project_id: str | None = None) -> list[dict]:
+    q = select(m.ChangeSet).order_by(m.ChangeSet.created_at.desc())
+    if project_id:
+        q = q.where(m.ChangeSet.project_id == project_id)
+    out = []
+    for cs in db.execute(q).scalars().all():
+        items = db.execute(
+            select(m.ChangeItem).where(m.ChangeItem.change_set_id == cs.id)
+        ).scalars().all()
+        out.append({
+            "id": cs.id, "project_id": cs.project_id, "name": cs.name,
+            "description": cs.description, "created_at": cs.created_at.isoformat(),
+            "created_by": cs.created_by,
+            "items": [{"semantic_id": i.semantic_id, "change_type": i.change_type,
+                       "rationale": i.rationale} for i in items],
+        })
+    return out
+
+
+def impact_analysis_v2(
+    db: Session, project_id: str, semantic_id: str, max_depth: int = 4
+) -> dict:
+    """Rule-based impact over transitive trace links.
+
+    Severity: DIRECT (1 hop) > HIGH (2) > MEDIUM (3) > LOW (4+).
+    DB schema/table/field/relation and releases bump severity one level;
+    REMOVED of a DB table/schema bumps again. Every result carries the
+    explicit relation path used, so nothing is inferred silently.
+    """
+    edges = db.execute(
+        select(m.TraceLink).where(m.TraceLink.project_id == project_id)
+    ).scalars().all()
+    out_adj, inc_adj = _graph_adjacency(edges)
+
+    types = {
+        so.semantic_id: so.object_type.value
+        for so in db.execute(
+            select(m.SemanticObject).where(m.SemanticObject.project_id == project_id)
+        ).scalars().all()
+    }
+
+    def walk(adj, direction: str) -> list[dict]:
+        results: dict[str, dict] = {}
+        queue: list[tuple[str, list[dict], int]] = [(semantic_id, [], 0)]
+        while queue:
+            node, path, depth = queue.pop(0)
+            for nxt, rel in adj.get(node, []):
+                if depth + 1 > max_depth:
+                    continue
+                new_path = path + [{"semantic_id": nxt, "relation": rel}]
+                sev = _severity(depth + 1, types.get(nxt), None)
+                prev = results.get(nxt)
+                if prev is None or _severity_order(sev) > _severity_order(prev["severity"]):
+                    results[nxt] = {
+                        "semantic_id": nxt,
+                        "object_type": types.get(nxt),
+                        "severity": sev,
+                        "depth": depth + 1,
+                        "direction": direction,
+                        "path": new_path,
+                    }
+                queue.append((nxt, new_path, depth + 1))
+        return sorted(results.values(), key=lambda r: _severity_order(r["severity"]), reverse=True)
+
+    return {
+        "semantic_id": semantic_id,
+        "object_type": types.get(semantic_id),
+        "max_depth": max_depth,
+        "affected": walk(out_adj, "downstream") + walk(inc_adj, "upstream"),
+    }
+
+
+def _severity_order(sev: str) -> int:
+    return {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "DIRECT": 4}.get(sev, 0)
+
+
+# ---------------------------------------------------------------------------
 # Project memory — semantic context for the right-hand panel
 # ---------------------------------------------------------------------------
 

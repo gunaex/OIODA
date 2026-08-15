@@ -872,3 +872,30 @@ class ExternalReference(Base):
     url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChangeSet(Base):
+    """A named, reviewable batch of change intents for impact analysis v2."""
+
+    __tablename__ = "change_sets"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cs"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class ChangeItem(Base):
+    """One intended change to one semantic object inside a ChangeSet."""
+
+    __tablename__ = "change_items"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("ci"))
+    change_set_id: Mapped[str] = mapped_column(ForeignKey("change_sets.id"), index=True)
+    semantic_id: Mapped[str] = mapped_column(String(200), index=True)
+    change_type: Mapped[str] = mapped_column(String(20), default="MODIFIED")  # MODIFIED|ADDED|REMOVED|RENAMED
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -285,3 +285,47 @@ def test_external_reference_list_filters_by_semantic(db, project):
                                   service="qa-again", external_id="QA-1")
     refs = svc.list_external_references(db, project_id=project.id, semantic_id="REQ-0001")
     assert [r["external_id"] for r in refs] == ["PM-1"]
+
+
+# ---------------------------------------------------------------------------
+# P3-J impact analysis v2 (change sets + rule-based severity)
+# ---------------------------------------------------------------------------
+
+
+def test_change_set_create_and_list(db, project):
+    cs = svc.create_change_set(
+        db, project_id=project.id, name="Breaking API change",
+        items=[{"semantic_id": "EP-0001", "change_type": "REMOVED", "rationale": "deprecated"},
+               {"semantic_id": "TBL-0001", "change_type": "MODIFIED"}],
+    )
+    assert cs["name"] == "Breaking API change" and len(cs["items"]) == 2
+    listed = svc.list_change_sets(db, project_id=project.id)
+    assert listed[0]["id"] == cs["id"]
+
+
+def test_change_set_rejects_bad_change_type(db, project):
+    with pytest.raises(Exception):
+        svc.create_change_set(db, project_id=project.id, name="x",
+                              items=[{"semantic_id": "EP-0001", "change_type": "NOPE"}])
+
+
+def test_impact_v2_rule_based_severity(db, project):
+    for sid, ot in [("REQ-0001", m.SemanticObjectType.REQUIREMENT),
+                    ("EP-0001", m.SemanticObjectType.API_ENDPOINT),
+                    ("TBL-0001", m.SemanticObjectType.DB_TABLE),
+                    ("FLD-0001", m.SemanticObjectType.DB_FIELD)]:
+        svc.ensure_semantic_object(db, project_id=project.id, semantic_id=sid,
+                                   object_type=ot, display_name=sid)
+    svc.create_trace_link(db, project_id=project.id, source_semantic_id="REQ-0001",
+                          target_semantic_id="EP-0001", relation_type=m.TraceRelationType.IMPLEMENTS)
+    svc.create_trace_link(db, project_id=project.id, source_semantic_id="EP-0001",
+                          target_semantic_id="TBL-0001", relation_type=m.TraceRelationType.AFFECTS)
+    svc.create_trace_link(db, project_id=project.id, source_semantic_id="TBL-0001",
+                          target_semantic_id="FLD-0001", relation_type=m.TraceRelationType.AFFECTS)
+
+    r = svc.impact_analysis_v2(db, project_id=project.id, semantic_id="REQ-0001", max_depth=4)
+    by_sid = {a["semantic_id"]: a for a in r["affected"]}
+    assert by_sid["EP-0001"]["severity"] == "DIRECT"
+    assert by_sid["TBL-0001"]["severity"] == "DIRECT"  # HIGH bumped by DB_TABLE rule
+    assert by_sid["FLD-0001"]["severity"] == "HIGH"    # MEDIUM bumped by DB_FIELD rule
+    assert by_sid["EP-0001"]["path"][0]["relation"] == "IMPLEMENTS"
