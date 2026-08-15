@@ -7,7 +7,9 @@ annotation, traceability and change memory**.
 > Files are outputs. Structured, versioned design knowledge is the
 > source of truth.
 
-## What exists (P0)
+## What exists
+
+### P0 foundation
 
 - Canonical **Requirement** model independent of generated documents
 - Generic **Artifact / ArtifactRevision** with an explicit lifecycle
@@ -27,6 +29,28 @@ annotation, traceability and change memory**.
 - Structured **database design model** (schema/table/field/relation)
   with the data dictionary generated as a pure view
 - Ecosystem-consistent three-pane workspace UI
+
+### P1 workspace
+
+- **Rich UR/DR editor** — sections with stable semantic ids
+  (`docsec_…`), headings/paragraphs/lists/tables/code, autosave,
+  revision context header, read-only confirmed documents
+- **Review workflow** — submit → comment/question/clarification →
+  resolve → confirm (with evidence), review inbox, activity timeline
+- **Interactive DB designer + ERD** — table/field CRUD, PK/FK,
+  relations; ERD is a draggable *view* over structured truth, layout
+  persisted separately from the schema
+- **Data dictionary** — searchable, filterable, exportable view
+- **Revision compare** — text diff + semantic diff (ADDED/REMOVED/
+  CHANGED table/field/relation) keyed by stable ids
+- **Traceability explorer** — list + graph over stored trace links
+- **Deterministic impact analysis** — direct + bounded transitive with
+  relation-path explanation (no AI)
+- **Change workspace** — full controlled-change flow that spawns new
+  revisions and never mutates old baselines
+- **Project memory panel** — Comments / Trace / Impact / History /
+  Evidence / Help for any focused semantic object
+- **Semantic search** — favours semantic objects over file names
 
 ## Stack
 
@@ -53,9 +77,14 @@ npm run dev
 
 ```bash
 cd backend
-.venv/bin/python ../scripts/dogfood.py     # end-to-end P0 scenario, seeds local db
-.venv/bin/python -m pytest tests/ -q       # product invariant suite
+.venv/bin/python ../scripts/dogfood.py        # P0 end-to-end scenario
+.venv/bin/python ../scripts/dogfood_p1.py     # P1 integrated scenario (fresh migrated db)
+.venv/bin/python -m pytest tests/ -q          # 37 invariant + integration tests
+.venv/bin/alembic check                       # schema drift check
 ```
+
+> `dogfood*.py` write to the DB in `backend/data/`. Point `DA_DB_PATH`
+> at a temp file to run them against a clean, freshly migrated database.
 
 ## Docs
 
