@@ -26,8 +26,8 @@ def upgrade() -> None:
         sa.Column("external_reference", sa.String(300), nullable=True),
         sa.Column("payload_snapshot", sa.JSON, nullable=True),
         sa.Column("correlation_id", sa.String(200), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_by", sa.String(100), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_by", sa.String(100), nullable=False),
         sa.Column("actor_id", sa.String(200), nullable=True),
         sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
     )
@@ -48,8 +48,8 @@ def upgrade() -> None:
         sa.Column("external_reference", sa.String(300), nullable=True),
         sa.Column("payload_snapshot", sa.JSON, nullable=True),
         sa.Column("correlation_id", sa.String(200), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_by", sa.String(100), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_by", sa.String(100), nullable=False),
         sa.Column("actor_id", sa.String(200), nullable=True),
         sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
     )
@@ -67,7 +67,7 @@ def upgrade() -> None:
         sa.Column("object_type", sa.String(60), nullable=True),
         sa.Column("url", sa.String(500), nullable=True),
         sa.Column("metadata", sa.JSON, nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("project_id", "service", "external_id"),
     )
     op.create_index("ix_external_references_project_id", "external_references", ["project_id"])

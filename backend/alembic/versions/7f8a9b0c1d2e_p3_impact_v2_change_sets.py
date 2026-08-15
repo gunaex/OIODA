@@ -20,8 +20,8 @@ def upgrade() -> None:
         sa.Column("project_id", sa.String(40), sa.ForeignKey("projects.id"), nullable=False),
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("description", sa.Text, nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_by", sa.String(100), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_by", sa.String(100), nullable=False),
         sa.Column("actor_id", sa.String(200), nullable=True),
     )
     op.create_index("ix_change_sets_project_id", "change_sets", ["project_id"])
@@ -33,7 +33,7 @@ def upgrade() -> None:
         sa.Column("semantic_id", sa.String(200), nullable=False),
         sa.Column("change_type", sa.String(20), nullable=False),
         sa.Column("rationale", sa.Text, nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index("ix_change_items_change_set_id", "change_items", ["change_set_id"])
     op.create_index("ix_change_items_semantic_id", "change_items", ["semantic_id"])
