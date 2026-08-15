@@ -949,6 +949,65 @@ def save_architecture_layout(diagram_id: str, body: ArchLayoutIn, db: Session = 
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Decision / Assumption / Clarification project memory
+# ---------------------------------------------------------------------------
+
+
+class DecisionIn(BaseModel):
+    project_id: str
+    title: str
+    content: str
+    decided_by: str | None = None
+    related_semantic_ids: list[str] | None = None
+
+
+class AssumptionIn(BaseModel):
+    project_id: str
+    content: str
+    related_semantic_ids: list[str] | None = None
+
+
+class ClarificationIn(BaseModel):
+    project_id: str
+    question: str
+    answer: str | None = None
+    related_semantic_ids: list[str] | None = None
+
+
+class PromoteIn(BaseModel):
+    annotation_id: str
+    to_kind: str  # decision | assumption | clarification | change_request
+
+
+@router.get("/projects/{project_id}/project-memory")
+def list_project_memory(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_project_memory(db, project_id)
+
+
+@router.post("/decisions", status_code=201)
+def create_decision(body: DecisionIn, db: Session = Depends(db_session), actor=Depends(actor)):
+    d = svc.create_decision(db, **body.model_dump(), actor=actor)
+    return {"id": d.id, "code": d.semantic_id, "title": d.title}
+
+
+@router.post("/assumptions", status_code=201)
+def create_assumption(body: AssumptionIn, db: Session = Depends(db_session), actor=Depends(actor)):
+    a = svc.create_assumption(db, **body.model_dump(), actor=actor)
+    return {"id": a.id, "code": a.semantic_id}
+
+
+@router.post("/clarifications", status_code=201)
+def create_clarification(body: ClarificationIn, db: Session = Depends(db_session), actor=Depends(actor)):
+    c = svc.create_clarification(db, **body.model_dump(), actor=actor)
+    return {"id": c.id, "code": c.semantic_id}
+
+
+@router.post("/promote-annotation", status_code=201)
+def promote_annotation(body: PromoteIn, db: Session = Depends(db_session), actor=Depends(actor)):
+    return svc.promote_annotation(db, annotation_id=body.annotation_id, to_kind=body.to_kind, actor=actor)
+
+
 @router.get("/db-schemas/{schema_id}/data-dictionary")
 def data_dictionary(schema_id: str, db: Session = Depends(db_session)):
     return svc.data_dictionary(db, schema_id)

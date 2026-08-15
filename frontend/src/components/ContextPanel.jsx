@@ -76,6 +76,18 @@ export function ContextPanel() {
     } catch (e) { setError(e); }
   }
 
+  async function promote(annotation) {
+    const kind = window.prompt("Promote to: decision | assumption | clarification | change_request", "decision");
+    if (!kind) return;
+    setError(null);
+    try {
+      const result = await api.post("/promote-annotation", { annotation_id: annotation.id, to_kind: kind.trim().toLowerCase() });
+      setAnnotations((a) => a.map((x) => (x.id === annotation.id ? { ...x, status: "RESOLVED" } : x)));
+      // eslint-disable-next-line no-alert
+      window.alert(`Promoted → ${result.kind} ${result.code}`);
+    } catch (e) { setError(e); }
+  }
+
   const visible = annotations.filter((a) =>
     filter === "All" ? true : filter === "Open" ? a.status !== "RESOLVED" : a.status === "RESOLVED"
   );
@@ -138,6 +150,7 @@ export function ContextPanel() {
                       {a.status !== "RESOLVED"
                         ? <button className="text-[11px] text-brand-300 hover:text-brand-100" onClick={() => setStatus(a, "RESOLVED")}>resolve</button>
                         : <button className="text-[11px] text-amber-300 hover:text-amber-100" onClick={() => setStatus(a, "REOPENED")}>reopen</button>}
+                      <button className="text-[11px] text-slate-500 hover:text-brand-300" onClick={() => promote(a)}>↗ promote</button>
                     </div>
                   </div>
                 ))}

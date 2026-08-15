@@ -444,6 +444,7 @@ def ensure_semantic_object(
     object_type: m.SemanticObjectType,
     display_name: str,
     entity_ref: str | None = None,
+    metadata: dict | None = None,
 ) -> m.SemanticObject:
     obj = db.execute(
         select(m.SemanticObject).where(
@@ -455,6 +456,8 @@ def ensure_semantic_object(
         obj.display_name = display_name  # display names may change
         if entity_ref:
             obj.entity_ref = entity_ref
+        if metadata:
+            obj.metadata_json = metadata
         db.commit()
         return obj
     obj = m.SemanticObject(
@@ -463,6 +466,7 @@ def ensure_semantic_object(
         object_type=object_type,
         display_name=display_name,
         entity_ref=entity_ref,
+        metadata_json=metadata,
     )
     db.add(obj)
     try:
@@ -2198,3 +2202,138 @@ def list_architecture_diagrams(db: Session, project_id: str) -> list[dict]:
             ],
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# Decision / Assumption / Clarification project-memory surfaces
+# ---------------------------------------------------------------------------
+
+
+def _next_code(db: Session, project_id: str, prefix: str, model) -> str:
+    count = db.execute(select(model.id).where(model.project_id == project_id)).scalars().all()
+    return f"{prefix}-{len(count) + 1:04d}"
+
+
+def create_decision(
+    db: Session, *, project_id: str, title: str, content: str,
+    decided_by="local-user", related_semantic_ids: list[str] | None = None, actor="local-user",
+) -> m.Decision:
+    code = _next_code(db, project_id, "DEC", m.Decision)
+    d = m.Decision(project_id=project_id, semantic_id=code, title=title, content=content, decided_by=decided_by)
+    db.add(d)
+    db.flush()
+    ensure_semantic_object(
+        db, project_id=project_id, semantic_id=code, object_type=m.SemanticObjectType.DECISION,
+        display_name=title, entity_ref=d.id,
+    )
+    for sid in (related_semantic_ids or []):
+        create_trace_link(db, project_id=project_id, source_semantic_id=code, target_semantic_id=sid, relation_type=m.TraceRelationType.REFERENCES, actor=actor)
+    db.commit()
+    return d
+
+
+def create_assumption(db: Session, *, project_id: str, content: str, related_semantic_ids=None, actor="local-user") -> m.Assumption:
+    code = _next_code(db, project_id, "ASM", m.Assumption)
+    a = m.Assumption(project_id=project_id, semantic_id=code, content=content, created_by=actor)
+    db.add(a)
+    db.flush()
+    ensure_semantic_object(db, project_id=project_id, semantic_id=code, object_type=m.SemanticObjectType.ASSUMPTION, display_name=code, entity_ref=a.id)
+    for sid in (related_semantic_ids or []):
+        create_trace_link(db, project_id=project_id, source_semantic_id=code, target_semantic_id=sid, relation_type=m.TraceRelationType.REFERENCES, actor=actor)
+    db.commit()
+    return a
+
+
+def create_clarification(db: Session, *, project_id: str, question: str, answer=None, related_semantic_ids=None, actor="local-user") -> m.Clarification:
+    code = _next_code(db, project_id, "CLR", m.Clarification)
+    c = m.Clarification(project_id=project_id, question=question, answer=answer, asked_by=actor, resolved=answer is not None)
+    db.add(c)
+    db.flush()
+    ensure_semantic_object(db, project_id=project_id, semantic_id=code, object_type=m.SemanticObjectType.CLARIFICATION, display_name=code, entity_ref=c.id)
+    for sid in (related_semantic_ids or []):
+        create_trace_link(db, project_id=project_id, source_semantic_id=code, target_semantic_id=sid, relation_type=m.TraceRelationType.REFERENCES, actor=actor)
+    db.commit()
+    return c
+
+
+def list_project_memory(db: Session, project_id: str) -> dict:
+    decisions = db.execute(select(m.Decision).where(m.Decision.project_id == project_id)).scalars().all()
+    assumptions = db.execute(select(m.Assumption).where(m.Assumption.project_id == project_id)).scalars().all()
+    clarifications = db.execute(select(m.Clarification).where(m.Clarification.project_id == project_id)).scalars().all()
+    links = db.execute(select(m.TraceLink).where(m.TraceLink.project_id == project_id)).scalars().all()
+
+    def related(sid):
+        return [l.target_semantic_id for l in links if l.source_semantic_id == sid and l.relation_type == m.TraceRelationType.REFERENCES]
+
+    return {
+        "decisions": [
+            {"id": d.id, "code": d.semantic_id, "title": d.title, "content": d.content,
+             "decided_by": d.decided_by, "decided_at": d.decided_at.isoformat(), "related": related(d.semantic_id)}
+            for d in decisions
+        ],
+        "assumptions": [
+            {"id": a.id, "code": a.semantic_id, "content": a.content, "status": a.status,
+             "created_by": a.created_by, "related": related(a.semantic_id)}
+            for a in assumptions
+        ],
+        "clarifications": [
+            {"id": c.id, "code": c.semantic_id, "question": c.question, "answer": c.answer,
+             "asked_by": c.asked_by, "resolved": c.resolved, "related": related(c.semantic_id)}
+            for c in clarifications
+        ],
+    }
+
+
+def promote_annotation(db: Session, *, annotation_id: str, to_kind: str, actor="local-user") -> dict:
+    """Promote a comment/annotation into a first-class project-memory record.
+
+    Provenance is retained: the source annotation id / thread is recorded
+    and the annotation is marked resolved.
+    """
+    ann = get_or_404(db, m.Annotation, annotation_id, "Annotation")
+    provenance = {
+        "source": "annotation", "annotation_id": ann.id, "thread_id": ann.thread_id,
+        "author": ann.created_by, "anchor": ann.anchor_semantic_id,
+    }
+    source_label = f"Comment Thread #{ann.thread_id}" if ann.thread_id else f"Annotation #{ann.id}"
+
+    if to_kind == "change_request":
+        cr = create_change_request(
+            db, project_id=ann.project_id, requested_change=ann.content,
+            affected_semantic_ids=[ann.anchor_semantic_id], reason=f"Promoted from {source_label}",
+            actor=actor,
+        )
+        result = {"kind": "change_request", "code": cr.code, "provenance": provenance}
+    elif to_kind == "decision":
+        code = _next_code(db, ann.project_id, "DEC", m.Decision)
+        d = m.Decision(project_id=ann.project_id, semantic_id=code, title=(ann.content or code)[:80], content=ann.content, decided_by=actor)
+        db.add(d)
+        db.flush()
+        ensure_semantic_object(db, project_id=ann.project_id, semantic_id=code, object_type=m.SemanticObjectType.DECISION,
+                               display_name=(ann.content or code)[:80], entity_ref=d.id, metadata={"provenance": provenance})
+        create_trace_link(db, project_id=ann.project_id, source_semantic_id=code, target_semantic_id=ann.anchor_semantic_id, relation_type=m.TraceRelationType.REFERENCES, actor=actor)
+        result = {"kind": "decision", "code": code, "provenance": provenance}
+    elif to_kind == "assumption":
+        code = _next_code(db, ann.project_id, "ASM", m.Assumption)
+        a = m.Assumption(project_id=ann.project_id, semantic_id=code, content=ann.content, created_by=actor)
+        db.add(a)
+        db.flush()
+        ensure_semantic_object(db, project_id=ann.project_id, semantic_id=code, object_type=m.SemanticObjectType.ASSUMPTION,
+                               display_name=code, entity_ref=a.id, metadata={"provenance": provenance})
+        create_trace_link(db, project_id=ann.project_id, source_semantic_id=code, target_semantic_id=ann.anchor_semantic_id, relation_type=m.TraceRelationType.REFERENCES, actor=actor)
+        result = {"kind": "assumption", "code": code, "provenance": provenance}
+    elif to_kind == "clarification":
+        code = _next_code(db, ann.project_id, "CLR", m.Clarification)
+        c = m.Clarification(project_id=ann.project_id, question=ann.content, asked_by=actor, resolved=False)
+        db.add(c)
+        db.flush()
+        ensure_semantic_object(db, project_id=ann.project_id, semantic_id=code, object_type=m.SemanticObjectType.CLARIFICATION,
+                               display_name=code, entity_ref=c.id, metadata={"provenance": provenance})
+        create_trace_link(db, project_id=ann.project_id, source_semantic_id=code, target_semantic_id=ann.anchor_semantic_id, relation_type=m.TraceRelationType.REFERENCES, actor=actor)
+        result = {"kind": "clarification", "code": code, "provenance": provenance}
+    else:
+        raise DomainError(f"Unknown promotion target '{to_kind}'", status_code=422)
+
+    ann.status = m.AnnotationStatus.RESOLVED
+    db.commit()
+    return result

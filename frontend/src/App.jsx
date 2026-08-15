@@ -17,6 +17,7 @@ import { Search } from "./pages/Search.jsx";
 import { FlowDesigner } from "./pages/FlowDesigner.jsx";
 import { ApiDesign } from "./pages/ApiDesign.jsx";
 import { Architecture } from "./pages/Architecture.jsx";
+import { Decisions } from "./pages/Decisions.jsx";
 import { ContextPanel } from "./components/ContextPanel.jsx";
 
 /*
@@ -86,7 +87,7 @@ export default function App() {
                 <Route path="/design/flows" element={<FlowDesigner />} />
                 <Route path="/design/apis" element={<ApiDesign />} />
                 <Route path="/design/architecture" element={<Architecture />} />
-                <Route path="/decisions" element={<Placeholder title="Decisions" note="Decision / assumption / clarification records are persisted by the domain layer; the review surface ships in P2." />} />
+                <Route path="/decisions" element={<Decisions />} />
                 <Route path="/reviews" element={<Reviews />} />
                 <Route path="/comments" element={<Comments />} />
                 <Route path="/change-requests" element={<ChangeRequests />} />

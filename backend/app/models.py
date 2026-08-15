@@ -86,6 +86,9 @@ class SemanticObjectType(str, enum.Enum):
     API_ENDPOINT = "API_ENDPOINT"
     ARCHITECTURE_NODE = "ARCHITECTURE_NODE"
     SCREEN = "SCREEN"
+    DECISION = "DECISION"
+    ASSUMPTION = "ASSUMPTION"
+    CLARIFICATION = "CLARIFICATION"
 
 
 class TraceRelationType(str, enum.Enum):
