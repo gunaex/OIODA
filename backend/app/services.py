@@ -882,27 +882,34 @@ def create_relation(
 
 def data_dictionary(db: Session, schema_id: str) -> list[dict]:
     """A pure view over the structured model — no separate truth stored."""
-    schema = get_or_404(db, m.DatabaseSchema, schema_id, "Schema")
+    get_or_404(db, m.DatabaseSchema, schema_id, "Schema")
+    tables = db.execute(
+        select(m.DatabaseTable).where(m.DatabaseTable.schema_id == schema_id)
+    ).scalars().all()
+    table_sid = {t.id: t.semantic_id for t in tables}
+    table_name = {t.id: t.name for t in tables}
+    fields = db.execute(
+        select(m.DatabaseField).where(m.DatabaseField.table_id.in_(table_sid))
+    ).scalars().all()
     result = []
-    for table in schema.tables:
-        for f in table.fields:
-            result.append(
-                {
-                    "table": table.name,
-                    "table_semantic_id": table.semantic_id,
-                    "field": f.name,
-                    "field_semantic_id": f.semantic_id,
-                    "data_type": f.data_type,
-                    "length": f.length,
-                    "nullable": f.nullable,
-                    "default": f.default,
-                    "primary_key": f.primary_key,
-                    "foreign_key": f.foreign_key,
-                    "reference": f.reference,
-                    "description": f.description,
-                    "remark": f.remark,
-                }
-            )
+    for f in fields:
+        result.append(
+            {
+                "table": table_name[f.table_id],
+                "table_semantic_id": table_sid[f.table_id],
+                "field": f.name,
+                "field_semantic_id": f.semantic_id,
+                "data_type": f.data_type,
+                "length": f.length,
+                "nullable": f.nullable,
+                "default": f.default,
+                "primary_key": f.primary_key,
+                "foreign_key": f.foreign_key,
+                "reference": f.reference,
+                "description": f.description,
+                "remark": f.remark,
+            }
+        )
     return result
 
 
@@ -1271,26 +1278,29 @@ def db_design_snapshot(db: Session, schema_id: str) -> dict:
     than positional noise.
     """
     schema = get_or_404(db, m.DatabaseSchema, schema_id, "Schema")
-    tables: dict[str, dict] = {}
-    for t in schema.tables:
-        tables[t.semantic_id] = {
-            "name": t.name,
-            "description": t.description,
-            "fields": {
-                f.semantic_id: {
-                    "name": f.name,
-                    "data_type": f.data_type,
-                    "length": f.length,
-                    "nullable": f.nullable,
-                    "default": f.default,
-                    "primary_key": f.primary_key,
-                    "foreign_key": f.foreign_key,
-                    "reference": f.reference,
-                    "description": f.description,
-                    "remark": f.remark,
-                }
-                for f in t.fields
-            },
+    tables = db.execute(
+        select(m.DatabaseTable).where(m.DatabaseTable.schema_id == schema_id)
+    ).scalars().all()
+    table_sid = {t.id: t.semantic_id for t in tables}
+    tables_out: dict[str, dict] = {
+        t.semantic_id: {"name": t.name, "description": t.description, "fields": {}}
+        for t in tables
+    }
+    fields = db.execute(
+        select(m.DatabaseField).where(m.DatabaseField.table_id.in_(table_sid))
+    ).scalars().all()
+    for f in fields:
+        tables_out[table_sid[f.table_id]]["fields"][f.semantic_id] = {
+            "name": f.name,
+            "data_type": f.data_type,
+            "length": f.length,
+            "nullable": f.nullable,
+            "default": f.default,
+            "primary_key": f.primary_key,
+            "foreign_key": f.foreign_key,
+            "reference": f.reference,
+            "description": f.description,
+            "remark": f.remark,
         }
     relations = {
         r.semantic_id: {
@@ -1302,7 +1312,7 @@ def db_design_snapshot(db: Session, schema_id: str) -> dict:
             select(m.DatabaseRelation).where(m.DatabaseRelation.schema_id == schema_id)
         ).scalars()
     }
-    return {"tables": tables, "relations": relations}
+    return {"tables": tables_out, "relations": relations}
 
 
 # ---------------------------------------------------------------------------
