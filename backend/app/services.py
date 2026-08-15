@@ -798,3 +798,111 @@ def data_dictionary(db: Session, schema_id: str) -> list[dict]:
                 }
             )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Document workspace (rich UR/DR content, section semantic identity)
+# ---------------------------------------------------------------------------
+
+_DOC_BLOCK_KINDS = {"heading", "paragraph", "bullet_list", "numbered_list", "table", "code"}
+
+
+def _normalise_sections(artifact_id: str, sections: list[dict]) -> list[dict]:
+    """Assign a stable section id where one is missing.
+
+    Section identity lives inside the snapshot and is preserved by the
+    editor across edits of the same draft. The id only changes if a
+    section is deleted and a new one is added — it is never reused.
+    """
+    out: list[dict] = []
+    used: set[str] = set()
+    counter = 0
+    for sec in sections:
+        sec = dict(sec)
+        sid = sec.get("id") or f"docsec_{artifact_id}_{counter}"
+        while sid in used:
+            counter += 1
+            sid = f"docsec_{artifact_id}_{counter}"
+        used.add(sid)
+        sec["id"] = sid
+        blocks = []
+        for blk in sec.get("blocks", []):
+            blk = dict(blk)
+            blk.setdefault("kind", "paragraph")
+            blocks.append(blk)
+        sec["blocks"] = blocks
+        out.append(sec)
+        counter += 1
+    return out
+
+
+def save_document(
+    db: Session,
+    *,
+    revision_id: str,
+    sections: list[dict],
+    title: str | None = None,
+    actor: str = "local-user",
+) -> m.ArtifactRevision:
+    """Persist rich document content for a DRAFT revision.
+
+    Each section is registered as a DOCUMENT_SECTION semantic object so
+    comments and traces can bind to it — never to a DOM position.
+    Confirmed revisions are immutable and are rejected here.
+    """
+    revision = get_or_404(db, m.ArtifactRevision, revision_id, "Revision")
+    require_editable(revision)
+    artifact = revision.artifact
+    sections = _normalise_sections(artifact.id, sections)
+    for sec in sections:
+        ensure_semantic_object(
+            db,
+            project_id=artifact.project_id,
+            semantic_id=sec["id"],
+            object_type=m.SemanticObjectType.DOCUMENT_SECTION,
+            display_name=sec.get("heading") or "Untitled section",
+            entity_ref=artifact.id,
+        )
+    snapshot = dict(revision.snapshot or {})
+    snapshot["sections"] = sections
+    revision.snapshot = snapshot
+    if title is not None:
+        revision.title = title
+        artifact.title = title
+    db.commit()
+    return revision
+
+
+def get_document(db: Session, revision_id: str) -> dict:
+    """Return the revision plus its structured sections."""
+    revision = get_or_404(db, m.ArtifactRevision, revision_id, "Revision")
+    snapshot = revision.snapshot or {}
+    sections = snapshot.get("sections")
+    if not isinstance(sections, list):
+        # Legacy P0 snapshots (e.g. {"sections": [{"id", "note"}]}) become
+        # minimal paragraphs so nothing is lost on first edit.
+        legacy = snapshot.get("sections") or snapshot.get("content") or []
+        sections = [
+            {
+                "id": f"docsec_{revision.artifact_id}_{i}",
+                "heading": sec.get("id") or sec.get("title") or f"Section {i + 1}",
+                "blocks": [
+                    {"kind": "paragraph", "text": sec.get("note") or sec.get("text") or ""}
+                ],
+            }
+            for i, sec in enumerate(legacy)
+        ] if isinstance(legacy, list) else []
+    return {
+        "revision_id": revision.id,
+        "artifact_id": revision.artifact_id,
+        "revision_number": revision.revision_number,
+        "status": revision.status.value,
+        "title": revision.title,
+        "artifact_type": revision.artifact.type.value,
+        "based_on_revision_id": revision.based_on_revision_id,
+        "created_by": revision.created_by,
+        "confirmed_by": revision.confirmed_by,
+        "confirmed_at": revision.confirmed_at.isoformat() if revision.confirmed_at else None,
+        "editable": revision.editable,
+        "sections": sections,
+    }

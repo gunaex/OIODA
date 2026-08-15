@@ -173,6 +173,11 @@ def submit_for_review(revision_id: str, db: Session = Depends(db_session)):
     return revision_out(svc.submit_for_review(db, revision_id))
 
 
+@router.post("/revisions/{revision_id}/return-to-draft")
+def return_to_draft(revision_id: str, db: Session = Depends(db_session)):
+    return revision_out(svc.transition_revision(db, revision_id, m.RevisionStatus.DRAFT))
+
+
 class ConfirmIn(BaseModel):
     comment: str | None = None
     evidence: dict | None = None
@@ -550,3 +555,29 @@ def create_relation(body: RelationIn, db: Session = Depends(db_session)):
 @router.get("/db-schemas/{schema_id}/data-dictionary")
 def data_dictionary(schema_id: str, db: Session = Depends(db_session)):
     return svc.data_dictionary(db, schema_id)
+
+
+# ---------------------------------------------------------------------------
+# Document workspace (rich UR/DR content)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/revisions/{revision_id}/document")
+def get_document(revision_id: str, db: Session = Depends(db_session)):
+    return svc.get_document(db, revision_id)
+
+
+class DocumentIn(BaseModel):
+    sections: list[dict]
+    title: str | None = None
+
+
+@router.put("/revisions/{revision_id}/document")
+def save_document(
+    revision_id: str, body: DocumentIn, db: Session = Depends(db_session),
+    actor=Depends(actor),
+):
+    revision = svc.save_document(
+        db, revision_id=revision_id, sections=body.sections, title=body.title, actor=actor
+    )
+    return svc.get_document(db, revision.id)
