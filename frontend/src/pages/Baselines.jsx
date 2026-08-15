@@ -65,6 +65,7 @@ export function Baselines() {
                 </li>
               ))}
             </ul>
+            <a href={`/api/baselines/${b.id}/package`} className="mt-2 inline-block text-[11px] text-brand-300 hover:text-brand-100">⬇ download design package (ZIP)</a>
           </div>
         ))}
       </Card>

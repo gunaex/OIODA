@@ -314,6 +314,7 @@ export function Artifacts({ type }) {
               <div className="flex items-center gap-2">
                 <span className={`text-[11px] ${saving === "dirty" ? "text-amber-400" : saving === "saving" ? "text-slate-400" : "text-slate-600"}`}>{savingLabel}</span>
                 {editable && <Button onClick={() => doSave(doc.sections)}>Save checkpoint</Button>}
+                <a href={`/api/revisions/${doc.revision_id}/export?format=pdf`} className="rounded border border-line px-2 py-1 text-[12px] text-slate-400 hover:text-slate-200">⬇ PDF</a>
                 <StatusBadge status={doc.status} />
               </div>
             </div>

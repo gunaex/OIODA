@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -1011,6 +1012,29 @@ def create_clarification(body: ClarificationIn, db: Session = Depends(db_session
 @router.post("/promote-annotation", status_code=201)
 def promote_annotation(body: PromoteIn, db: Session = Depends(db_session), actor=Depends(actor)):
     return svc.promote_annotation(db, annotation_id=body.annotation_id, to_kind=body.to_kind, actor=actor)
+
+
+# ---------------------------------------------------------------------------
+# Reproducible export + design package
+# ---------------------------------------------------------------------------
+
+
+@router.get("/revisions/{revision_id}/export")
+def export_revision(revision_id: str, format: str = "json", db: Session = Depends(db_session)):
+    content, media_type, filename = svc.export_revision(db, revision_id, format)
+    return Response(
+        content=content, media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/baselines/{baseline_id}/package")
+def export_design_package(baseline_id: str, db: Session = Depends(db_session)):
+    content = svc.export_design_package(db, baseline_id)
+    return Response(
+        content=content, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="baseline-{baseline_id}.zip"'},
+    )
 
 
 @router.get("/db-schemas/{schema_id}/data-dictionary")

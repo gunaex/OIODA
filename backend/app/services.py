@@ -7,7 +7,11 @@ impossible to bypass from the HTTP edge.
 """
 from __future__ import annotations
 
+import csv as _csv
 import difflib
+import io as _io
+import json as _json
+import zipfile as _zipfile
 from collections import Counter
 
 from sqlalchemy import delete, or_, select
@@ -2361,3 +2365,226 @@ def record_actor(db: Session, actor_id: str, display_name: str, tenant_id: str |
     else:
         db.add(m.ActorIdentity(actor_id=actor_id, display_name=display_name, tenant_id=tenant_id, source=source))
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Reproducible export (from versioned structured state, never live state)
+# ---------------------------------------------------------------------------
+
+
+def export_metadata(db: Session, revision_id: str) -> dict:
+    revision = get_or_404(db, m.ArtifactRevision, revision_id, "Revision")
+    baseline = db.execute(
+        select(m.Baseline).join(m.BaselineBinding, m.BaselineBinding.baseline_id == m.Baseline.id)
+        .where(m.BaselineBinding.artifact_revision_id == revision_id)
+    ).scalars().first()
+    return {
+        "project": revision.artifact.project.name,
+        "project_key": revision.artifact.project.key,
+        "artifact_type": revision.artifact.type.value,
+        "artifact_title": revision.artifact.title,
+        "revision_number": revision.revision_number,
+        "status": revision.status.value,
+        "confirmed_by": revision.confirmed_by,
+        "confirmed_at": revision.confirmed_at.isoformat() if revision.confirmed_at else None,
+        "generated_at": m.utcnow().isoformat(),
+        "baseline_id": baseline.id if baseline else None,
+        "baseline_name": baseline.name if baseline else None,
+    }
+
+
+def _flatten_section(section: dict) -> list[dict]:
+    """Flatten a Tiptap doc JSON section into export-friendly blocks."""
+    blocks: list[dict] = []
+
+    def text_of(node) -> str:
+        if node.get("type") == "text":
+            return node.get("text") or ""
+        return "".join(text_of(c) for c in node.get("content") or [])
+
+    def walk(node) -> None:
+        t = node.get("type")
+        if t == "text":
+            return
+        children = node.get("content") or []
+        if t == "heading":
+            blocks.append({"kind": "heading", "level": node.get("attrs", {}).get("level", 2), "text": "".join(text_of(c) for c in children)})
+            return
+        if t == "paragraph":
+            blocks.append({"kind": "paragraph", "text": "".join(text_of(c) for c in children)})
+            return
+        if t in ("bulletList", "orderedList", "taskList"):
+            for item in children:
+                blocks.append({"kind": "list_item", "ordered": t == "orderedList", "text": "".join(text_of(c) for c in item.get("content") or [])})
+            return
+        if t == "codeBlock":
+            blocks.append({"kind": "code", "text": "".join(text_of(c) for c in children)})
+            return
+        if t == "table":
+            rows = []
+            for row in children:
+                rows.append(["".join(text_of(cell) for cell in (row.get("content") or []))])
+            blocks.append({"kind": "table", "rows": rows})
+            return
+        for child in children:
+            walk(child)
+
+    walk(section.get("content") or {"type": "doc", "content": []})
+    return blocks
+
+
+def _data_dictionary_from_snapshot(snapshot: dict) -> list[dict]:
+    """Data dictionary rows derived from a frozen technical-design snapshot."""
+    rows = []
+    for schema_sid, schema in (snapshot.get("db_schemas") or {}).items():
+        for table_sid, table in (schema.get("tables") or {}).items():
+            for field_sid, f in (table.get("fields") or {}).items():
+                rows.append({
+                    "table": table.get("name"), "table_semantic_id": table_sid,
+                    "field": f.get("name"), "field_semantic_id": field_sid,
+                    "data_type": f.get("data_type"), "length": f.get("length"),
+                    "nullable": f.get("nullable"), "default": f.get("default"),
+                    "primary_key": f.get("primary_key"), "foreign_key": f.get("foreign_key"),
+                    "reference": f.get("reference"), "description": f.get("description"),
+                    "remark": f.get("remark"),
+                })
+    return rows
+
+
+def export_revision(db: Session, revision_id: str, format: str) -> tuple[bytes, str, str]:
+    """Export a revision from its frozen snapshot (historical correctness)."""
+    revision = get_or_404(db, m.ArtifactRevision, revision_id, "Revision")
+    snapshot = revision.snapshot or {}
+    meta = export_metadata(db, revision_id)
+    sections = (snapshot.get("sections") or [])
+
+    if format == "json":
+        payload = {
+            "metadata": meta,
+            "sections": sections,
+            "technical_design": snapshot.get("technical_design"),
+            "database": snapshot.get("database"),
+        }
+        return _json.dumps(payload, indent=2, default=str).encode(), "application/json", f"{meta['artifact_title']}-r{revision.revision_number}.json"
+
+    if format == "csv":
+        # Historical: prefer the frozen technical-design snapshot.
+        dd = _data_dictionary_from_snapshot(snapshot.get("technical_design") or {})
+        if not dd:
+            dd = _data_dictionary_from_snapshot({"db_schemas": snapshot.get("database", {}) or {}})
+        buf = _io.StringIO()
+        writer = _csv.DictWriter(buf, fieldnames=["table", "field", "data_type", "length", "nullable", "default", "primary_key", "foreign_key", "reference", "description", "remark", "field_semantic_id"])
+        writer.writeheader()
+        for row in dd:
+            writer.writerow({k: row.get(k) for k in writer.fieldnames})
+        return buf.getvalue().encode(), "text/csv", f"{meta['artifact_title']}-r{revision.revision_number}.csv"
+
+    if format == "pdf":
+        return _render_pdf(meta, sections), "application/pdf", f"{meta['artifact_title']}-r{revision.revision_number}.pdf"
+
+    if format == "svg":
+        return _render_erd_svg(snapshot), "image/svg+xml", f"{meta['artifact_title']}-r{revision.revision_number}.svg"
+
+    raise DomainError(f"Unknown export format '{format}'", status_code=422)
+
+
+def _render_pdf(meta: dict, sections: list[dict]) -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Preformatted, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=18 * mm, bottomMargin=18 * mm)
+    styles = getSampleStyleSheet()
+    styles["Title"].fontName = "Helvetica-Bold"
+    story = [
+        Paragraph(meta["artifact_title"], styles["Title"]),
+        Paragraph(
+            f"{meta['artifact_type']} · revision r{meta['revision_number']} · {meta['status']} · "
+            f"confirmed by {meta.get('confirmed_by') or '—'} at {meta.get('confirmed_at') or '—'}<br/>"
+            f"project {meta['project']} · generated {meta['generated_at']} · baseline {meta.get('baseline_name') or '—'}",
+            styles["Normal"],
+        ),
+        Spacer(1, 6 * mm),
+    ]
+    for sec in sections:
+        story.append(Paragraph(sec.get("heading") or "Untitled", ParagraphStyle("sh", parent=styles["Heading2"], fontSize=13, spaceBefore=8, spaceAfter=4)))
+        story.append(Paragraph(f'<font size="7" color="#666">{sec.get("id")}</font>', styles["Normal"]))
+        for blk in _flatten_section(sec):
+            kind = blk["kind"]
+            if kind == "heading":
+                story.append(Paragraph(blk["text"], ParagraphStyle("h", parent=styles["Heading3"], fontSize=11, spaceBefore=4, spaceAfter=2)))
+            elif kind == "paragraph":
+                story.append(Paragraph(blk["text"].replace("\n", "<br/>"), styles["Normal"]))
+            elif kind == "list_item":
+                story.append(Paragraph(("• " if not blk.get("ordered") else "1. ") + blk["text"], styles["Normal"]))
+            elif kind == "code":
+                story.append(Preformatted(blk["text"], ParagraphStyle("code", fontName="Courier", fontSize=8, leading=10)))
+            elif kind == "table":
+                rows = blk["rows"]
+                if rows:
+                    t = Table([[Paragraph(c, styles["Normal"]) for c in row] for row in rows])
+                    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, "#999"), ("FONTSIZE", (0, 0), (-1, -1), 8)]))
+                    story.append(t)
+        story.append(Spacer(1, 3 * mm))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def _render_erd_svg(snapshot: dict) -> bytes:
+    """Simple ERD SVG from a frozen technical-design snapshot."""
+    design = snapshot.get("technical_design") or {}
+    schemas = design.get("db_schemas") or {}
+    tables: list[tuple[str, str, list]] = []  # (name, sid, [(field, type, pk, fk)])
+    for schema in schemas.values():
+        for tid, t in (schema.get("tables") or {}).items():
+            fields = [(f.get("name"), f.get("data_type"), f.get("primary_key"), f.get("foreign_key")) for f in (t.get("fields") or {}).values()]
+            tables.append((t.get("name"), tid, fields))
+    parts = ['<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">']
+    x = 40
+    y = 40
+    for i, (name, sid, fields) in enumerate(tables):
+        h = 30 + len(fields) * 18
+        if y + h > 560:
+            y = 40
+            x += 240
+        parts.append(f'<rect x="{x}" y="{y}" width="200" height="{h}" rx="6" fill="#161a23" stroke="#6366f1"/>')
+        parts.append(f'<text x="{x+8}" y="{y+18}" font-size="13" font-weight="bold" fill="#e2e8f0">{name}</text>')
+        for j, (fname, ftype, pk, fk) in enumerate(fields):
+            fy = y + 34 + j * 18
+            mark = "🔑" if pk else ("🔗" if fk else "")
+            parts.append(f'<text x="{x+8}" y="{fy}" font-size="11" fill="#94a3b8">{mark} {fname}: {ftype}</text>')
+        y += h + 24
+    parts.append("</svg>")
+    return "".join(parts).encode()
+
+
+def export_design_package(db: Session, baseline_id: str) -> bytes:
+    """ZIP of export artifacts, all generated from the same baseline context."""
+    baseline = get_or_404(db, m.Baseline, baseline_id, "Baseline")
+    bindings = db.execute(
+        select(m.BaselineBinding).where(m.BaselineBinding.baseline_id == baseline_id)
+    ).scalars().all()
+    if not bindings:
+        raise DomainError("Baseline has no bindings")
+
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as z:
+        meta_rows = []
+        for b in bindings:
+            rev = db.get(m.ArtifactRevision, b.artifact_revision_id)
+            if rev is None:
+                continue
+            meta = export_metadata(db, rev.id)
+            meta_rows.append(meta)
+            if rev.artifact.type in (m.ArtifactType.UR, m.ArtifactType.DR):
+                pdf, _, name = export_revision(db, rev.id, "pdf")
+                z.writestr(name, pdf)
+            json_bytes, _, name = export_revision(db, rev.id, "json")
+            z.writestr(f"revision-{rev.revision_number}-{rev.artifact.type.value}.json", json_bytes)
+            csv_bytes, _, _ = export_revision(db, rev.id, "csv")
+            if csv_bytes.strip():
+                z.writestr(f"data-dictionary-{rev.artifact.type.value}-r{rev.revision_number}.csv", csv_bytes)
+        z.writestr("manifest.json", _json.dumps({"baseline": baseline.name, "baseline_id": baseline.id, "revisions": meta_rows}, indent=2, default=str))
+    return buf.getvalue()
