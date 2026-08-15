@@ -22,8 +22,6 @@ does not fake those integrations.
 
 ## Selected stack
 
-See [STACK.md](STACK.md).
-
 ```text
 Frontend    React 19 + Vite 8 + Tailwind 4 + React Router 7
 Backend     FastAPI + SQLAlchemy 2 + Alembic + Pydantic v2
