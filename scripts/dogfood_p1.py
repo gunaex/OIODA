@@ -118,7 +118,13 @@ def main() -> int:
         old_dr_binding = next(b for b in resolved["bindings"] if b["artifact_id"] == dr["id"])
         check("Old baseline keeps DR rev 1", old_dr_binding["artifact_revision_id"] == frozen_dr)
         old_doc = c.get(f"/api/revisions/{frozen_dr}/document").json()
-        old_items = old_doc["sections"][0]["blocks"][0].get("items", [])
+        old_content = old_doc["sections"][0].get("content", {})
+        old_items = []
+        for node in old_content.get("content", []):
+            if node.get("type") == "orderedList":
+                for item in node.get("content", []):
+                    for p in item.get("content", []):
+                        old_items.extend(t.get("text") for t in p.get("content", []) if t.get("type") == "text")
         check("Old baseline DR still 2 levels", len(old_items) == 2, f"items={old_items}")
 
         # 14. review + confirm new revision + new baseline
