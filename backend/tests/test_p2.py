@@ -127,7 +127,8 @@ def test_actor_identity_resolution(client, db, project):
     assert ann.actor_id == "acc-123"
     assert ann.created_by == "Alice"
     actor_row = db.get(m.ActorIdentity, "acc-123")
-    assert actor_row is not None and actor_row.source == "ACCOUNT_AGAIN" and actor_row.tenant_id == "t-1"
+    # In local mode the header is a trusted shortcut, not Account Again-validated.
+    assert actor_row is not None and actor_row.source == "LOCAL" and actor_row.tenant_id == "t-1"
 
 
 # ---------------------------------------------------------------------------
