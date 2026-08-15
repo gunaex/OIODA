@@ -2408,6 +2408,17 @@ def record_actor(db: Session, actor_id: str, display_name: str, tenant_id: str |
 # ---------------------------------------------------------------------------
 
 
+def _safe_filename(name: str) -> str:
+    """ASCII-only filename for Content-Disposition headers."""
+    keep = []
+    for ch in name:
+        if ch.isascii() and ch.isalnum() or ch in ".-_":
+            keep.append(ch)
+        else:
+            keep.append("_")
+    return "".join(keep)
+
+
 def export_metadata(db: Session, revision_id: str) -> dict:
     revision = get_or_404(db, m.ArtifactRevision, revision_id, "Revision")
     baseline = db.execute(
@@ -2501,7 +2512,7 @@ def export_revision(db: Session, revision_id: str, format: str) -> tuple[bytes, 
             "technical_design": snapshot.get("technical_design"),
             "database": snapshot.get("database"),
         }
-        return _json.dumps(payload, indent=2, default=str).encode(), "application/json", f"{meta['artifact_title']}-r{revision.revision_number}.json"
+        return _json.dumps(payload, indent=2, default=str).encode(), "application/json", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}.json"
 
     if format == "csv":
         # Historical: prefer the frozen technical-design snapshot.
@@ -2513,13 +2524,13 @@ def export_revision(db: Session, revision_id: str, format: str) -> tuple[bytes, 
         writer.writeheader()
         for row in dd:
             writer.writerow({k: row.get(k) for k in writer.fieldnames})
-        return buf.getvalue().encode(), "text/csv", f"{meta['artifact_title']}-r{revision.revision_number}.csv"
+        return buf.getvalue().encode(), "text/csv", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}.csv"
 
     if format == "pdf":
-        return _render_pdf(meta, sections), "application/pdf", f"{meta['artifact_title']}-r{revision.revision_number}.pdf"
+        return _render_pdf(meta, sections), "application/pdf", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}.pdf"
 
     if format == "svg":
-        return _render_erd_svg(snapshot), "image/svg+xml", f"{meta['artifact_title']}-r{revision.revision_number}.svg"
+        return _render_erd_svg(snapshot), "image/svg+xml", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}.svg"
 
     raise DomainError(f"Unknown export format '{format}'", status_code=422)
 
