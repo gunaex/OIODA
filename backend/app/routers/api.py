@@ -1066,7 +1066,7 @@ def promote_annotation(body: PromoteIn, db: Session = Depends(db_session), actor
 
 @router.get("/revisions/{revision_id}/export")
 def export_revision(revision_id: str, format: str = "json", db: Session = Depends(db_session)):
-    content, media_type, filename = svc.export_revision(db, revision_id, format)
+    content, media_type, filename = svc.export_revision_v2(db, revision_id, format)
     return Response(
         content=content, media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
@@ -1079,6 +1079,15 @@ def export_design_package(baseline_id: str, db: Session = Depends(db_session)):
     return Response(
         content=content, media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="baseline-{baseline_id}.zip"'},
+    )
+
+
+@router.get("/baselines/{baseline_id}/package-v2")
+def export_design_package_v2(baseline_id: str, db: Session = Depends(db_session)):
+    content = svc.export_design_package_v2(db, baseline_id)
+    return Response(
+        content=content, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="baseline-{baseline_id}-v2.zip"'},
     )
 
 

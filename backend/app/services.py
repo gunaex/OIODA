@@ -3416,3 +3416,173 @@ def export_design_package(db: Session, baseline_id: str) -> bytes:
                 z.writestr(f"data-dictionary-{rev.artifact.type.value}-r{rev.revision_number}.csv", csv_bytes)
         z.writestr("manifest.json", _json.dumps({"baseline": baseline.name, "baseline_id": baseline.id, "revisions": meta_rows}, indent=2, default=str))
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Export V2 — XLSX / DOCX / traceability matrix / design package directory
+# ---------------------------------------------------------------------------
+
+
+def _traceability_rows(db: Session, project_id: str) -> list[dict]:
+    """Traceability matrix rows from current trace links (labelled as live)."""
+    types = {
+        so.semantic_id: so.object_type.value
+        for so in db.execute(
+            select(m.SemanticObject).where(m.SemanticObject.project_id == project_id)
+        ).scalars().all()
+    }
+    links = db.execute(
+        select(m.TraceLink).where(m.TraceLink.project_id == project_id)
+        .order_by(m.TraceLink.source_semantic_id)
+    ).scalars().all()
+    return [
+        {
+            "source": l.source_semantic_id, "source_type": types.get(l.source_semantic_id),
+            "relation": l.relation_type.value, "target": l.target_semantic_id,
+            "target_type": types.get(l.target_semantic_id),
+            "revision_context": l.revision_context,
+        }
+        for l in links
+    ]
+
+
+def _render_xlsx(meta: dict, sections: list[dict], dd_rows: list[dict], trace_rows: list[dict]) -> bytes:
+    import openpyxl
+    from openpyxl.styles import Font
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Metadata"
+    for i, (k, v) in enumerate(meta.items(), start=1):
+        ws.cell(row=i, column=1, value=k).font = Font(bold=True)
+        ws.cell(row=i, column=2, value=v)
+
+    if sections:
+        ws2 = wb.create_sheet("Document")
+        r = 1
+        for sec in sections:
+            ws2.cell(row=r, column=1, value=sec.get("id") or "").font = Font(bold=True)
+            ws2.cell(row=r, column=2, value=sec.get("heading") or "").font = Font(bold=True)
+            r += 1
+            for blk in _flatten_section(sec):
+                ws2.cell(row=r, column=2, value=blk["text"])
+                r += 1
+
+    if dd_rows:
+        ws3 = wb.create_sheet("Data Dictionary")
+        headers = ["table", "field", "data_type", "length", "nullable", "primary_key",
+                   "foreign_key", "reference", "description", "remark", "field_semantic_id"]
+        ws3.append(headers)
+        for row in dd_rows:
+            ws3.append([row.get(h) for h in headers])
+
+    if trace_rows:
+        ws4 = wb.create_sheet("Traceability")
+        ws4.append(["source", "source_type", "relation", "target", "target_type", "revision_context"])
+        for row in trace_rows:
+            ws4.append([row["source"], row["source_type"], row["relation"],
+                        row["target"], row["target_type"], row["revision_context"]])
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _render_docx(meta: dict, sections: list[dict]) -> bytes:
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading(meta["artifact_title"], level=0)
+    doc.add_paragraph(
+        f"{meta['artifact_type']} · revision r{meta['revision_number']} · {meta['status']} · "
+        f"confirmed by {meta.get('confirmed_by') or '—'} at {meta.get('confirmed_at') or '—'} · "
+        f"project {meta['project']} · generated {meta['generated_at']}"
+    )
+    for sec in sections:
+        doc.add_heading(sec.get("heading") or "Untitled", level=1)
+        for blk in _flatten_section(sec):
+            kind = blk["kind"]
+            if kind == "heading":
+                doc.add_heading(blk["text"], level=2)
+            elif kind == "paragraph":
+                doc.add_paragraph(blk["text"])
+            elif kind == "list_item":
+                doc.add_paragraph(blk["text"], style="List Bullet")
+            elif kind == "code":
+                doc.add_paragraph(blk["text"], style="No Spacing")
+            elif kind == "table" and blk["rows"]:
+                table = doc.add_table(rows=len(blk["rows"]), cols=len(blk["rows"][0]))
+                for i, row in enumerate(blk["rows"]):
+                    for j, cell in enumerate(row):
+                        table.cell(i, j).text = cell
+    buf = _io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def export_revision_v2(db: Session, revision_id: str, format: str) -> tuple[bytes, str, str]:
+    """Export V2: xlsx / docx in addition to the V1 formats (reuse)."""
+    if format in ("xlsx", "docx"):
+        revision = get_or_404(db, m.ArtifactRevision, revision_id, "Revision")
+        snapshot = revision.snapshot or {}
+        meta = export_metadata(db, revision_id)
+        sections = snapshot.get("sections") or []
+        dd = _data_dictionary_from_snapshot(snapshot.get("technical_design") or {})
+        if not dd:
+            dd = _data_dictionary_from_snapshot({"db_schemas": snapshot.get("database", {}) or {}})
+        base = f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}"
+        if format == "xlsx":
+            trace = _traceability_rows(db, revision.artifact.project_id)
+            return _render_xlsx(meta, sections, dd, trace), \
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", f"{base}.xlsx"
+        return _render_docx(meta, sections), \
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document", f"{base}.docx"
+    return export_revision(db, revision_id, format)
+
+
+def export_design_package_v2(db: Session, baseline_id: str) -> bytes:
+    """ZIP export with a clean directory structure (design package V2)."""
+    baseline = get_or_404(db, m.Baseline, baseline_id, "Baseline")
+    bindings = db.execute(
+        select(m.BaselineBinding).where(m.BaselineBinding.baseline_id == baseline_id)
+    ).scalars().all()
+    if not bindings:
+        raise DomainError("Baseline has no bindings")
+
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as z:
+        meta_rows = []
+        dd_rows = []
+        trace_rows = _traceability_rows(db, baseline.project_id)
+        for b in bindings:
+            rev = db.get(m.ArtifactRevision, b.artifact_revision_id)
+            if rev is None:
+                continue
+            meta = export_metadata(db, rev.id)
+            meta_rows.append(meta)
+            snapshot = rev.snapshot or {}
+            dd_rows.extend(_data_dictionary_from_snapshot(snapshot.get("technical_design") or {}))
+            json_bytes, _, _ = export_revision(db, rev.id, "json")
+            z.writestr(f"revisions/{rev.revision_number}-{rev.artifact.type.value}.json", json_bytes)
+            if rev.artifact.type in (m.ArtifactType.UR, m.ArtifactType.DR):
+                pdf, _, _ = export_revision(db, rev.id, "pdf")
+                z.writestr(f"documents/{_safe_filename(meta['artifact_title'])}-r{rev.revision_number}.pdf", pdf)
+                docx, _, _ = export_revision_v2(db, rev.id, "docx")
+                z.writestr(f"documents/{_safe_filename(meta['artifact_title'])}-r{rev.revision_number}.docx", docx)
+            # OpenAPI export from API_DESIGN revisions
+            if rev.artifact.type == m.ArtifactType.API_DESIGN:
+                api_map = (snapshot.get("technical_design") or {}).get("api_endpoints") or {}
+                if api_map:
+                    z.writestr(f"api/{_safe_filename(meta['artifact_title'])}.openapi.json",
+                               _json.dumps(export_openapi(db, rev.id), indent=2, default=str))
+        if dd_rows:
+            z.writestr("data-dictionary.xlsx", _render_xlsx(
+                export_metadata(db, bindings[0].artifact_revision_id), [], dd_rows, []))
+        z.writestr("traceability.xlsx", _render_xlsx(
+            export_metadata(db, bindings[0].artifact_revision_id), [], [], trace_rows))
+        z.writestr("manifest.json", _json.dumps(
+            {"baseline": baseline.name, "baseline_id": baseline.id,
+             "directory_structure": ["manifest.json", "documents/", "revisions/",
+                                     "api/", "data-dictionary.xlsx", "traceability.xlsx"],
+             "revisions": meta_rows}, indent=2, default=str))
+    return buf.getvalue()

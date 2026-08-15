@@ -418,3 +418,67 @@ def test_openapi_export_from_revision_snapshot(db, project):
     assert out["openapi"] == "3.0.0"
     assert "/pets" in out["paths"]
     assert out["paths"]["/pets"]["get"]["parameters"][0]["name"] == "limit"
+
+
+# ---------------------------------------------------------------------------
+# P3-H export V2 (xlsx / docx / traceability / package directory)
+# ---------------------------------------------------------------------------
+
+
+def _make_revision(db, project, snapshot):
+    artifact = m.Artifact(project_id=project.id, type=m.ArtifactType.DR, title="Design Doc")
+    db.add(artifact)
+    db.flush()
+    rev = m.ArtifactRevision(
+        artifact_id=artifact.id, revision_number=1, status=m.RevisionStatus.CONFIRMED,
+        title="Design Doc", snapshot=snapshot, confirmed_by="alice", confirmed_at=m.utcnow(),
+    )
+    db.add(rev)
+    db.commit()
+    return rev
+
+
+def test_export_xlsx_has_traceability_sheet(db, project):
+    for sid, ot in [("REQ-0001", m.SemanticObjectType.REQUIREMENT),
+                    ("EP-0001", m.SemanticObjectType.API_ENDPOINT)]:
+        svc.ensure_semantic_object(db, project_id=project.id, semantic_id=sid,
+                                   object_type=ot, display_name=sid)
+    svc.create_trace_link(db, project_id=project.id, source_semantic_id="REQ-0001",
+                          target_semantic_id="EP-0001", relation_type=m.TraceRelationType.IMPLEMENTS)
+    rev = _make_revision(db, project, {
+        "sections": [{"id": "s1", "heading": "Overview",
+                      "content": {"type": "doc", "content": [
+                          {"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]}}],
+        "technical_design": {},
+    })
+    data, media, name = svc.export_revision_v2(db, rev.id, "xlsx")
+    assert data[:2] == b"PK" and name.endswith(".xlsx")
+    import openpyxl, io as _io2
+    wb = openpyxl.load_workbook(_io2.BytesIO(data))
+    assert "Traceability" in wb.sheetnames and "Document" in wb.sheetnames
+
+
+def test_export_docx_roundtrip(db, project):
+    rev = _make_revision(db, project, {
+        "sections": [{"id": "s1", "heading": "Intro",
+                      "content": {"type": "doc", "content": [
+                          {"type": "paragraph", "content": [{"type": "text", "text": "body"}]}]}}],
+    })
+    data, media, name = svc.export_revision_v2(db, rev.id, "docx")
+    assert data[:2] == b"PK" and name.endswith(".docx")
+    from docx import Document
+    import io as _io2
+    doc = Document(_io2.BytesIO(data))
+    assert any("body" in p.text for p in doc.paragraphs)
+
+
+def test_traceability_rows(db, project):
+    svc.ensure_semantic_object(db, project_id=project.id, semantic_id="REQ-0001",
+                               object_type=m.SemanticObjectType.REQUIREMENT, display_name="r")
+    svc.ensure_semantic_object(db, project_id=project.id, semantic_id="EP-0001",
+                               object_type=m.SemanticObjectType.API_ENDPOINT, display_name="e")
+    svc.create_trace_link(db, project_id=project.id, source_semantic_id="REQ-0001",
+                          target_semantic_id="EP-0001", relation_type=m.TraceRelationType.IMPLEMENTS)
+    rows = svc._traceability_rows(db, project.id)
+    assert rows[0]["relation"] == "IMPLEMENTS"
+    assert rows[0]["source_type"] == "REQUIREMENT"
