@@ -628,6 +628,57 @@ class ApiErrorResponse(Base):
 
 
 # ---------------------------------------------------------------------------
+# Architecture design workspace (structured; diagram is a view)
+# ---------------------------------------------------------------------------
+
+
+class ArchitectureDiagram(Base):
+    __tablename__ = "architecture_diagrams"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("arch"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    semantic_id: Mapped[str] = mapped_column(String(200), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    layout: Mapped[dict | None] = mapped_column(JSON, default=dict, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    nodes: Mapped[list["ArchitectureNode"]] = relationship(back_populates="diagram", cascade="all, delete-orphan")
+    edges: Mapped[list["ArchitectureEdge"]] = relationship(back_populates="diagram", cascade="all, delete-orphan")
+
+
+class ArchitectureNode(Base):
+    __tablename__ = "architecture_nodes"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("anod"))
+    diagram_id: Mapped[str] = mapped_column(ForeignKey("architecture_diagrams.id"), index=True)
+    semantic_id: Mapped[str] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(200))
+    node_type: Mapped[str] = mapped_column(String(40), default="SERVICE")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    technology: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    environment: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    diagram: Mapped[ArchitectureDiagram] = relationship(back_populates="nodes")
+
+
+class ArchitectureEdge(Base):
+    __tablename__ = "architecture_edges"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("aedge"))
+    diagram_id: Mapped[str] = mapped_column(ForeignKey("architecture_diagrams.id"), index=True)
+    semantic_id: Mapped[str] = mapped_column(String(200))
+    from_node_semantic_id: Mapped[str] = mapped_column(String(200))
+    to_node_semantic_id: Mapped[str] = mapped_column(String(200))
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    diagram: Mapped[ArchitectureDiagram] = relationship(back_populates="edges")
+
+
+# ---------------------------------------------------------------------------
 # Decision / Assumption / Clarification / Release
 # ---------------------------------------------------------------------------
 

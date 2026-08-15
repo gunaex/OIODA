@@ -340,6 +340,23 @@ def snapshot_technical_design(db: Session, project_id: str) -> dict:
     ).scalars().all()
     designs["api_endpoints"] = {a.semantic_id: api_endpoint_snapshot(a) for a in apis}
 
+    diagrams = db.execute(
+        select(m.ArchitectureDiagram).where(m.ArchitectureDiagram.project_id == project_id)
+    ).scalars().all()
+    designs["architecture"] = {}
+    for d in diagrams:
+        nodes = db.execute(
+            select(m.ArchitectureNode).where(m.ArchitectureNode.diagram_id == d.id)
+        ).scalars().all()
+        edges = db.execute(
+            select(m.ArchitectureEdge).where(m.ArchitectureEdge.diagram_id == d.id)
+        ).scalars().all()
+        designs["architecture"][d.semantic_id] = {
+            "name": d.name,
+            "nodes": {n.semantic_id: {"name": n.name, "node_type": n.node_type, "technology": n.technology, "environment": n.environment} for n in nodes},
+            "edges": {e.semantic_id: {"from": e.from_node_semantic_id, "to": e.to_node_semantic_id, "label": e.label} for e in edges},
+        }
+
     return designs
 
 
@@ -2063,6 +2080,121 @@ def list_api_endpoints(db: Session, project_id: str) -> list[dict]:
             "error_responses": [
                 {"id": e.id, "status_code": e.status_code, "message": e.message,
                  "description": e.description} for e in ep.error_responses
+            ],
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Architecture design workspace
+# ---------------------------------------------------------------------------
+
+ARCH_NODE_TYPES = {
+    "USER", "CLIENT", "SERVICE", "DATABASE", "QUEUE", "STORAGE",
+    "EXTERNAL_SYSTEM", "NETWORK_ZONE", "CLOUD_SERVICE",
+}
+
+
+def create_architecture_diagram(
+    db: Session, *, project_id: str, name: str, semantic_id: str, description=None, actor="local-user"
+) -> m.ArchitectureDiagram:
+    d = m.ArchitectureDiagram(project_id=project_id, semantic_id=semantic_id, name=name, description=description)
+    db.add(d)
+    db.commit()
+    return d
+
+
+def add_architecture_node(
+    db: Session, *, diagram_id: str, name: str, semantic_id: str,
+    node_type: str = "SERVICE", description=None, technology=None, environment=None, metadata=None,
+) -> m.ArchitectureNode:
+    diagram = get_or_404(db, m.ArchitectureDiagram, diagram_id, "ArchitectureDiagram")
+    if node_type not in ARCH_NODE_TYPES:
+        raise DomainError(f"Unknown node type '{node_type}'", status_code=422)
+    node = m.ArchitectureNode(
+        diagram_id=diagram_id, semantic_id=semantic_id, name=name, node_type=node_type,
+        description=description, technology=technology, environment=environment, metadata_json=metadata,
+    )
+    db.add(node)
+    db.flush()
+    ensure_semantic_object(
+        db, project_id=diagram.project_id, semantic_id=semantic_id,
+        object_type=m.SemanticObjectType.ARCHITECTURE_NODE, display_name=name, entity_ref=node.id,
+    )
+    db.commit()
+    return node
+
+
+def add_architecture_edge(
+    db: Session, *, diagram_id: str, from_node_semantic_id: str, to_node_semantic_id: str, label=None,
+) -> m.ArchitectureEdge:
+    diagram = get_or_404(db, m.ArchitectureDiagram, diagram_id, "ArchitectureDiagram")
+    for sid in (from_node_semantic_id, to_node_semantic_id):
+        exists = db.execute(
+            select(m.ArchitectureNode.id).where(
+                m.ArchitectureNode.diagram_id == diagram_id,
+                m.ArchitectureNode.semantic_id == sid,
+            )
+        ).scalar_one_or_none()
+        if not exists:
+            raise DomainError(f"Unknown node '{sid}' in this diagram", status_code=422)
+    edge = m.ArchitectureEdge(
+        diagram_id=diagram_id,
+        semantic_id=f"edge_{from_node_semantic_id}__{to_node_semantic_id}",
+        from_node_semantic_id=from_node_semantic_id, to_node_semantic_id=to_node_semantic_id, label=label,
+    )
+    db.add(edge)
+    db.commit()
+    return edge
+
+
+def delete_architecture_node(db: Session, node_id: str) -> None:
+    node = get_or_404(db, m.ArchitectureNode, node_id, "ArchitectureNode")
+    db.execute(
+        delete(m.ArchitectureEdge).where(
+            or_(
+                m.ArchitectureEdge.from_node_semantic_id == node.semantic_id,
+                m.ArchitectureEdge.to_node_semantic_id == node.semantic_id,
+            )
+        )
+    )
+    db.delete(node)
+    db.commit()
+
+
+def delete_architecture_edge(db: Session, edge_id: str) -> None:
+    edge = get_or_404(db, m.ArchitectureEdge, edge_id, "ArchitectureEdge")
+    db.delete(edge)
+    db.commit()
+
+
+def save_architecture_layout(db: Session, diagram_id: str, layout: dict) -> m.ArchitectureDiagram:
+    diagram = get_or_404(db, m.ArchitectureDiagram, diagram_id, "ArchitectureDiagram")
+    diagram.layout = layout or {}
+    db.commit()
+    return diagram
+
+
+def list_architecture_diagrams(db: Session, project_id: str) -> list[dict]:
+    diagrams = db.execute(
+        select(m.ArchitectureDiagram).where(m.ArchitectureDiagram.project_id == project_id)
+    ).scalars().all()
+    out = []
+    for d in diagrams:
+        nodes = db.execute(select(m.ArchitectureNode).where(m.ArchitectureNode.diagram_id == d.id)).scalars().all()
+        edges = db.execute(select(m.ArchitectureEdge).where(m.ArchitectureEdge.diagram_id == d.id)).scalars().all()
+        out.append({
+            "id": d.id, "semantic_id": d.semantic_id, "name": d.name, "description": d.description,
+            "layout": d.layout or {},
+            "nodes": [
+                {"id": n.id, "semantic_id": n.semantic_id, "name": n.name, "node_type": n.node_type,
+                 "description": n.description, "technology": n.technology, "environment": n.environment}
+                for n in nodes
+            ],
+            "edges": [
+                {"id": e.id, "semantic_id": e.semantic_id, "from": e.from_node_semantic_id,
+                 "to": e.to_node_semantic_id, "label": e.label}
+                for e in edges
             ],
         })
     return out

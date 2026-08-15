@@ -876,6 +876,79 @@ def delete_api_error_response(child_id: str, db: Session = Depends(db_session)):
     svc._delete_api_child(db, m.ApiErrorResponse, child_id)
 
 
+# ---------------------------------------------------------------------------
+# Architecture design workspace
+# ---------------------------------------------------------------------------
+
+
+class ArchDiagramIn(BaseModel):
+    project_id: str
+    name: str
+    semantic_id: str
+    description: str | None = None
+
+
+class ArchNodeIn(BaseModel):
+    diagram_id: str
+    name: str
+    semantic_id: str
+    node_type: str = "SERVICE"
+    description: str | None = None
+    technology: str | None = None
+    environment: str | None = None
+    metadata: dict | None = None
+
+
+class ArchEdgeIn(BaseModel):
+    diagram_id: str
+    from_node_semantic_id: str
+    to_node_semantic_id: str
+    label: str | None = None
+
+
+class ArchLayoutIn(BaseModel):
+    layout: dict
+
+
+@router.get("/projects/{project_id}/architecture")
+def list_architecture(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_architecture_diagrams(db, project_id)
+
+
+@router.post("/architecture-diagrams", status_code=201)
+def create_architecture_diagram(body: ArchDiagramIn, db: Session = Depends(db_session), actor=Depends(actor)):
+    d = svc.create_architecture_diagram(db, **body.model_dump(), actor=actor)
+    return {"id": d.id, "semantic_id": d.semantic_id, "name": d.name}
+
+
+@router.post("/architecture-nodes", status_code=201)
+def add_architecture_node(body: ArchNodeIn, db: Session = Depends(db_session)):
+    n = svc.add_architecture_node(db, **body.model_dump())
+    return {"id": n.id, "semantic_id": n.semantic_id, "name": n.name, "node_type": n.node_type}
+
+
+@router.post("/architecture-edges", status_code=201)
+def add_architecture_edge(body: ArchEdgeIn, db: Session = Depends(db_session)):
+    e = svc.add_architecture_edge(db, **body.model_dump())
+    return {"id": e.id, "semantic_id": e.semantic_id}
+
+
+@router.delete("/architecture-nodes/{node_id}", status_code=204)
+def delete_architecture_node(node_id: str, db: Session = Depends(db_session)):
+    svc.delete_architecture_node(db, node_id)
+
+
+@router.delete("/architecture-edges/{edge_id}", status_code=204)
+def delete_architecture_edge(edge_id: str, db: Session = Depends(db_session)):
+    svc.delete_architecture_edge(db, edge_id)
+
+
+@router.put("/architecture-diagrams/{diagram_id}/layout")
+def save_architecture_layout(diagram_id: str, body: ArchLayoutIn, db: Session = Depends(db_session)):
+    svc.save_architecture_layout(db, diagram_id, body.layout)
+    return {"ok": True}
+
+
 @router.get("/db-schemas/{schema_id}/data-dictionary")
 def data_dictionary(schema_id: str, db: Session = Depends(db_session)):
     return svc.data_dictionary(db, schema_id)

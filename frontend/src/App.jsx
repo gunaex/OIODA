@@ -16,6 +16,7 @@ import { ImpactAnalysis } from "./pages/ImpactAnalysis.jsx";
 import { Search } from "./pages/Search.jsx";
 import { FlowDesigner } from "./pages/FlowDesigner.jsx";
 import { ApiDesign } from "./pages/ApiDesign.jsx";
+import { Architecture } from "./pages/Architecture.jsx";
 import { ContextPanel } from "./components/ContextPanel.jsx";
 
 /*
@@ -84,7 +85,7 @@ export default function App() {
                 <Route path="/design/impact" element={<ImpactAnalysis />} />
                 <Route path="/design/flows" element={<FlowDesigner />} />
                 <Route path="/design/apis" element={<ApiDesign />} />
-                <Route path="/design/architecture" element={<Placeholder title="Architecture" note="Architecture nodes are registered as semantic objects; the diagram canvas is a P2 view over them." />} />
+                <Route path="/design/architecture" element={<Architecture />} />
                 <Route path="/decisions" element={<Placeholder title="Decisions" note="Decision / assumption / clarification records are persisted by the domain layer; the review surface ships in P2." />} />
                 <Route path="/reviews" element={<Reviews />} />
                 <Route path="/comments" element={<Comments />} />
