@@ -2279,6 +2279,225 @@ def list_api_endpoints(db: Session, project_id: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# OpenAPI 3.x import/export (structured API design as the source of truth)
+# ---------------------------------------------------------------------------
+
+
+def _parse_openapi(text: str) -> dict:
+    """Parse a JSON or YAML OpenAPI 3.x document into a raw spec dict."""
+    import yaml as _yaml
+
+    try:
+        spec = _json.loads(text)
+    except Exception:
+        try:
+            spec = _yaml.safe_load(text)
+        except Exception as exc:
+            raise DomainError(f"OpenAPI document is neither valid JSON nor YAML: {exc}", status_code=422)
+    if not isinstance(spec, dict) or "paths" not in spec or not isinstance(spec["paths"], dict):
+        raise DomainError("OpenAPI document must be an object with a 'paths' object", status_code=422)
+    return spec
+
+
+def _resolve_schema_type(schema: dict) -> str:
+    if not isinstance(schema, dict):
+        return "string"
+    if "type" in schema and isinstance(schema["type"], str):
+        return schema["type"]
+    if "$ref" in schema:
+        return schema["$ref"].split("/")[-1]
+    if "anyOf" in schema or "oneOf" in schema:
+        return "union"
+    return "object"
+
+
+def openapi_to_endpoints(spec: dict) -> list[dict]:
+    """Normalize an OpenAPI 3.x spec into Document Again endpoint dicts."""
+    out = []
+    for path, path_item in spec.get("paths", {}).items():
+        if not isinstance(path_item, dict):
+            continue
+        for method in ("get", "post", "put", "delete", "patch", "head", "options"):
+            op = path_item.get(method)
+            if not isinstance(op, dict):
+                continue
+            parameters = []
+            for p in op.get("parameters", []) or []:
+                if isinstance(p, dict):
+                    sch = p.get("schema") or {}
+                    parameters.append({
+                        "name": p.get("name", ""), "location": p.get("in", "query"),
+                        "data_type": _resolve_schema_type(sch), "required": bool(p.get("required")),
+                        "description": p.get("description"),
+                    })
+            request_fields = []
+            if "requestBody" in op and isinstance(op["requestBody"], dict):
+                content = op["requestBody"].get("content", {})
+                for ctype, media in content.items():
+                    schema = (media or {}).get("schema") or {}
+                    props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+                    for fname, fsch in props.items():
+                        if isinstance(fsch, dict):
+                            request_fields.append({
+                                "name": fname, "data_type": _resolve_schema_type(fsch),
+                                "required": fname in (schema.get("required") or []),
+                                "description": fsch.get("description"),
+                            })
+            response_fields = []
+            error_responses = []
+            for status, resp in (op.get("responses") or {}).items():
+                if not isinstance(resp, dict):
+                    continue
+                if status.startswith("2"):
+                    content = resp.get("content", {})
+                    for ctype, media in content.items():
+                        schema = (media or {}).get("schema") or {}
+                        props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+                        for fname, fsch in props.items():
+                            if isinstance(fsch, dict):
+                                response_fields.append({
+                                    "status_code": status, "name": fname,
+                                    "data_type": _resolve_schema_type(fsch),
+                                    "description": fsch.get("description"),
+                                })
+                else:
+                    error_responses.append({
+                        "status_code": status,
+                        "message": resp.get("description") or f"HTTP {status}",
+                        "description": resp.get("description"),
+                    })
+            out.append({
+                "method": method.upper(), "path": path, "summary": op.get("summary"),
+                "description": op.get("description"),
+                "authentication": "BEARER" if ("security" in op and op["security"]) else "NONE",
+                "parameters": parameters, "request_fields": request_fields,
+                "response_fields": response_fields, "error_responses": error_responses,
+            })
+    return out
+
+
+def preview_openapi_import(db: Session, project_id: str, text: str) -> dict:
+    """Diff a parsed OpenAPI spec against existing endpoints (no writes)."""
+    incoming = openapi_to_endpoints(_parse_openapi(text))
+    existing = list_api_endpoints(db, project_id)
+    existing_keys = {e["semantic_id"] for e in existing}
+    report = {"added": [], "changed": [], "removed": [], "unchanged": [], "conflicts": []}
+    for ep in incoming:
+        sid = f"api_{ep['method'].lower()}_{_slug_path(ep['path'])}"
+        if sid in existing_keys:
+            current = next(e for e in existing if e["semantic_id"] == sid)
+            if (current["method"] == ep["method"] and current["path"] == ep["path"]
+                    and current["summary"] == ep["summary"]):
+                report["unchanged"].append(sid)
+            else:
+                report["changed"].append(sid)
+        else:
+            report["added"].append(sid)
+    incoming_keys = {f"api_{ep['method'].lower()}_{_slug_path(ep['path'])}" for ep in incoming}
+    for e in existing:
+        if e["semantic_id"] not in incoming_keys:
+            report["removed"].append(e["semantic_id"])
+    return {"project_id": project_id, **report}
+
+
+def import_openapi(db: Session, project_id: str, text: str, actor="local-user") -> dict:
+    """Apply an OpenAPI spec: create missing endpoints, update changed ones.
+
+    Removed endpoints are never deleted (historical truth); they are listed
+    in the report so a human can decide.
+    """
+    spec = _parse_openapi(text)
+    preview = preview_openapi_import(db, project_id, text)
+    applied = []
+    for ep in openapi_to_endpoints(spec):
+        sid = f"api_{ep['method'].lower()}_{_slug_path(ep['path'])}"
+        existing = db.execute(
+            select(m.APIEndpoint).where(
+                m.APIEndpoint.project_id == project_id, m.APIEndpoint.semantic_id == sid
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            created = create_api_endpoint(
+                db, project_id=project_id, method=ep["method"], path=ep["path"],
+                summary=ep["summary"], semantic_id=sid, description=ep["description"],
+                authentication=ep["authentication"], actor=actor,
+            )
+            _apply_api_children(db, created, ep)
+            applied.append({"semantic_id": sid, "action": "ADDED"})
+        else:
+            update_api_endpoint(
+                db, existing.id, method=ep["method"], path=ep["path"],
+                summary=ep["summary"], description=ep["description"],
+                authentication=ep["authentication"],
+            )
+            _replace_api_children(db, existing, ep)
+            applied.append({"semantic_id": sid, "action": "UPDATED"})
+    return {"project_id": project_id, "applied": applied,
+            "removed_in_spec": preview["removed"], "conflicts": preview["conflicts"]}
+
+
+def _apply_api_children(db, ep, ep_dict):
+    for p in ep_dict["parameters"]:
+        _add_api_child(db, m.ApiParameter, endpoint_id=ep.id, **p)
+    for f in ep_dict["request_fields"]:
+        _add_api_child(db, m.ApiRequestField, endpoint_id=ep.id, **f)
+    for f in ep_dict["response_fields"]:
+        _add_api_child(db, m.ApiResponseField, endpoint_id=ep.id, **f)
+    for e in ep_dict["error_responses"]:
+        _add_api_child(db, m.ApiErrorResponse, endpoint_id=ep.id, **e)
+
+
+def _replace_api_children(db, ep, ep_dict):
+    for model in (m.ApiParameter, m.ApiRequestField, m.ApiResponseField, m.ApiErrorResponse):
+        for child in db.execute(
+            select(model).where(model.endpoint_id == ep.id)
+        ).scalars().all():
+            db.delete(child)
+    db.flush()
+    _apply_api_children(db, ep, ep_dict)
+
+
+def export_openapi(db: Session, revision_id: str) -> dict:
+    """Reconstruct an OpenAPI 3.0 document from a revision's API snapshot."""
+    rev = get_or_404(db, m.ArtifactRevision, revision_id, "Revision")
+    snapshot = rev.snapshot or {}
+    api_map = snapshot.get("technical_design", {}).get("api_endpoints") or {}
+    if isinstance(api_map, dict):
+        endpoints = list(api_map.values())
+    else:
+        endpoints = api_map
+    paths: dict = {}
+    for ep in endpoints:
+        method = (ep.get("method") or "get").lower()
+        path = ep.get("path") or "/"
+        op = paths.setdefault(path, {})
+        op[method] = {
+            "summary": ep.get("summary"),
+            "description": ep.get("description"),
+            "parameters": [
+                {"name": p.get("name"), "in": p.get("location", "query"),
+                 "required": p.get("required", False),
+                 "schema": {"type": p.get("data_type", "string")},
+                 "description": p.get("description")}
+                for p in (ep.get("parameters") or [])
+            ],
+            "responses": {
+                str(f.get("status_code", "200")): {
+                    "description": f.get("description") or "",
+                    "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {
+                            f.get("name", "value"): {"type": f.get("data_type", "string")}
+                        }
+                    }}}
+                }
+                for f in (ep.get("response_fields") or [])
+            } or {"200": {"description": "OK"}},
+        }
+    return {"openapi": "3.0.0", "info": {"title": "Document Again — exported API design",
+                                         "version": "1.0"}, "paths": paths}
+
+
+# ---------------------------------------------------------------------------
 # Architecture design workspace
 # ---------------------------------------------------------------------------
 

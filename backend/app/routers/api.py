@@ -841,6 +841,26 @@ def list_api_endpoints(project_id: str, db: Session = Depends(db_session)):
     return svc.list_api_endpoints(db, project_id)
 
 
+class OpenAPIImportIn(BaseModel):
+    project_id: str
+    document: str
+
+
+@router.post("/openapi/preview")
+def preview_openapi(body: OpenAPIImportIn, db: Session = Depends(db_session)):
+    return svc.preview_openapi_import(db, body.project_id, body.document)
+
+
+@router.post("/openapi/import")
+def import_openapi(body: OpenAPIImportIn, db: Session = Depends(db_session), actor=Depends(actor)):
+    return svc.import_openapi(db, body.project_id, body.document, actor=actor)
+
+
+@router.get("/revisions/{revision_id}/openapi")
+def export_openapi(revision_id: str, db: Session = Depends(db_session)):
+    return svc.export_openapi(db, revision_id)
+
+
 @router.post("/api-endpoints", status_code=201)
 def create_api_endpoint(body: ApiIn, db: Session = Depends(db_session), actor=Depends(actor)):
     ep = svc.create_api_endpoint(db, **body.model_dump(), actor=actor)

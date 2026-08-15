@@ -329,3 +329,92 @@ def test_impact_v2_rule_based_severity(db, project):
     assert by_sid["TBL-0001"]["severity"] == "DIRECT"  # HIGH bumped by DB_TABLE rule
     assert by_sid["FLD-0001"]["severity"] == "HIGH"    # MEDIUM bumped by DB_FIELD rule
     assert by_sid["EP-0001"]["path"][0]["relation"] == "IMPLEMENTS"
+
+
+# ---------------------------------------------------------------------------
+# P3-G OpenAPI import/export
+# ---------------------------------------------------------------------------
+
+OPENAPI_SPEC = """
+openapi: 3.0.0
+info: {title: Petstore, version: "1.0"}
+paths:
+  /pets:
+    get:
+      summary: List pets
+      parameters:
+        - {name: limit, in: query, required: false, schema: {type: integer}}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+    post:
+      summary: Create pet
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+      responses:
+        "201": {description: Created}
+        "400": {description: Bad request}
+"""
+
+
+def test_openapi_to_endpoints_parses_yaml(db, project):
+    eps = svc.openapi_to_endpoints(svc._parse_openapi(OPENAPI_SPEC))
+    assert {e["method"] for e in eps} == {"GET", "POST"}
+    get_ep = next(e for e in eps if e["method"] == "GET")
+    assert get_ep["parameters"][0]["name"] == "limit"
+    assert get_ep["response_fields"][0]["name"] == "id"
+
+
+def test_openapi_import_creates_endpoints_and_children(db, project):
+    report = svc.import_openapi(db, project.id, OPENAPI_SPEC)
+    assert len(report["applied"]) == 2
+    eps = svc.list_api_endpoints(db, project_id=project.id)
+    assert len(eps) == 2
+    get_ep = next(e for e in eps if e["method"] == "GET")
+    assert get_ep["parameters"][0]["name"] == "limit"
+    assert get_ep["response_fields"][0]["name"] == "id"
+    post_ep = next(e for e in eps if e["method"] == "POST")
+    assert post_ep["request_fields"][0]["name"] == "name"
+
+
+def test_openapi_preview_diff(db, project):
+    svc.import_openapi(db, project.id, OPENAPI_SPEC)
+    preview = svc.preview_openapi_import(db, project.id, OPENAPI_SPEC)
+    assert preview["added"] == [] and preview["unchanged"] == ["api_get_pets", "api_post_pets"]
+
+
+def test_openapi_export_from_revision_snapshot(db, project):
+    artifact = m.Artifact(project_id=project.id, type=m.ArtifactType.API_DESIGN, title="API")
+    db.add(artifact)
+    db.flush()
+    rev = m.ArtifactRevision(
+        artifact_id=artifact.id, revision_number=1, status=m.RevisionStatus.CONFIRMED,
+        title="API v1", snapshot={"technical_design": {"api_endpoints": {
+            "api_get_pets": {
+                "method": "GET", "path": "/pets", "summary": "List pets",
+                "description": None, "authentication": "NONE",
+                "parameters": [{"name": "limit", "location": "query", "data_type": "integer",
+                                "required": False, "description": None}],
+                "request_fields": [], "response_fields": [],
+                "error_responses": [], "request_spec": None, "response_spec": None,
+            }
+        }}},
+    )
+    db.add(rev)
+    db.commit()
+    out = svc.export_openapi(db, rev.id)
+    assert out["openapi"] == "3.0.0"
+    assert "/pets" in out["paths"]
+    assert out["paths"]["/pets"]["get"]["parameters"][0]["name"] == "limit"
