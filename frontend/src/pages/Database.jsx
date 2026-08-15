@@ -357,8 +357,12 @@ function ErdPage() {
   const { project, setFocus } = useWorkspace();
   const [schemas, setSchemas] = useState([]);
   const [pos, setPos] = useState({});
+  const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
+  const [q, setQ] = useState("");
+  const [highlight, setHighlight] = useState(null);
   const [error, setError] = useState(null);
   const posRef = useRef({});
+  const viewRef = useRef(view);
 
   const schema = schemas[0];
 
@@ -368,32 +372,51 @@ function ErdPage() {
   useEffect(load, [load]);
 
   useEffect(() => { posRef.current = pos; }, [pos]);
+  useEffect(() => { viewRef.current = view; }, [view]);
 
-  // initialize / reconcile positions
   useEffect(() => {
     if (!schema) return;
     const layout = schema.layout || {};
     const next = { ...layout };
     schema.tables.forEach((t, i) => {
-      if (!next[t.semantic_id]) next[t.semantic_id] = { x: 40 + (i % 3) * 260, y: 40 + Math.floor(i / 3) * 220 };
+      if (!next[t.semantic_id]) next[t.semantic_id] = { x: 40 + (i % 3) * 280, y: 40 + Math.floor(i / 3) * 260 };
     });
     setPos(next);
     posRef.current = next;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema?.id]);
 
-  const fieldTable = useMemo(() => {
+  const fieldAnchor = useMemo(() => {
     const map = {};
-    (schema?.tables || []).forEach((t) => t.fields.forEach((f) => { map[f.semantic_id] = t.semantic_id; }));
+    (schema?.tables || []).forEach((t) => t.fields.forEach((f, idx) => { map[f.semantic_id] = { table: t.semantic_id, index: idx }; }));
     return map;
   }, [schema]);
 
-  function onPointerDown(e, id) {
+  const relationEndpoints = useMemo(() => {
+    return (schema?.relations || []).map((r) => ({
+      r,
+      from: fieldAnchor[r.from],
+      to: fieldAnchor[r.to],
+    }));
+  }, [schema, fieldAnchor]);
+
+  const connectedTables = useMemo(() => {
+    const s = new Set();
+    relationEndpoints.forEach(({ from, to }) => { if (from) s.add(from.table); if (to) s.add(to.table); });
+    return s;
+  }, [relationEndpoints]);
+
+  const HEADER = 34, ROW = 22, W = 208;
+  const rowY = (tbl, idx) => (pos[tbl]?.y ?? 0) + HEADER + idx * ROW + ROW / 2;
+
+  function onNodeDown(e, id) {
+    e.stopPropagation();
     e.preventDefault();
     const p = posRef.current[id] || { x: 0, y: 0 };
-    const start = { id, startX: e.clientX, startY: e.clientY, origX: p.x, origY: p.y };
+    const scale = viewRef.current.scale || 1;
+    const start = { id, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, scale };
     const move = (ev) => {
-      const next = { ...posRef.current, [id]: { x: start.origX + (ev.clientX - start.startX), y: start.origY + (ev.clientY - start.startY) } };
+      const next = { ...posRef.current, [id]: { x: start.ox + (ev.clientX - start.sx) / scale, y: start.oy + (ev.clientY - start.sy) / scale } };
       posRef.current = next;
       setPos(next);
     };
@@ -406,64 +429,137 @@ function ErdPage() {
     window.addEventListener("pointerup", up);
   }
 
+  function onBackgroundDown(e) {
+    if (e.target !== e.currentTarget) return;
+    const v = viewRef.current;
+    const start = { x: e.clientX, y: e.clientY, tx: v.tx, ty: v.ty };
+    const move = (ev) => {
+      const next = { ...viewRef.current, tx: start.tx + (ev.clientX - start.x), ty: start.ty + (ev.clientY - start.y) };
+      viewRef.current = next;
+      setView(next);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  function zoom(factor) {
+    const next = { ...viewRef.current, scale: Math.min(2.5, Math.max(0.3, (viewRef.current.scale || 1) * factor)) };
+    viewRef.current = next;
+    setView(next);
+  }
+
+  function fit() {
+    if (!schema || schema.tables.length === 0) return;
+    const xs = schema.tables.map((t) => pos[t.semantic_id]?.x ?? 0);
+    const ys = schema.tables.map((t) => pos[t.semantic_id]?.y ?? 0);
+    const w = Math.max(...xs) + W - Math.min(...xs) + 80;
+    const h = Math.max(...ys) + 200 - Math.min(...ys) + 80;
+    const scale = Math.min(1.6, Math.max(0.3, Math.min(820 / w, 520 / h)));
+    const tx = 40 - Math.min(...xs) * scale;
+    const ty = 20 - Math.min(...ys) * scale;
+    const next = { scale, tx, ty };
+    viewRef.current = next;
+    setView(next);
+  }
+
   if (!schema) return <div className="space-y-4"><Tabs /><Empty>Create a schema first.</Empty></div>;
+
+  const filteredTables = q ? schema.tables.filter((t) => t.name.toLowerCase().includes(q.toLowerCase()) || t.semantic_id.toLowerCase().includes(q.toLowerCase())) : schema.tables;
 
   return (
     <div className="space-y-4">
       <Tabs />
       <ErrorNote error={error} />
+      <div className="flex flex-wrap items-center gap-2">
+        <input className={inputClass} placeholder="Search table…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Button onClick={() => zoom(1.2)}>+</Button>
+        <Button onClick={() => zoom(1 / 1.2)}>−</Button>
+        <Button onClick={fit}>Fit view</Button>
+        <span className="text-[11px] text-slate-500">{Math.round(view.scale * 100)}%</span>
+      </div>
       <p className="text-[12px] text-slate-500">
-        ERD is a view over the structured model. Drag nodes to arrange them — positions are stored separately and never change semantic identity.
+        Drag background to pan · drag a table to move · scroll to zoom. Edges anchor to specific PK/FK fields — positions are presentation state only.
       </p>
-      <div className="relative h-[560px] overflow-hidden rounded-lg border border-line bg-surface-0">
-        <svg className="pointer-events-none absolute inset-0 h-full w-full">
-          {schema.relations.map((r) => {
-            const a = fieldTable[r.from];
-            const b = fieldTable[r.to];
-            if (!a || !b || !pos[a] || !pos[b]) return null;
-            const x1 = pos[a].x + 104, y1 = pos[a].y + 70;
-            const x2 = pos[b].x + 104, y2 = pos[b].y + 70;
-            const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+
+      <div
+        className="relative h-[560px] touch-none overflow-hidden rounded-lg border border-line bg-surface-0"
+        onPointerDown={onBackgroundDown}
+        onWheel={(e) => { e.preventDefault(); zoom(e.deltaY < 0 ? 1.1 : 1 / 1.1); }}
+      >
+        <div className="absolute inset-0 origin-top-left" style={{ transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})` }}>
+          <svg width={2400} height={1600} className="pointer-events-none absolute left-0 top-0">
+            {relationEndpoints.map(({ r, from, to }) => {
+              if (!from || !to || !pos[from.table] || !pos[to.table]) return null;
+              const x1 = pos[from.table].x + W, y1 = rowY(from.table, from.index);
+              const x2 = pos[to.table].x, y2 = rowY(to.table, to.index);
+              const dim = highlight && highlight !== r.semantic_id;
+              const stroke = dim ? "#2c3345" : "#6366f1";
+              const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+              return (
+                <g key={r.id} opacity={dim ? 0.35 : 1}>
+                  <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={stroke} strokeWidth={highlight === r.semantic_id ? 2.5 : 1.5} markerEnd="url(#arrow)" />
+                  <text x={mx} y={my - 4} fill="#94a3b8" fontSize="10" textAnchor="middle">{r.relation_type}</text>
+                  <circle cx={x1} cy={y1} r={3.5} fill="#f59e0b" />
+                  <circle cx={x2} cy={y2} r={3.5} fill="#10b981" />
+                </g>
+              );
+            })}
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#6366f1" />
+              </marker>
+            </defs>
+          </svg>
+
+          {filteredTables.map((t) => {
+            const p = pos[t.semantic_id] || { x: 0, y: 0 };
+            const orphan = !connectedTables.has(t.semantic_id);
             return (
-              <g key={r.id}>
-                <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#arrow)" />
-                <text x={mx} y={my - 4} fill="#94a3b8" fontSize="10" textAnchor="middle">{r.relation_type}</text>
-              </g>
+              <div
+                key={t.id}
+                className="absolute cursor-move rounded-md border border-line bg-surface-1 shadow-md"
+                style={{ left: p.x, top: p.y, width: W, touchAction: "none" }}
+                onPointerDown={(e) => onNodeDown(e, t.semantic_id)}
+              >
+                <div className="flex items-center justify-between rounded-t-md border-b border-line bg-surface-2 px-2 py-1.5 text-[13px] font-semibold text-slate-200">
+                  <span onClick={() => setFocus(t.semantic_id, t.semantic_id)} className="cursor-pointer hover:text-brand-300">{t.name}</span>
+                  {orphan && <span className="rounded bg-slate-700/50 px-1 text-[9px] font-normal uppercase text-slate-400">orphan</span>}
+                </div>
+                <div className="p-1.5">
+                  {t.fields.map((f) => (
+                    <div key={f.id} className="flex items-center justify-between rounded px-1 py-0.5 text-[11px] hover:bg-surface-2">
+                      <button className="font-mono text-slate-300 hover:text-brand-300" onClick={(e) => { e.stopPropagation(); setFocus(f.semantic_id, f.semantic_id); }}>
+                        {f.primary_key ? "🔑" : f.foreign_key ? "🔗" : "  "} {f.name}
+                      </button>
+                      <span className={f.primary_key ? "text-emerald-400" : f.foreign_key ? "text-amber-400" : "text-slate-500"}>{f.data_type}</span>
+                    </div>
+                  ))}
+                  {t.fields.length === 0 && <p className="px-1 py-1 text-[11px] text-slate-600">no fields</p>}
+                </div>
+              </div>
             );
           })}
-          <defs>
-            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="#6366f1" />
-            </marker>
-          </defs>
-        </svg>
+        </div>
+      </div>
 
-        {schema.tables.map((t) => {
-          const p = pos[t.semantic_id] || { x: 0, y: 0 };
-          return (
-            <div
-              key={t.id}
-              className="absolute w-52 cursor-move rounded-md border border-line bg-surface-1 shadow-md"
-              style={{ left: p.x, top: p.y, touchAction: "none" }}
-              onPointerDown={(e) => onPointerDown(e, t.semantic_id)}
-            >
-              <div className="rounded-t-md border-b border-line bg-surface-2 px-2 py-1.5 text-[13px] font-semibold text-slate-200">
-                {t.name}
-              </div>
-              <div className="p-1.5">
-                {t.fields.map((f) => (
-                  <div key={f.id} className="flex items-center justify-between px-1 py-0.5 text-[11px]">
-                    <button className="font-mono text-slate-300 hover:text-brand-300" onClick={(e) => { e.stopPropagation(); setFocus(f.semantic_id, f.semantic_id); }}>
-                      {f.name}{f.primary_key ? " 🔑" : ""}{f.foreign_key ? " 🔗" : ""}
-                    </button>
-                    <span className="text-slate-500">{f.data_type}</span>
-                  </div>
-                ))}
-                {t.fields.length === 0 && <p className="px-1 py-1 text-[11px] text-slate-600">no fields</p>}
-              </div>
-            </div>
-          );
-        })}
+      {/* Relation legend — click to open context / highlight */}
+      <div className="flex flex-wrap gap-1.5">
+        {schema.relations.map((r) => (
+          <button
+            key={r.id}
+            onClick={() => { setHighlight(r.semantic_id); setFocus(r.semantic_id, r.semantic_id); }}
+            onMouseEnter={() => setHighlight(r.semantic_id)}
+            onMouseLeave={() => setHighlight(null)}
+            className={`rounded border px-2 py-0.5 font-mono text-[11px] ${highlight === r.semantic_id ? "border-brand-500 text-brand-200" : "border-line text-slate-400 hover:text-slate-200"}`}
+          >
+            {r.from} → {r.to}
+          </button>
+        ))}
+        {schema.relations.length === 0 && <span className="text-[11px] text-slate-600">No relations yet — create them in the model tab.</span>}
       </div>
     </div>
   );
