@@ -82,3 +82,25 @@ export function Field({ label, children }) {
 
 export const inputClass =
   "rounded border border-line bg-surface-0 px-2.5 py-1.5 text-[13px] text-slate-200 outline-none focus:border-brand-500";
+
+export function Modal({ title, open, onClose, children, footer }) {
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onMouseDown={onClose}
+    >
+      <div
+        className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-line bg-surface-1 shadow-xl"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <header className="sticky top-0 flex items-center justify-between border-b border-line bg-surface-1 px-4 py-3">
+          <h3 className="text-[14px] font-semibold text-slate-200">{title}</h3>
+          <button className="text-slate-500 hover:text-slate-300" onClick={onClose}>✕</button>
+        </header>
+        <div className="p-4">{children}</div>
+        {footer && <footer className="flex justify-end gap-2 border-t border-line px-4 py-3">{footer}</footer>}
+      </div>
+    </div>
+  );
+}

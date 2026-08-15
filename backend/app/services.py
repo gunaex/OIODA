@@ -7,6 +7,8 @@ impossible to bypass from the HTTP edge.
 """
 from __future__ import annotations
 
+from collections import Counter
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -438,6 +440,7 @@ def create_annotation(
     canvas_x: float | None = None,
     canvas_y: float | None = None,
     drawing_payload: dict | None = None,
+    thread_id: str | None = None,
     actor="local-user",
 ) -> m.Annotation:
     anchored = db.execute(
@@ -452,6 +455,10 @@ def create_annotation(
             "Coordinates are optional placement data, never the anchor.",
             status_code=422,
         )
+    if thread_id is not None:
+        thread = get_or_404(db, m.CommentThread, thread_id, "CommentThread")
+        if thread.project_id != project_id:
+            raise DomainError("Thread belongs to a different project")
     annotation = m.Annotation(
         project_id=project_id,
         artifact_revision_id=artifact_revision_id,
@@ -462,6 +469,7 @@ def create_annotation(
         type=type,
         content=content,
         drawing_payload=drawing_payload,
+        thread_id=thread_id,
         created_by=actor,
     )
     db.add(annotation)
@@ -906,3 +914,157 @@ def get_document(db: Session, revision_id: str) -> dict:
         "editable": revision.editable,
         "sections": sections,
     }
+
+
+# ---------------------------------------------------------------------------
+# Review workflow (threads, summaries, activity timeline)
+# ---------------------------------------------------------------------------
+
+
+def create_thread(
+    db: Session,
+    *,
+    project_id: str,
+    title: str | None = None,
+    actor: str = "local-user",
+) -> m.CommentThread:
+    get_or_404(db, m.Project, project_id, "Project")
+    thread = m.CommentThread(project_id=project_id, title=title)
+    db.add(thread)
+    db.commit()
+    return thread
+
+
+def list_threads(db: Session, project_id: str) -> list[dict]:
+    threads = db.execute(
+        select(m.CommentThread)
+        .where(m.CommentThread.project_id == project_id)
+        .order_by(m.CommentThread.created_at.desc())
+    ).scalars().all()
+    out = []
+    for t in threads:
+        anns = db.execute(
+            select(m.Annotation)
+            .where(m.Annotation.thread_id == t.id)
+            .order_by(m.Annotation.created_at)
+        ).scalars().all()
+        out.append({
+            "id": t.id,
+            "title": t.title,
+            "resolved": t.resolved,
+            "open_count": sum(1 for a in anns if a.status != m.AnnotationStatus.RESOLVED),
+            "total": len(anns),
+            "created_at": t.created_at.isoformat(),
+            "annotations": [
+                {
+                    "id": a.id,
+                    "anchor_semantic_id": a.anchor_semantic_id,
+                    "type": a.type.value,
+                    "status": a.status.value,
+                    "content": a.content,
+                    "created_by": a.created_by,
+                    "created_at": a.created_at.isoformat(),
+                }
+                for a in anns
+            ],
+        })
+    return out
+
+
+def annotations_summary(db: Session, project_id: str) -> dict:
+    anns = db.execute(
+        select(m.Annotation).where(m.Annotation.project_id == project_id)
+    ).scalars().all()
+    by_status = Counter(a.status.value for a in anns)
+    by_type = Counter(a.type.value for a in anns)
+    by_anchor = Counter(a.anchor_semantic_id for a in anns)
+    return {
+        "total": len(anns),
+        "open": sum(n for s, n in by_status.items() if s != "RESOLVED"),
+        "resolved": by_status.get("RESOLVED", 0),
+        "by_status": dict(by_status),
+        "by_type": dict(by_type),
+        "by_anchor": dict(by_anchor),
+    }
+
+
+def _iso(dt) -> str | None:
+    return dt.isoformat() if dt else None
+
+
+def timeline(db: Session, project_id: str, semantic_id: str | None = None) -> list[dict]:
+    """Deterministic activity timeline, derived from real records.
+
+    No separate activity table: events are reconstructed from revisions,
+    confirmations, annotations, baselines and change requests.
+    """
+    events: list[dict] = []
+
+    revisions = db.execute(
+        select(m.ArtifactRevision)
+        .join(m.Artifact, m.ArtifactRevision.artifact_id == m.Artifact.id)
+        .where(m.Artifact.project_id == project_id)
+    ).scalars().all()
+    for r in revisions:
+        events.append({
+            "at": _iso(r.created_at), "kind": "revision_created",
+            "actor": r.created_by, "label": f"{r.artifact.title} r{r.revision_number}",
+            "revision_id": r.id, "semantic_id": None,
+        })
+        if r.confirmed_at:
+            events.append({
+                "at": _iso(r.confirmed_at), "kind": "revision_confirmed",
+                "actor": r.confirmed_by, "label": f"{r.artifact.title} r{r.revision_number}",
+                "revision_id": r.id, "semantic_id": None,
+            })
+
+    confirmations = db.execute(
+        select(m.Confirmation)
+        .where(m.Confirmation.project_id == project_id)
+    ).scalars().all()
+    for c in confirmations:
+        events.append({
+            "at": _iso(c.confirmed_at), "kind": "confirmation",
+            "actor": c.confirmed_by, "label": c.comment or "confirmed",
+            "revision_id": c.artifact_revision_id, "semantic_id": None,
+        })
+
+    annotations = db.execute(
+        select(m.Annotation)
+        .where(m.Annotation.project_id == project_id)
+    ).scalars().all()
+    for a in annotations:
+        events.append({
+            "at": _iso(a.created_at), "kind": f"annotation_{a.type.value.lower()}",
+            "actor": a.created_by, "label": a.content[:120],
+            "revision_id": a.artifact_revision_id, "semantic_id": a.anchor_semantic_id,
+        })
+
+    baselines = db.execute(
+        select(m.Baseline).where(m.Baseline.project_id == project_id)
+    ).scalars().all()
+    for b in baselines:
+        events.append({
+            "at": _iso(b.created_at), "kind": "baseline_created",
+            "actor": b.created_by, "label": b.name,
+            "revision_id": None, "semantic_id": None,
+        })
+
+    crs = db.execute(
+        select(m.ChangeRequest).where(m.ChangeRequest.project_id == project_id)
+    ).scalars().all()
+    for cr in crs:
+        events.append({
+            "at": _iso(cr.created_at), "kind": "change_request_created",
+            "actor": cr.created_by, "label": f"{cr.code} — {cr.requested_change[:120]}",
+            "revision_id": None, "semantic_id": cr.code,
+        })
+
+    if semantic_id:
+        events = [
+            e for e in events
+            if e["semantic_id"] == semantic_id or e["revision_id"] is not None
+        ]
+
+    events.sort(key=lambda e: e["at"] or "")
+    return events

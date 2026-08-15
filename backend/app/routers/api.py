@@ -358,6 +358,7 @@ class AnnotationIn(BaseModel):
     canvas_x: float | None = None
     canvas_y: float | None = None
     drawing_payload: dict | None = None
+    thread_id: str | None = None
 
 
 def annotation_out(a: m.Annotation) -> dict:
@@ -386,6 +387,45 @@ def create_annotation(body: AnnotationIn, db: Session = Depends(db_session), act
 @router.post("/annotations/{annotation_id}/status/{status}")
 def set_status(annotation_id: str, status: m.AnnotationStatus, db: Session = Depends(db_session)):
     return annotation_out(svc.set_annotation_status(db, annotation_id, status))
+
+
+# ---------------------------------------------------------------------------
+# Review workflow (threads, summary, timeline)
+# ---------------------------------------------------------------------------
+
+
+class ThreadIn(BaseModel):
+    project_id: str
+    title: str | None = None
+
+
+@router.get("/projects/{project_id}/threads")
+def list_threads(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_threads(db, project_id)
+
+
+@router.post("/threads", status_code=201)
+def create_thread(body: ThreadIn, db: Session = Depends(db_session), actor=Depends(actor)):
+    t = svc.create_thread(db, project_id=body.project_id, title=body.title, actor=actor)
+    return {"id": t.id, "title": t.title, "resolved": t.resolved}
+
+
+@router.get("/projects/{project_id}/annotations-summary")
+def annotations_summary(project_id: str, db: Session = Depends(db_session)):
+    return svc.annotations_summary(db, project_id)
+
+
+@router.get("/projects/{project_id}/timeline")
+def timeline(project_id: str, semantic_id: str | None = None, db: Session = Depends(db_session)):
+    return svc.timeline(db, project_id, semantic_id=semantic_id)
+
+
+@router.get("/revisions/{revision_id}/annotations")
+def revision_annotations(revision_id: str, db: Session = Depends(db_session)):
+    rows = db.execute(
+        select(m.Annotation).where(m.Annotation.artifact_revision_id == revision_id)
+    ).scalars()
+    return [annotation_out(a) for a in rows]
 
 
 # ---------------------------------------------------------------------------
