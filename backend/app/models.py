@@ -535,6 +535,9 @@ class ProcessStep(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
 
     flow: Mapped[ProcessFlow] = relationship(back_populates="steps")
+
+
+class APIEndpoint(Base):
     __tablename__ = "api_endpoints"
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("api"))
