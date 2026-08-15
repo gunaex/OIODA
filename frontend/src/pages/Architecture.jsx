@@ -1,4 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Background, Controls, MarkerType, ReactFlow } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import { api } from "../api/client.js";
 import { useWorkspace } from "../App.jsx";
 import { Button, Card, Empty, ErrorNote, Field, inputClass } from "../components/ui.jsx";
@@ -159,76 +161,88 @@ export function Architecture() {
   );
 }
 
+function ArchNode({ data }) {
+  const color = TYPE_COLOR[data.node_type] || "#94a3b8";
+  return (
+    <div className="w-40 rounded-md border border-line bg-surface-1 shadow-md">
+      <div className="rounded-t-md border-b border-line px-2 py-1 text-[12px] font-semibold" style={{ background: color + "22" }}>
+        <span className="text-slate-200">{data.name}</span>
+      </div>
+      <div className="flex items-center justify-between px-2 py-1 text-[10px]">
+        <span style={{ color }}>{data.node_type}</span>
+        <button className="font-mono text-slate-600 hover:text-brand-300" onClick={() => data.onFocus(data.semantic_id, data.semantic_id)}>{data.semantic_id}</button>
+      </div>
+    </div>
+  );
+}
+
+const archNodeTypes = { arch: ArchNode };
+
 function ArchDiagram({ diagram, setFocus }) {
   const [pos, setPos] = useState({});
-  const posRef = useRef({});
 
   useEffect(() => {
     const layout = diagram.layout || {};
     const next = { ...layout };
     diagram.nodes.forEach((n, i) => {
-      if (!next[n.semantic_id]) next[n.semantic_id] = { x: 40 + (i % 4) * 200, y: 40 + Math.floor(i / 4) * 140 };
+      if (!next[n.semantic_id]) next[n.semantic_id] = { x: 40 + (i % 4) * 220, y: 40 + Math.floor(i / 4) * 150 };
     });
     setPos(next);
-    posRef.current = next;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diagram?.id]);
 
-  function onDown(e, id) {
-    e.preventDefault();
-    const p = posRef.current[id] || { x: 0, y: 0 };
-    const start = { id, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y };
-    const move = (ev) => {
-      const next = { ...posRef.current, [id]: { x: start.ox + (ev.clientX - start.sx), y: start.oy + (ev.clientY - start.sy) } };
-      posRef.current = next;
-      setPos(next);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      api.put(`/architecture-diagrams/${diagram.id}/layout`, { layout: posRef.current }).catch(() => {});
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+  const rfNodes = useMemo(
+    () => diagram.nodes.map((n) => ({
+      id: n.semantic_id,
+      type: "arch",
+      position: pos[n.semantic_id] || { x: 0, y: 0 },
+      data: { name: n.name, node_type: n.node_type, semantic_id: n.semantic_id, onFocus: setFocus },
+    })),
+    [diagram, pos, setFocus]
+  );
+
+  const rfEdges = useMemo(
+    () => diagram.edges.map((e) => ({
+      id: e.id, source: e.from, target: e.to, label: e.label,
+      animated: true, markerEnd: { type: MarkerType.ArrowClosed, color: "#64748b" },
+      style: { stroke: "#64748b" }, labelStyle: { fill: "#94a3b8", fontSize: 9 },
+    })),
+    [diagram]
+  );
+
+  function onNodesChange(changes) {
+    let persisted = false;
+    setPos((prev) => {
+      const next = { ...prev };
+      for (const c of changes) {
+        if (c.type === "position" && c.position) {
+          next[c.id] = { x: c.position.x, y: c.position.y };
+        }
+      }
+      return next;
+    });
+    for (const c of changes) {
+      if (c.type === "position" && c.dragging === false) persisted = true;
+    }
+    if (persisted) {
+      api.put(`/architecture-diagrams/${diagram.id}/layout`, { layout: pos }).catch(() => {});
+    }
   }
 
   return (
     <Card title={`Diagram — ${diagram.name}`} actions={<span className="text-[11px] text-slate-500">drag nodes; layout is presentation only</span>}>
-      <div className="relative h-72 overflow-hidden rounded border border-line bg-surface-0">
-        <svg className="pointer-events-none absolute inset-0 h-full w-full">
-          {diagram.edges.map((e) => {
-            const a = pos[e.from], b = pos[e.to];
-            if (!a || !b) return null;
-            const x1 = a.x + 80, y1 = a.y + 24, x2 = b.x + 80, y2 = b.y + 24;
-            const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-            return (
-              <g key={e.id}>
-                <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#64748b" strokeWidth="1.5" markerEnd="url(#aarrow)" />
-                {e.label && <text x={mx} y={my - 4} fill="#94a3b8" fontSize="9" textAnchor="middle">{e.label}</text>}
-              </g>
-            );
-          })}
-          <defs>
-            <marker id="aarrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b" />
-            </marker>
-          </defs>
-        </svg>
-        {diagram.nodes.map((n) => {
-          const p = pos[n.semantic_id] || { x: 0, y: 0 };
-          const color = TYPE_COLOR[n.node_type] || "#94a3b8";
-          return (
-            <div key={n.id} className="absolute w-40 cursor-move rounded-md border border-line bg-surface-1 shadow-md" style={{ left: p.x, top: p.y, touchAction: "none" }} onPointerDown={(e) => onDown(e, n.semantic_id)}>
-              <div className="rounded-t-md border-b border-line px-2 py-1 text-[12px] font-semibold" style={{ background: color + "22" }}>
-                <span className="text-slate-200">{n.name}</span>
-              </div>
-              <div className="flex items-center justify-between px-2 py-1 text-[10px]">
-                <span style={{ color }}>{n.node_type}</span>
-                <button className="font-mono text-slate-600 hover:text-brand-300" onClick={(e) => { e.stopPropagation(); setFocus(n.semantic_id, n.semantic_id); }}>{n.semantic_id}</button>
-              </div>
-            </div>
-          );
-        })}
+      <div className="h-72 overflow-hidden rounded border border-line bg-surface-0">
+        <ReactFlow
+          nodes={rfNodes}
+          edges={rfEdges}
+          nodeTypes={archNodeTypes}
+          onNodesChange={onNodesChange}
+          fitView
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background color="#1e2433" gap={16} />
+          <Controls />
+        </ReactFlow>
       </div>
     </Card>
   );
