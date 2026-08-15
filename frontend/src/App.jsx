@@ -23,6 +23,7 @@ const FlowDesigner = lazy(() => import("./pages/FlowDesigner.jsx"));
 const ApiDesign = lazy(() => import("./pages/ApiDesign.jsx"));
 const Architecture = lazy(() => import("./pages/Architecture.jsx"));
 const Decisions = lazy(() => import("./pages/Decisions.jsx"));
+const Ecosystem = lazy(() => import("./pages/Ecosystem.jsx"));
 
 function PageFallback() {
   return <div className="p-10 text-[13px] text-slate-500">Loading workspace page…</div>;
@@ -102,6 +103,7 @@ export default function App() {
                   <Route path="/change-requests" element={<ChangeRequests />} />
                   <Route path="/search" element={<Search />} />
                   <Route path="/baselines" element={<Baselines />} />
+                  <Route path="/ecosystem" element={<Ecosystem />} />
                 </Routes>
               </Suspense>
             ) : (
@@ -162,6 +164,8 @@ const NAV = [
   { to: "search", label: "Search" },
   { to: "change-requests", label: "Change Requests" },
   { to: "baselines", label: "Baselines" },
+  { section: "ECOSYSTEM" },
+  { to: "ecosystem", label: "Ecosystem Status" },
 ];
 
 function Nav() {
