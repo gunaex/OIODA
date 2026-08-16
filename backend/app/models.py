@@ -275,6 +275,7 @@ class Requirement(Base):
         Enum(RequirementStatus), default=RequirementStatus.DRAFT
     )
     priority: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
 

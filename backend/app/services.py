@@ -717,17 +717,28 @@ def create_requirement(
     source_type=None,
     source_reference=None,
     priority=None,
+    code: str | None = None,
+    metadata: dict | None = None,
     actor="local-user",
 ) -> m.Requirement:
-    code = next_requirement_code(db, project_id)
+    if code is not None:
+        existing = db.execute(
+            select(m.Requirement.id).where(
+                m.Requirement.project_id == project_id, m.Requirement.code == code
+            )
+        ).scalar_one_or_none()
+        if existing:
+            raise DomainError(f"Requirement code '{code}' already exists in this project")
+    req_code = code or next_requirement_code(db, project_id)
     requirement = m.Requirement(
         project_id=project_id,
-        code=code,
+        code=req_code,
         title=title,
         description=description,
         source_type=source_type,
         source_reference=source_reference,
         priority=priority,
+        metadata_json=metadata or {},
         created_by=actor,
     )
     db.add(requirement)
@@ -735,7 +746,7 @@ def create_requirement(
     ensure_semantic_object(
         db,
         project_id=project_id,
-        semantic_id=code,
+        semantic_id=req_code,
         object_type=m.SemanticObjectType.REQUIREMENT,
         display_name=title,
         entity_ref=requirement.id,

@@ -252,6 +252,8 @@ class RequirementIn(BaseModel):
     source_type: str | None = None
     source_reference: str | None = None
     priority: str | None = None
+    code: str | None = None
+    metadata: dict | None = None
 
 
 @router.get("/projects/{project_id}/requirements")
