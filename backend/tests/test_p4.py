@@ -607,3 +607,53 @@ def test_deliver_handoff_idempotent_no_redelivery(db, project):
     # second delivery is a no-op (already acknowledged)
     out2 = svc.deliver_handoff_to_conductor(db, h["id"], "qa", client=client)
     assert out2["status"] == "ACKNOWLEDGED" and out2["external_reference"] == "qa-ref-1"
+
+
+# ---------------------------------------------------------------------------
+# P5-E production read auth
+# ---------------------------------------------------------------------------
+
+
+def _echo_aa_transport():
+    def handler(request: httpx.Request):
+        if request.url.path == "/api/v1/entitlements/evaluate":
+            try:
+                body = request.json()
+            except Exception:
+                body = {}
+            return httpx.Response(200, json={"decision": "ALLOW", "accountId": body.get("accountId") or "acc-1",
+                                             "tenantId": body.get("tenantId") or "t-1"})
+        if request.url.path.startswith("/api/v1/accounts/"):
+            return httpx.Response(200, json={"accountId": "acc-1", "tenantId": "t-1", "displayName": "A", "status": "ACTIVE"})
+        return httpx.Response(404, json={"detail": "nf"})
+
+    return httpx.MockTransport(handler)
+
+
+def test_unauthenticated_reads_rejected_in_account_mode(client, db, monkeypatch):
+    monkeypatch.setattr(deps, "AUTH_MODE", "account_again")
+    monkeypatch.setattr(deps, "client", AccountAgainClient("http://aa", transport=_echo_aa_transport()))
+    # no token -> rejected for project list / project read / artifacts
+    assert client.get("/api/projects").status_code == 401
+    p = svc.create_project(db, key="READAUTH", name="x")
+    assert client.get(f"/api/projects/{p.id}").status_code == 401
+    art = svc.create_artifact(db, project_id=p.id, type=m.ArtifactType.UR, title="UR")
+    assert client.get(f"/api/artifacts/{art.id}").status_code == 401
+
+
+def test_authenticated_reads_succeed_and_tenant_scoped(client, db, monkeypatch):
+    monkeypatch.setattr(deps, "AUTH_MODE", "account_again")
+    monkeypatch.setattr(deps, "client", AccountAgainClient("http://aa", transport=_echo_aa_transport()))
+    H = {"Authorization": "Bearer tok", "X-Account-Id": "acc-1", "X-Tenant-Id": "t-1"}
+    p = svc.create_project(db, key="READAUTH2", name="x", tenant_id="t-1")
+    assert client.get(f"/api/projects/{p.id}", headers=H).status_code == 200
+    # Tenant A reading a tenant-b project -> 403
+    other = svc.create_project(db, key="READAUTH3", name="y", tenant_id="t-9")
+    assert client.get(f"/api/projects/{other.id}", headers=H).status_code == 403
+
+
+def test_health_metrics_remain_public_in_account_mode(client, monkeypatch):
+    monkeypatch.setattr(deps, "AUTH_MODE", "account_again")
+    monkeypatch.setattr(deps, "client", AccountAgainClient("http://aa", transport=_echo_aa_transport()))
+    assert client.get("/api/health").status_code == 200
+    assert client.get("/api/metrics").status_code == 200
