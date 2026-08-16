@@ -113,6 +113,17 @@ class ServiceSecretRotateRequest(BaseModel):
     clientSecret is accepted only for deterministic local testing (E5.1 tests)."""
     clientSecret: Optional[str] = None
 
+
+# ── Admin Re-authentication (R10) ──
+class ReauthRequest(BaseModel):
+    email: str
+    password: str
+
+
+class VerifyConfirmationRequest(BaseModel):
+    token: str
+
+
 # ── Session ──
 class SessionCreate(BaseModel):
     subjectId: str

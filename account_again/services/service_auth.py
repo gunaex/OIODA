@@ -33,7 +33,15 @@ from cryptography.hazmat.primitives import serialization
 
 ISSUER = os.getenv("ACCOUNT_AGAIN_ISSUER", "account-again-local")
 AUDIENCE = os.getenv("ACCOUNT_AGAIN_AUDIENCE", "again-ecosystem-services")
+CONFIRMATION_AUDIENCE = "again-ecosystem-confirmation"
+CONFIRMATION_TTL_SECONDS = 300
 TOKEN_TTL_SECONDS = 300
+# Ecosystem human identity token — the SSO credential downstream bounded
+# services accept. Longer-lived than a confirmation token but still short-lived
+# (1h) so a leaked token expires quickly; services re-check account status on
+# every request, never trusting signature/expiry alone.
+ECOSYSTEM_IDENTITY_AUDIENCE = "again-ecosystem-identity"
+ECOSYSTEM_IDENTITY_TTL_SECONDS = 3600
 ALGORITHM = "RS256"
 
 # Signing key loading (R2A deployment):
@@ -132,6 +140,91 @@ def verify_service_token(token: str) -> dict:
         raise ServiceTokenError(str(e)) from e
     if "systemId" not in claims or "serviceIdentityId" not in claims:
         raise ServiceTokenError("token missing required claims")
+    return claims
+
+
+def issue_confirmation_token(*, subject_id: str, account_id: str, tenant_id: Optional[str], purpose: str = "document-again-confirm") -> dict:
+    """Issue a short-lived human confirmation token after a successful password
+    re-authentication. Distinct audience from service tokens so a service token
+    can never be replayed as an admin confirmation."""
+    now = int(time.time())
+    claims = {
+        "iss": ISSUER,
+        "sub": subject_id,
+        "aud": CONFIRMATION_AUDIENCE,
+        "iat": now,
+        "exp": now + CONFIRMATION_TTL_SECONDS,
+        "jti": str(uuid.uuid4()),
+        "accountId": account_id,
+        "tenantId": tenant_id,
+        "purpose": purpose,
+    }
+    token = jwt.encode(claims, _PRIVATE_PEM, algorithm=ALGORITHM, headers={"kid": _KEY_ID})
+    return {
+        "confirmationToken": token,
+        "tokenType": "Bearer",
+        "expiresIn": CONFIRMATION_TTL_SECONDS,
+        "claims": claims,
+    }
+
+
+def verify_confirmation_token(token: str) -> dict:
+    """Verify a human confirmation token's signature, audience, issuer, expiry and
+    required claims. Never contains the password — the password is checked once at
+    issuance and discarded."""
+    try:
+        claims = jwt.decode(
+            token, _PUBLIC_PEM, algorithms=[ALGORITHM],
+            audience=CONFIRMATION_AUDIENCE, issuer=ISSUER,
+        )
+    except JWTError as e:
+        raise ServiceTokenError(str(e)) from e
+    if "accountId" not in claims or "purpose" not in claims:
+        raise ServiceTokenError("confirmation token missing required claims")
+    return claims
+
+
+def issue_ecosystem_identity_token(*, account_id: str, subject_id: str, tenant_id: Optional[str], email: str, ecosystem_roles: list[str]) -> dict:
+    """Issue the short-lived ecosystem human identity token (SSO). The password
+    is checked once by the caller before this function is invoked; it is never
+    embedded here. Claims carry a stable subject (account_id) and email only as
+    profile data — downstream services map by account_id, not email."""
+    now = int(time.time())
+    claims = {
+        "iss": ISSUER,
+        "sub": account_id,
+        "aud": ECOSYSTEM_IDENTITY_AUDIENCE,
+        "iat": now,
+        "exp": now + ECOSYSTEM_IDENTITY_TTL_SECONDS,
+        "jti": str(uuid.uuid4()),
+        "accountId": account_id,
+        "subjectId": subject_id,
+        "tenantId": tenant_id,
+        "email": email,
+        "ecosystemRoles": ecosystem_roles,
+    }
+    token = jwt.encode(claims, _PRIVATE_PEM, algorithm=ALGORITHM, headers={"kid": _KEY_ID})
+    return {
+        "accessToken": token,
+        "tokenType": "Bearer",
+        "expiresIn": ECOSYSTEM_IDENTITY_TTL_SECONDS,
+        "claims": claims,
+    }
+
+
+def verify_ecosystem_identity_token(token: str) -> dict:
+    """Verify an ecosystem human identity token's signature, audience, issuer
+    and expiry. Signature validity is necessary but not sufficient — callers
+    must still resolve the account status / service-local authorization."""
+    try:
+        claims = jwt.decode(
+            token, _PUBLIC_PEM, algorithms=[ALGORITHM],
+            audience=ECOSYSTEM_IDENTITY_AUDIENCE, issuer=ISSUER,
+        )
+    except JWTError as e:
+        raise ServiceTokenError(str(e)) from e
+    if "sub" not in claims or "accountId" not in claims:
+        raise ServiceTokenError("ecosystem identity token missing required claims")
     return claims
 
 

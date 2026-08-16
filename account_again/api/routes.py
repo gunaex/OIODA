@@ -23,6 +23,7 @@ from account_again.api.schemas import (
     EntitlementEvaluateRequest,
     QuotaPolicyCreate, UsageRecordCreate,
     ServiceTokenRequest, ServiceSecretRotateRequest,
+    ReauthRequest, VerifyConfirmationRequest,
 )
 from account_again.services import (
     EntitlementRequest, evaluate_entitlement,
@@ -620,6 +621,123 @@ def issue_service_token(body: ServiceTokenRequest, db: Session = Depends(get_db)
                 target_type="ServiceIdentity", target_id=svc.service_identity_id, result="SUCCESS")
     db.commit()
     return {"accessToken": result["accessToken"], "tokenType": result["tokenType"], "expiresIn": result["expiresIn"]}
+
+
+# ── Admin Re-authentication (R10) ──
+@router.post("/auth/reauth")
+def reauthenticate(body: ReauthRequest, db: Session = Depends(get_db)):
+    account = db.query(Account).filter(Account.email == body.email).first()
+    if not account:
+        write_audit(db, actor_type="HUMAN", actor_id=body.email, action="REAUTH_DENIED",
+                    target_type="Account", target_id=body.email, result="DENY_UNKNOWN_ACCOUNT")
+        db.commit()
+        raise HTTPException(401, "Invalid email or password")
+
+    identities = db.query(SubjectIdentity).filter(
+        SubjectIdentity.account_id == account.account_id,
+        SubjectIdentity.auth_method == "PASSWORD",
+        SubjectIdentity.status == "ACTIVE",
+    ).all()
+    subject = None
+    for ident in identities:
+        if ident.password_hash and _verify_password(body.password, ident.password_hash):
+            subject = ident
+            break
+    if subject is None:
+        write_audit(db, actor_type="HUMAN", actor_id=account.account_id, action="REAUTH_DENIED",
+                    target_type="Account", target_id=account.account_id, result="DENY_BAD_PASSWORD")
+        db.commit()
+        raise HTTPException(401, "Invalid email or password")
+
+    result = service_auth.issue_confirmation_token(
+        subject_id=subject.subject_id,
+        account_id=account.account_id,
+        tenant_id=account.tenant_id,
+    )
+    # Audit records the actor and action — never the password or the token.
+    write_audit(db, actor_type="HUMAN", actor_id=account.account_id, action="REAUTH_SUCCESS",
+                target_type="Account", target_id=account.account_id, result="SUCCESS")
+    db.commit()
+    return {
+        "confirmationToken": result["confirmationToken"],
+        "tokenType": result["tokenType"],
+        "expiresIn": result["expiresIn"],
+        "accountId": account.account_id,
+        "tenantId": account.tenant_id,
+        "subjectId": subject.subject_id,
+    }
+
+
+@router.post("/auth/verify-confirmation")
+def verify_confirmation(body: VerifyConfirmationRequest):
+    try:
+        claims = service_auth.verify_confirmation_token(body.token)
+    except ServiceTokenError as e:
+        raise HTTPException(401, f"Invalid confirmation token: {e}")
+    return {
+        "valid": True,
+        "accountId": claims["accountId"],
+        "tenantId": claims.get("tenantId"),
+        "subjectId": claims["sub"],
+        "purpose": claims["purpose"],
+        "expiresAt": claims["exp"],
+    }
+
+
+# ── Ecosystem SSO (R-identity) ──
+@router.post("/auth/ecosystem-token")
+def issue_ecosystem_token(body: ReauthRequest, db: Session = Depends(get_db)):
+    """Single sign-on: authenticate a human once against Account Again and
+    return a short-lived ecosystem identity token that downstream bounded
+    services validate via JWKS. No password is ever forwarded downstream."""
+    account = db.query(Account).filter(Account.email == body.email).first()
+    if not account or account.status != "ACTIVE":
+        write_audit(db, actor_type="HUMAN", actor_id=body.email, action="SSO_DENIED",
+                    target_type="Account", target_id=body.email, result="DENY_UNKNOWN_ACCOUNT")
+        db.commit()
+        raise HTTPException(401, "Invalid email or password")
+
+    identities = db.query(SubjectIdentity).filter(
+        SubjectIdentity.account_id == account.account_id,
+        SubjectIdentity.auth_method == "PASSWORD",
+        SubjectIdentity.status == "ACTIVE",
+    ).all()
+    subject = None
+    for ident in identities:
+        if ident.password_hash and _verify_password(body.password, ident.password_hash):
+            subject = ident
+            break
+    if subject is None:
+        write_audit(db, actor_type="HUMAN", actor_id=account.account_id, action="SSO_DENIED",
+                    target_type="Account", target_id=account.account_id, result="DENY_BAD_PASSWORD")
+        db.commit()
+        raise HTTPException(401, "Invalid email or password")
+
+    roles = []
+    for ar in db.query(AccountRole).filter(AccountRole.account_id == account.account_id).all():
+        role = db.query(Role).filter(Role.role_id == ar.role_id).first()
+        if role:
+            roles.append(role.name)
+
+    result = service_auth.issue_ecosystem_identity_token(
+        account_id=account.account_id,
+        subject_id=subject.subject_id,
+        tenant_id=account.tenant_id,
+        email=account.email,
+        ecosystem_roles=roles,
+    )
+    write_audit(db, actor_type="HUMAN", actor_id=account.account_id, action="SSO_SUCCESS",
+                target_type="Account", target_id=account.account_id, result="SUCCESS")
+    db.commit()
+    return {
+        "accessToken": result["accessToken"],
+        "tokenType": result["tokenType"],
+        "expiresIn": result["expiresIn"],
+        "accountId": account.account_id,
+        "tenantId": account.tenant_id,
+        "email": account.email,
+        "ecosystemRoles": roles,
+    }
 
 
 @router.get("/.well-known/jwks.json")
