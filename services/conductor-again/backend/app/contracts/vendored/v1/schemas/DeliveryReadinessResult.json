@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/DeliveryReadinessResult.json",
+  "title": "DeliveryReadinessResult",
+  "description": "Final delivery readiness decision from Conductor Main.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": [
+    "deliveryReadinessResultId",
+    "correlationId",
+    "workPackageId",
+    "decision",
+    "aggregatedEvidence",
+    "decidedBy",
+    "decidedAt"
+  ],
+  "properties": {
+    "deliveryReadinessResultId": {
+      "type": "string",
+      "examples": ["drr-001"]
+    },
+    "correlationId": {
+      "type": "string",
+      "examples": ["e2e-golden-001"]
+    },
+    "workPackageId": {
+      "type": "string",
+      "examples": ["wp-001"]
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["READY_FOR_DELIVERY", "NOT_READY"],
+      "description": "Final delivery decision."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Human-readable explanation of the decision."
+    },
+    "aggregatedEvidence": {
+      "type": "object",
+      "description": "Aggregated evidence from all Specialist OS products.",
+      "properties": {
+        "pmEvidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "source": { "type": "string" },
+              "reference": { "type": "string" },
+              "summary": { "type": "string" }
+            }
+          }
+        },
+        "engineeringEvidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "source": { "type": "string" },
+              "reference": { "type": "string" },
+              "summary": { "type": "string" }
+            }
+          }
+        },
+        "infrastructureEvidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "source": { "type": "string" },
+              "reference": { "type": "string" },
+              "summary": { "type": "string" }
+            }
+          }
+        },
+        "qaEvidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "source": { "type": "string" },
+              "reference": { "type": "string" },
+              "summary": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "specialistResults": {
+      "type": "object",
+      "properties": {
+        "pmStatus": { "type": "string" },
+        "engineeringStatus": { "type": "string" },
+        "infrastructureStatus": { "type": "string" },
+        "qaQualityGate": { "type": "string" }
+      }
+    },
+    "decidedBy": {
+      "type": "string",
+      "description": "Always Conductor Main.",
+      "const": "conductor-main"
+    },
+    "decidedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

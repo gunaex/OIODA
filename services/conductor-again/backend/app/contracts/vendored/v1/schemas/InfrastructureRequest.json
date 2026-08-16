@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/InfrastructureRequest.json",
+  "title": "InfrastructureRequest",
+  "description": "Infrastructure provisioning and deployment request. Envelope produced by Conductor Main. Technical needs originate from Idea → Code EngineeringResult and business constraints. Requirements MUST be provider-neutral capabilities, NOT provider-specific product names or SKUs. Conductor MUST NOT independently decide AWS RDS SKU, EC2 instance type, EKS node type, GCP machine type, or exact provider product.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": [
+    "infrastructureRequestId",
+    "correlationId",
+    "workPackageId",
+    "engineeringResultId",
+    "requirements",
+    "createdAt"
+  ],
+  "properties": {
+    "infrastructureRequestId": {
+      "type": "string",
+      "examples": ["ir-001"]
+    },
+    "correlationId": {
+      "type": "string",
+      "examples": ["e2e-golden-001"]
+    },
+    "workPackageId": {
+      "type": "string",
+      "examples": ["wp-001"]
+    },
+    "engineeringResultId": {
+      "type": "string",
+      "description": "Reference to the engineering result this infrastructure supports.",
+      "examples": ["er-001"]
+    },
+    "requirements": {
+      "type": "object",
+      "description": "Provider-neutral infrastructure requirements.",
+      "properties": {
+        "database": {
+          "type": "object",
+          "properties": {
+            "engine": {
+              "type": "string",
+              "description": "Database engine (e.g., postgresql, mysql).",
+              "examples": ["postgresql"]
+            },
+            "version": {
+              "type": "string",
+              "examples": ["16"]
+            },
+            "availability": {
+              "type": "string",
+              "enum": ["development", "staging", "production"],
+              "examples": ["production"]
+            },
+            "backup": {
+              "type": "object",
+              "properties": {
+                "required": { "type": "boolean" },
+                "retention": { "type": "string" },
+                "schedule": { "type": "string" }
+              }
+            },
+            "encryption": {
+              "type": "object",
+              "properties": {
+                "atRest": { "type": "boolean" },
+                "inTransit": { "type": "boolean" }
+              }
+            },
+            "storage": {
+              "type": "string",
+              "examples": ["100GB"]
+            }
+          }
+        },
+        "applicationRuntime": {
+          "type": "object",
+          "properties": {
+            "containerized": { "type": "boolean" },
+            "replicas": { "type": "integer", "minimum": 1 },
+            "https": { "type": "boolean" },
+            "healthCheckPath": { "type": "string" },
+            "port": { "type": "integer" }
+          }
+        },
+        "networking": {
+          "type": "object",
+          "properties": {
+            "public": { "type": "boolean" },
+            "httpsOnly": { "type": "boolean" },
+            "domain": { "type": "string" }
+          }
+        },
+        "providerHint": {
+          "type": "string",
+          "enum": ["AWS", "GCP", "ON_PREM"],
+          "description": "Optional provider preference. Infrastructure Again may override."
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "References to engineering artifacts for deployment.",
+      "properties": {
+        "dockerImage": { "type": "string" },
+        "helmChart": { "type": "string" },
+        "manifests": { "type": "string" }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

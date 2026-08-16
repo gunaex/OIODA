@@ -1,0 +1,25 @@
+# Conductor Again — Fly.io Configuration
+app = "conductor-again-backend"
+primary_region = "sin"
+
+[build]
+
+[mounts]
+  source = "conductor_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/api/health"
+    interval = "30s"
+    timeout = "5s"
+
+[vm]
+  size = "shared-cpu-1x"
+  memory = "256mb"

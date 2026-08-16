@@ -1,0 +1,6 @@
+"""Conductor Again — Specialist Dispatch Adapters (E8-E)."""
+
+REAL_RUNTIME = "REAL_RUNTIME"
+FROZEN_RUNTIME = "FROZEN_RUNTIME"
+HARNESS = "HARNESS"
+UNAVAILABLE = "UNAVAILABLE"

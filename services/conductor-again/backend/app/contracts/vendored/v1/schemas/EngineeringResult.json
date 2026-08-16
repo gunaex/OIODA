@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/EngineeringResult.json",
+  "title": "EngineeringResult",
+  "description": "Completed engineering work output from Idea → Code.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": [
+    "engineeringResultId",
+    "correlationId",
+    "workPackageId",
+    "status",
+    "repo",
+    "branch",
+    "commit",
+    "pipeline",
+    "evidence",
+    "completedAt"
+  ],
+  "properties": {
+    "engineeringResultId": {
+      "type": "string",
+      "description": "Unique identifier for this engineering result.",
+      "examples": ["er-001"]
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Correlation ID linking the full delivery flow.",
+      "examples": ["e2e-golden-001"]
+    },
+    "workPackageId": {
+      "type": "string",
+      "description": "Reference to the parent DeliveryWorkPackage.",
+      "examples": ["wp-001"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["SUCCESS", "PARTIAL", "FAILED", "REPAIRED"],
+      "description": "Overall engineering execution status."
+    },
+    "repo": {
+      "type": "string",
+      "description": "Repository URL or identifier.",
+      "examples": ["https://github.com/org/app-repo"]
+    },
+    "branch": {
+      "type": "string",
+      "description": "Git branch containing the changes.",
+      "examples": ["feature/e2e-golden-001"]
+    },
+    "commit": {
+      "type": "string",
+      "description": "Git commit SHA.",
+      "examples": ["abc123def456"]
+    },
+    "pipeline": {
+      "type": "object",
+      "description": "Pipeline stage results.",
+      "properties": {
+        "plan": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["COMPLETED", "FAILED"] },
+            "planReference": { "type": "string" },
+            "planReviewed": { "type": "boolean" }
+          }
+        },
+        "execute": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["COMPLETED", "FAILED"] },
+            "filesChanged": { "type": "integer" }
+          }
+        },
+        "build": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["COMPLETED", "FAILED"] }
+          }
+        },
+        "test": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["COMPLETED", "FAILED"] },
+            "testsPassed": { "type": "integer" },
+            "testsFailed": { "type": "integer" }
+          }
+        },
+        "verify": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["PASS", "FAIL"] },
+            "verifierRole": { "type": "string", "description": "Proof that Verifier != Executor" }
+          }
+        },
+        "repair": {
+          "type": "object",
+          "properties": {
+            "attempted": { "type": "boolean" },
+            "cycles": { "type": "integer" },
+            "result": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Evidence references (not copies).",
+      "items": {
+        "type": "object",
+        "required": ["type", "source", "reference"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["PLAN", "PLAN_REVIEW", "TEST_RESULTS", "VERIFIER_REPORT", "BUILD_LOG", "REPAIR_LOG"]
+          },
+          "source": { "type": "string" },
+          "reference": { "type": "string", "description": "URI to the evidence in Idea → Code" },
+          "summary": { "type": "string" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "References to generated artifacts.",
+      "properties": {
+        "dockerImage": { "type": "string" },
+        "packageRegistry": { "type": ["string", "null"] },
+        "docsReference": { "type": "string" }
+      }
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of engineering completion."
+    }
+  }
+}

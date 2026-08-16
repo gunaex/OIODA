@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v1/InfrastructureResult.json",
+  "title": "InfrastructureResult",
+  "description": "Completed infrastructure provisioning and deployment result from Infrastructure Again.",
+  "type": "object",
+  "version": "1.0.0",
+  "required": [
+    "infrastructureResultId",
+    "correlationId",
+    "workPackageId",
+    "infrastructureRequestId",
+    "status",
+    "provider",
+    "platform",
+    "evidence",
+    "completedAt"
+  ],
+  "properties": {
+    "infrastructureResultId": {
+      "type": "string",
+      "examples": ["ifr-001"]
+    },
+    "correlationId": {
+      "type": "string",
+      "examples": ["e2e-golden-001"]
+    },
+    "workPackageId": {
+      "type": "string",
+      "examples": ["wp-001"]
+    },
+    "infrastructureRequestId": {
+      "type": "string",
+      "examples": ["ir-001"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["SUCCESS", "PARTIAL", "FAILED"],
+      "description": "Overall infrastructure provisioning status."
+    },
+    "provider": {
+      "type": "string",
+      "enum": ["AWS", "GCP", "ON_PREM"],
+      "description": "Selected infrastructure provider."
+    },
+    "platform": {
+      "type": "string",
+      "enum": ["KUBERNETES", "OPENSHIFT", "NATIVE_VM", "BARE_METAL"],
+      "description": "Selected platform/runtime layer."
+    },
+    "providerDetail": {
+      "type": "object",
+      "description": "Provider-specific details.",
+      "properties": {
+        "region": { "type": "string" },
+        "account": { "type": "string" },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "identifier": { "type": "string" },
+              "status": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "endpoints": {
+      "type": "array",
+      "description": "Deployed application endpoints.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "url": { "type": "string" },
+          "type": { "type": "string", "enum": ["HTTP", "HTTPS", "GRPC"] }
+        }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "description": "Infrastructure pipeline stage results.",
+      "properties": {
+        "architecturePlan": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string" },
+            "planReference": { "type": "string" },
+            "approved": { "type": "boolean" }
+          }
+        },
+        "provision": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string" },
+            "iacReference": { "type": "string" },
+            "tool": { "type": "string", "enum": ["OPENTOFU", "TERRAFORM"] }
+          }
+        },
+        "configure": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string" },
+            "tool": { "type": "string" }
+          }
+        },
+        "deploy": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string" }
+          }
+        },
+        "validate": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string" },
+            "healthCheckPassed": { "type": "boolean" },
+            "connectivityVerified": { "type": "boolean" },
+            "httpsVerified": { "type": "boolean" },
+            "backupVerified": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "source", "reference"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["ARCHITECTURE_PLAN", "PLAN_APPROVAL", "IAC_OUTPUT", "VALIDATION_RESULTS"]
+          },
+          "source": { "type": "string" },
+          "reference": { "type": "string" },
+          "summary": { "type": "string" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
