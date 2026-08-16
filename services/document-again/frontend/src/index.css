@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/*
+ * Document Again design tokens.
+ *
+ * Brand identity (app accent) is deliberately separate from semantic
+ * status colors: the accent never carries meaning, statuses always use
+ * the semantic palette so ecosystem semantics stay consistent across
+ * PM/QA/Document Again.
+ */
+@theme {
+  /* App identity — deep indigo, distinct from PM/QA accents */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-brand-900: #312e81;
+
+  /* Neutral workspace surfaces (high-density) */
+  --color-surface-0: #0f1117;
+  --color-surface-1: #161a23;
+  --color-surface-2: #1e2330;
+  --color-surface-3: #262c3b;
+  --color-line: #2c3345;
+
+  /* Semantic status colors — meaning lives ONLY here */
+  --color-status-draft: #94a3b8;
+  --color-status-review: #f59e0b;
+  --color-status-confirmed: #10b981;
+  --color-status-superseded: #64748b;
+  --color-status-archived: #475569;
+  --color-status-open: #f59e0b;
+  --color-status-resolved: #10b981;
+  --color-status-blocked: #ef4444;
+  --color-status-fail: #ef4444;
+  --color-status-warning: #f59e0b;
+}
+
+body {
+  @apply bg-surface-0 text-slate-200 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+::selection {
+  background: var(--color-brand-600);
+}
