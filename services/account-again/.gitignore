@@ -1,0 +1,27 @@
+# Bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Database files
+*.db
+
+# Environment / secrets (never commit an actual .env)
+.env
+*.pem
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache/
+*.egg-info/
