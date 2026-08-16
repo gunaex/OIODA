@@ -2315,9 +2315,20 @@ def list_api_endpoints(db: Session, project_id: str) -> list[dict]:
 # OpenAPI 3.x import/export (structured API design as the source of truth)
 # ---------------------------------------------------------------------------
 
+# Import safety: bound the uploaded document size; the parser never follows
+# remote $ref URLs (no SSRF), so a remote reference is simply treated as an
+# unresolved schema name.
+MAX_OPENAPI_BYTES = 5 * 1024 * 1024
+
 
 def _parse_openapi(text: str) -> dict:
-    """Parse a JSON or YAML OpenAPI 3.x document into a raw spec dict."""
+    """Parse a JSON or YAML OpenAPI 3.x document into a raw spec dict.
+
+    Does not fetch remote ``$ref`` URLs — a ``$ref`` is only ever reduced to
+    its final path component as a schema name.
+    """
+    if len(text.encode("utf-8")) > MAX_OPENAPI_BYTES:
+        raise DomainError("OpenAPI document exceeds the 5MB size limit", status_code=413)
     import yaml as _yaml
 
     try:

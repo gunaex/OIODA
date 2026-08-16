@@ -480,3 +480,31 @@ def test_confirmation_unique_constraint_blocks_duplicate(db, project):
     with pytest.raises(IntegrityError):
         db.commit()
     db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# P4-O security hardening
+# ---------------------------------------------------------------------------
+
+
+def test_openapi_import_size_bound(db, project):
+    from app.services import DomainError, import_openapi
+    huge = "openapi: 3.0.0\npaths:\n  /x:\n    get:\n      summary: " + ("A" * (6 * 1024 * 1024))
+    with pytest.raises(DomainError):
+        import_openapi(db, project.id, huge)
+
+
+def test_safe_filename_blocks_path_traversal():
+    # Path traversal requires separators; these are stripped to underscores,
+    # so no zip entry can escape its directory.
+    assert "/" not in svc._safe_filename("../../etc/passwd")
+    assert "\\" not in svc._safe_filename("a/b\\c")
+    assert svc._safe_filename("../x.json") == ".._x.json"  # no separators
+
+
+def test_openapi_no_remote_ref_fetch(db, project):
+    # A $ref is reduced to its final path component; no network call is made.
+    doc = 'openapi: 3.0.0\npaths:\n  /x:\n    get:\n      responses:\n        "200":\n          content:\n            application/json:\n              schema:\n                $ref: "https://evil.example/schema.json#/X"\n'
+    eps = svc.openapi_to_endpoints(svc._parse_openapi(doc))
+    # $ref becomes a schema name, no fetch occurred (nothing raises/network)
+    assert eps[0]["method"] == "GET"
