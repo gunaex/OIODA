@@ -1,7 +1,7 @@
 """Thin HTTP routers. All rules live in app.services."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -23,6 +23,9 @@ router = APIRouter(prefix="/api")
 def project_out(p: m.Project) -> dict:
     return {
         "id": p.id, "key": p.key, "name": p.name, "description": p.description,
+        "metadata": p.project_meta or {},
+        "lifecycle_state": p.lifecycle_state or "ACTIVE",
+        "cloned_from_project_id": p.cloned_from_project_id,
         "created_at": p.created_at.isoformat(), "created_by": p.created_by,
     }
 
@@ -84,15 +87,13 @@ class ProjectIn(BaseModel):
     key: str
     name: str
     description: str | None = None
+    metadata: dict | None = None
 
 
 @router.get("/projects")
-def list_projects(db: Session = Depends(db_session)):
-    q = select(m.Project)
-    tenant = current_tenant()
-    if tenant is not None:
-        q = q.where(m.Project.tenant_id == tenant)
-    return [project_out(p) for p in db.execute(q).scalars()]
+def list_projects(state: str | None = None, db: Session = Depends(db_session)):
+    rows = svc.list_projects(db, state=state)
+    return [project_out(p) for p in rows]
 
 
 @router.post("/projects", status_code=201)
@@ -100,9 +101,307 @@ def create_project(body: ProjectIn, db: Session = Depends(db_session), actor=Dep
     return project_out(svc.create_project(db, **body.model_dump(), actor=actor))
 
 
+class ProjectArchiveIn(BaseModel):
+    pass
+
+
+@router.post("/projects/{project_id}/archive")
+def archive_project(project_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.archive_project(db, project_id, actor=actx.name, actor_id=actx.id)
+
+
+@router.post("/projects/{project_id}/restore")
+def restore_project(project_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.restore_project(db, project_id, actor=actx.name, actor_id=actx.id)
+
+
+class ProjectCloneIn(BaseModel):
+    key: str
+    name: str
+    description: str | None = None
+
+
+@router.post("/projects/{project_id}/clone", status_code=201)
+def clone_project(project_id: str, body: ProjectCloneIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.clone_project(db, project_id, key=body.key, name=body.name,
+                             description=body.description, actor=actx.name, actor_id=actx.id)
+
+
+@router.get("/projects/{project_id}/delete-impact")
+def delete_impact(project_id: str, db: Session = Depends(db_session)):
+    return svc.delete_impact(db, project_id)
+
+
+class ProjectDeleteIn(BaseModel):
+    confirm_key: str
+
+
+@router.post("/projects/{project_id}/delete")
+def delete_project(project_id: str, body: ProjectDeleteIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    project = svc.guard_project(db, project_id)
+    if body.confirm_key.strip().upper() != (project.key or "").upper():
+        raise svc.DomainError("Confirmation key does not match the project key.", status_code=422)
+    return svc.delete_project(db, project_id, actor=actx.name, actor_id=actx.id)
+
+
+@router.get("/projects/{project_id}/export")
+def export_project(project_id: str, db: Session = Depends(db_session)):
+    return svc.export_project(db, project_id)
+
+
+@router.post("/projects/import", status_code=201)
+def import_project(body: dict, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.import_project(db, body, actor=actx.name, actor_id=actx.id)
+
+
+# R16 Phase 29 — version surface (build identifiers recorded at the R16
+# baseline repo checkpoint; monorepo release tags supersede these).
+@router.get("/versions")
+def versions():
+    return {
+        "oida_web": "oida-shell (R16 baseline; monorepo apps/oida-web)",
+        "gateway": "oida-gateway (ops/fly/oida-gateway.fly.toml)",
+        "account_again": {"version": "0.1.0", "baseline_commit": "ff535bd"},
+        "document_again": {"version": "0.1.0", "baseline_commit": "1f98375"},
+        "conductor_again": {"version": "0.1.0", "baseline_commit": "243942b"},
+        "pm_again": {"version": "0.1.0", "baseline_commit": "fa3345d"},
+        "qa_again": {"version": "0.1.0", "baseline_commit": "ea00066"},
+        "infra_again": {"version": "0.1.0", "baseline_commit": "c389e58"},
+        "note": "Commit identifiers are the R16 pre-consolidation repo HEADs; a monorepo release tag (e.g. oida-v0.1.0) is created only after production acceptance.",
+    }
+
+
 @router.get("/projects/{project_id}")
 def get_project(project_id: str, db: Session = Depends(db_session)):
     return project_out(svc.guard_project(db, project_id))
+
+
+@router.get("/projects/{project_id}/home")
+def project_home(project_id: str, db: Session = Depends(db_session)):
+    return svc.project_home(db, project_id)
+
+
+# ---------------------------------------------------------------------------
+# Workspace bindings (R12) — correlation metadata only, never business truth.
+# ---------------------------------------------------------------------------
+
+class WorkspaceBindingsIn(BaseModel):
+    pm_project_slug: str | None = None
+    qa_project_slugs: dict[str, str] | None = None  # handoff_id -> qa project slug
+    infra_design_id: str | None = None  # Infra Again design id (correlation pointer)
+
+
+@router.get("/projects/{project_id}/workspace-bindings")
+def get_workspace_bindings(project_id: str, db: Session = Depends(db_session)):
+    return svc.get_workspace_bindings(db, project_id)
+
+
+@router.put("/projects/{project_id}/workspace-bindings")
+def put_workspace_bindings(project_id: str, body: WorkspaceBindingsIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.put_workspace_bindings(db, project_id, pm_project_slug=body.pm_project_slug, qa_project_slugs=body.qa_project_slugs, infra_design_id=body.infra_design_id)
+
+
+# ---------------------------------------------------------------------------
+# OIDA Suggestion (R11) — AI observes & suggests; the human decides.
+# ---------------------------------------------------------------------------
+
+class SuggestGenerateIn(BaseModel):
+    mode: str = "STANDARD"  # QUICK | STANDARD | DEEP
+
+
+@router.post("/projects/{project_id}/suggestions/generate")
+def generate_suggestions(project_id: str, body: SuggestGenerateIn | None = None, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.generate_suggestions(db, project_id, mode=(body or SuggestGenerateIn()).mode, actor=actx.name, actor_id=actx.id)
+
+
+@router.get("/projects/{project_id}/suggestions")
+def list_suggestions(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_suggestions(db, project_id)
+
+
+class SuggestAnswerIn(BaseModel):
+    answer: str
+    source: str = "CUSTOMER"
+
+
+@router.post("/suggestions/{suggestion_id}/answer")
+def answer_suggestion(suggestion_id: str, body: SuggestAnswerIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.answer_suggestion(db, suggestion_id, answer=body.answer, source=body.source, actor=actx.name, actor_id=actx.id)
+
+
+@router.post("/suggestions/{suggestion_id}/interpret")
+def interpret_suggestion(suggestion_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.interpret_suggestion(db, suggestion_id, actor=actx.name, actor_id=actx.id)
+
+
+class SuggestReviewIn(BaseModel):
+    decision: str  # ACCEPTED | REJECTED
+
+
+@router.post("/suggestions/{suggestion_id}/review")
+def review_suggestion(suggestion_id: str, body: SuggestReviewIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.review_suggestion(db, suggestion_id, decision=body.decision, actor=actx.name, actor_id=actx.id)
+
+
+# ---------------------------------------------------------------------------
+# AI providers (R11 extension) — honest, no keys stored server-side.
+# ---------------------------------------------------------------------------
+
+@router.get("/ai/providers")
+def ai_providers():
+    from .. import ai as ai_runtime
+    return ai_runtime.provider_status()
+
+
+@router.post("/ai/providers/{provider_id}/test")
+def ai_provider_test(provider_id: str):
+    from .. import ai as ai_runtime
+    try:
+        return ai_runtime.test_provider(provider_id)
+    except KeyError:
+        raise DomainError("Unknown provider", status_code=404)
+
+
+class AIProviderSettingsIn(BaseModel):
+    api_key: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+
+
+@router.get("/ai/providers/{provider_id}/settings")
+def ai_provider_settings(provider_id: str):
+    from .. import ai as ai_runtime
+    try:
+        return ai_runtime.get_provider_settings(provider_id)
+    except KeyError:
+        raise DomainError("Unknown provider", status_code=404)
+
+
+@router.put("/ai/providers/{provider_id}/settings")
+def update_ai_provider_settings(provider_id: str, body: AIProviderSettingsIn, actx=Depends(actor_ctx)):
+    from .. import ai as ai_runtime
+    try:
+        return ai_runtime.update_provider_settings(
+            provider_id, api_key=body.api_key, model=body.model, base_url=body.base_url
+        )
+    except KeyError:
+        raise DomainError("Unknown provider", status_code=404)
+
+
+@router.get("/ai/providers/{provider_id}/models")
+def ai_provider_models(provider_id: str, x_provider_api_key: str | None = Header(None, alias="X-Provider-API-Key")):
+    """Model list read live from the provider source — never hard-coded. An
+    unsaved key typed in the UI may be passed via X-Provider-API-Key so the
+    list can be fetched before saving."""
+    from .. import ai as ai_runtime
+    try:
+        return ai_runtime.list_provider_models(provider_id, api_key=x_provider_api_key)
+    except KeyError:
+        raise DomainError("Unknown provider", status_code=404)
+
+
+# ---------------------------------------------------------------------------
+# R15 — Multi-Agent Council (AI-Ready, Human-Led)
+# ---------------------------------------------------------------------------
+
+@router.get("/ai/capabilities")
+def ai_capabilities():
+    from .. import council
+    return council.capability_registry()
+
+
+@router.get("/ai/council/mode")
+def ai_council_mode():
+    from .. import council
+    return council.council_mode()
+
+
+class CouncilConsultIn(BaseModel):
+    task_type: str = "GENERAL_REVIEW"
+    question: str
+    context_envelope: dict = {}
+    role: str | None = None
+
+
+@router.post("/projects/{project_id}/council/consult")
+def council_consult(project_id: str, body: CouncilConsultIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.create_consultation(
+        db, project_id, task_type=body.task_type, question=body.question,
+        context_envelope=body.context_envelope, role=body.role,
+        actor=actx.name, actor_id=actx.id,
+    )
+
+
+@router.get("/projects/{project_id}/council/consultations")
+def council_consultations(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_consultations(db, project_id)
+
+
+@router.get("/projects/{project_id}/council/consultations/{consultation_id}")
+def council_consultation(project_id: str, consultation_id: str, db: Session = Depends(db_session)):
+    return svc.get_consultation(db, consultation_id)
+
+
+class CouncilStaleIn(BaseModel):
+    context_envelope: dict = {}
+
+
+@router.post("/council/consultations/{consultation_id}/check-stale")
+def council_check_stale(consultation_id: str, body: CouncilStaleIn, db: Session = Depends(db_session)):
+    return svc.check_consultation_stale(db, consultation_id, context_envelope=body.context_envelope or None)
+
+
+class CouncilReviewIn(BaseModel):
+    decision: str  # USEFUL | REJECTED
+    comment: str | None = None
+    important: list[str] = []
+    incorrect: list[str] = []
+
+
+@router.post("/council/consultations/{consultation_id}/review")
+def council_review(consultation_id: str, body: CouncilReviewIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.review_consultation(
+        db, consultation_id, decision=body.decision, comment=body.comment,
+        important=body.important, incorrect=body.incorrect,
+        actor=actx.name, actor_id=actx.id,
+    )
+
+
+class CouncilToSuggestionIn(BaseModel):
+    finding: dict
+
+
+@router.post("/council/consultations/{consultation_id}/to-suggestion")
+def council_to_suggestion(consultation_id: str, body: CouncilToSuggestionIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.council_finding_to_suggestion(
+        db, consultation_id, finding=body.finding, actor=actx.name, actor_id=actx.id,
+    )
+
+
+class CouncilRerunIn(BaseModel):
+    context_envelope: dict
+
+
+@router.post("/council/consultations/{consultation_id}/rerun")
+def council_rerun(consultation_id: str, body: CouncilRerunIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.rerun_consultation(
+        db, consultation_id, context_envelope=body.context_envelope,
+        actor=actx.name, actor_id=actx.id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +573,92 @@ def create_requirement(body: RequirementIn, db: Session = Depends(db_session), a
 @router.get("/requirements/{requirement_id}")
 def get_requirement(requirement_id: str, db: Session = Depends(db_session)):
     return requirement_out(svc.get_or_404(db, m.Requirement, requirement_id, "Requirement"))
+
+
+# ---------------------------------------------------------------------------
+# Requirement revisions + change lifecycle (R10)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/requirements/{requirement_id}/revisions")
+def list_requirement_revisions(requirement_id: str, db: Session = Depends(db_session)):
+    return [svc._requirement_revision_dict(r) for r in svc.list_requirement_revisions(db, requirement_id)]
+
+
+@router.post("/requirements/{requirement_id}/draft", status_code=201)
+def create_requirement_draft(requirement_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    change, draft = svc.create_requirement_draft(
+        db, requirement_id, actor=actx.name, actor_id=actx.id,
+    )
+    return {"change_id": change.id, "draft": svc._requirement_revision_dict(draft)}
+
+
+class RequirementDraftIn(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    source_type: str | None = None
+    source_reference: str | None = None
+    priority: str | None = None
+
+
+@router.put("/requirements/{requirement_id}/draft/{revision_id}")
+def update_requirement_draft(
+    requirement_id: str, revision_id: str, body: RequirementDraftIn,
+    db: Session = Depends(db_session),
+):
+    return svc._requirement_revision_dict(
+        svc.update_requirement_draft(db, requirement_id, revision_id, **body.model_dump())
+    )
+
+
+@router.get("/projects/{project_id}/changes")
+def list_requirement_changes(project_id: str, db: Session = Depends(db_session)):
+    return svc.list_requirement_changes(db, project_id)
+
+
+@router.get("/changes/{change_id}")
+def get_requirement_change(change_id: str, db: Session = Depends(db_session)):
+    rows = svc.list_requirement_changes(db)
+    for row in rows:
+        if row["id"] == change_id:
+            return row
+    svc.get_or_404(db, m.RequirementChange, change_id, "Change")  # raises 404
+    return {}
+
+
+@router.get("/changes/{change_id}/impact")
+def change_impact(change_id: str, db: Session = Depends(db_session)):
+    return svc.requirement_change_impact(db, change_id)
+
+
+class RegenerateIn(BaseModel):
+    mode: str = "affected"  # affected | full
+
+
+@router.post("/changes/{change_id}/regenerate")
+def regenerate_change(change_id: str, body: RegenerateIn | None = None, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    body = body or RegenerateIn()
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.regenerate_change(db, change_id, mode=body.mode, actor=actx.name, actor_id=actx.id)
+
+
+class ConfirmChangeIn(BaseModel):
+    confirmation_token: str
+
+
+@router.post("/changes/{change_id}/confirm")
+def confirm_change(change_id: str, body: ConfirmChangeIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.confirm_change(
+        db, change_id, confirmation_token=body.confirmation_token,
+        actor=actx.name, actor_id=actx.id,
+    )
+
+
+@router.post("/projects/{project_id}/seed-requirement-revisions")
+def seed_requirement_revisions(project_id: str, db: Session = Depends(db_session)):
+    return {"seeded": svc.seed_requirement_revisions(db, project_id)}
 
 
 # ---------------------------------------------------------------------------
@@ -494,23 +879,60 @@ def revision_annotations(revision_id: str, db: Session = Depends(db_session)):
 class CRIn(BaseModel):
     project_id: str
     requested_change: str
-    affected_semantic_ids: list[str]
+    affected_semantic_ids: list[str] = []
+    title: str | None = None
     reason: str | None = None
     requested_by: str | None = None
+    requested_date: str | None = None
+    source_reference: str | None = None
+    notes: str | None = None
     target_release: str | None = None
     schedule_impact: str | None = None
     commercial_impact: str | None = None
+    classification: str | None = None
+
+
+class CRSuggestIn(BaseModel):
+    project_id: str
+    affected_semantic_ids: list[str] = []
 
 
 def cr_out(cr: m.ChangeRequest) -> dict:
     return {
         "id": cr.id, "code": cr.code, "project_id": cr.project_id,
+        "title": cr.title,
         "requested_change": cr.requested_change, "reason": cr.reason,
+        "requested_by": cr.requested_by,
+        "requested_date": cr.requested_date.isoformat() if cr.requested_date else None,
+        "source_reference": cr.source_reference, "notes": cr.notes,
         "status": cr.status.value, "target_release": cr.target_release,
         "schedule_impact": cr.schedule_impact, "commercial_impact": cr.commercial_impact,
         "affected_semantic_ids": [l.semantic_id for l in cr.links],
         "created_at": cr.created_at.isoformat(), "created_by": cr.created_by,
+        "updated_at": cr.updated_at.isoformat() if cr.updated_at else None,
     }
+
+
+def _cr_list_item(db: Session, cr: m.ChangeRequest) -> dict:
+    item = cr_out(cr)
+    impact = db.execute(
+        select(m.ChangeRequestImpact).where(m.ChangeRequestImpact.change_request_id == cr.id)
+    ).scalar_one_or_none()
+    analysis = db.execute(
+        select(m.ImpactAnalysis)
+        .where(m.ImpactAnalysis.target_id == cr.id, m.ImpactAnalysis.target_type == "change_request")
+        .order_by(m.ImpactAnalysis.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    item.update({
+        "classification": impact.classification if impact else None,
+        "impact_confidence": analysis.confidence if analysis else None,
+        "human_review": analysis.review_state.value if analysis else "NOT_REVIEWED",
+        "coverage_status": analysis.coverage_status if analysis else None,
+        "effort_status": (impact.effort_impact or {}).get("status") if impact and impact.effort_impact else None,
+        "commercial_status": impact.commercial_status if impact else None,
+    })
+    return item
 
 
 @router.get("/projects/{project_id}/change-requests")
@@ -518,13 +940,52 @@ def list_crs(project_id: str, db: Session = Depends(db_session)):
     rows = db.execute(
         select(m.ChangeRequest).where(m.ChangeRequest.project_id == project_id)
     ).scalars()
-    return [cr_out(c) for c in rows]
+    return [_cr_list_item(db, c) for c in rows]
 
 
 @router.post("/change-requests", status_code=201)
 def create_cr(body: CRIn, db: Session = Depends(db_session), actor=Depends(actor), actx=Depends(actor_ctx)):
     svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
     return cr_out(svc.create_change_request(db, **body.model_dump(), actor=actx.name, actor_id=actx.id))
+
+
+@router.post("/change-requests/suggest-classification")
+def suggest_cr_classification(body: CRSuggestIn, db: Session = Depends(db_session)):
+    return svc.suggest_cr_classification(db, body.project_id, body.affected_semantic_ids)
+
+
+@router.post("/change-requests/{change_request_id}/analyze-impact")
+def analyze_cr_impact(
+    change_request_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx),
+):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.analyze_cr_impact(db, change_request_id, actor=actx.name, actor_id=actx.id)
+
+
+@router.get("/change-requests/{change_request_id}/impact-analysis")
+def get_cr_impact_analysis(change_request_id: str, db: Session = Depends(db_session)):
+    return svc.get_cr_impact_analysis(db, change_request_id)
+
+
+class CRReviewIn(BaseModel):
+    analysis_id: str
+    decisions: dict[str, dict] | None = None
+    human_added: list[dict] | None = None
+    comments: list[str] | None = None
+    finalize: bool = False
+
+
+@router.post("/change-requests/{change_request_id}/impact-analysis/review")
+def review_cr_impact_analysis(
+    change_request_id: str, body: CRReviewIn, db: Session = Depends(db_session), actx=Depends(actor_ctx),
+):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.review_cr_impact_analysis(
+        db, change_request_id, body.analysis_id,
+        decisions=body.decisions, human_added=body.human_added,
+        comments=body.comments, finalize=body.finalize,
+        reviewer=actx.name, actor_id=actx.id,
+    )
 
 
 @router.get("/change-requests/{change_request_id}")
@@ -547,6 +1008,58 @@ def implement_cr(
     )
     return {"change_request": cr_out(result["change_request"]),
             "spawned_revisions": result["spawned_revisions"]}
+
+
+@router.get("/change-requests/{change_request_id}/impact")
+def get_cr_impact(change_request_id: str, db: Session = Depends(db_session)):
+    return svc.cr_impact(db, change_request_id)
+
+
+class CRImpactIn(BaseModel):
+    classification: str | None = None
+    function_impact: dict | None = None
+    effort_impact: dict | None = None
+    timeline_impact: dict | None = None
+    technical_impact: dict | None = None
+    qa_impact: dict | None = None
+    infra_impact: dict | None = None
+    commercial_status: str | None = None
+    pricing_basis: str | None = None
+    confidence: str | None = None
+
+
+@router.put("/change-requests/{change_request_id}/impact")
+def save_cr_impact(change_request_id: str, body: CRImpactIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.save_cr_impact(db, change_request_id, **body.model_dump())
+
+
+class CRCustomerApprovalIn(BaseModel):
+    decision: str  # APPROVED | REJECTED | PENDING
+    approved_by: str | None = None
+    reference: str | None = None
+    note: str | None = None
+    amount: str | None = None
+
+
+@router.post("/change-requests/{change_request_id}/customer-approval")
+def set_cr_customer_approval(change_request_id: str, body: CRCustomerApprovalIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.set_cr_customer_approval(db, change_request_id, **body.model_dump(), actor=actx.name)
+
+
+class CRTransitionIn(BaseModel):
+    to_status: str
+    note: str | None = None
+
+
+@router.post("/change-requests/{change_request_id}/transition")
+def transition_cr(change_request_id: str, body: CRTransitionIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
+    return svc.transition_change_request(
+        db, change_request_id, to_status=body.to_status, note=body.note,
+        actor=actx.name, actor_id=actx.id,
+    )
 
 
 # ---------------------------------------------------------------------------

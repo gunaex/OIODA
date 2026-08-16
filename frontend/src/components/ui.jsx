@@ -16,6 +16,9 @@ const STATUS_CLASS = {
   REJECTED: "bg-red-500/15 text-status-fail border-red-500/30",
   PASS: "bg-emerald-500/15 text-status-confirmed border-emerald-500/30",
   FAIL: "bg-red-500/15 text-status-fail border-red-500/30",
+  CURRENT: "bg-indigo-500/15 text-indigo-300 border-indigo-500/30",
+  ACKNOWLEDGED: "bg-sky-500/10 text-sky-300 border-sky-500/30",
+  DELIVERED: "bg-sky-500/10 text-sky-300 border-sky-500/30",
 };
 
 export function StatusBadge({ status }) {

@@ -7,7 +7,9 @@ export default defineConfig({
   server: {
     port: 5175,
     proxy: {
-      "/api": "http://localhost:8002",
+      // Document Again local backend. :8002 is QA Again's canonical port, so
+      // Document Again runs on :8003 locally (P1 port-hardening fix).
+      "/api": "http://localhost:8003",
     },
   },
 });

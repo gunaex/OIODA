@@ -403,6 +403,48 @@ def main() -> int:
 
 def _write_registers(c, pid):
     import openpyxl
+    from datetime import datetime, timezone
+    from openpyxl.formatting.rule import FormulaRule
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    navy = "1F4E78"; white = "FFFFFF"; amber = "FFF2CC"
+
+    project = c.get(f"/api/projects/{pid}").json()
+    generated = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def title_register(ws, artifact, columns):
+        ws.insert_rows(1, 3)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=columns)
+        ws.cell(1, 1, f"{project['name']} — {artifact}")
+        ws.cell(1, 1).fill = PatternFill("solid", fgColor=navy)
+        ws.cell(1, 1).font = Font(bold=True, size=18, color=white)
+        ws.row_dimensions[1].height = 34
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=columns)
+        ws.cell(2, 1, f"Current working register · Generated {generated}")
+        ws.cell(2, 1).font = Font(bold=True, color="374151")
+
+    def style_register(ws, widths, artifact):
+        title_register(ws, artifact, len(widths))
+        ws.freeze_panes = "A5"
+        ws.auto_filter.ref = f"A4:{get_column_letter(len(widths))}{ws.max_row}"
+        ws.sheet_view.showGridLines = False
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        ws.print_title_rows = "1:4"
+        for cell in ws[4]:
+            cell.fill = PatternFill("solid", fgColor=navy)
+            cell.font = Font(bold=True, color=white)
+            cell.alignment = Alignment(wrap_text=True, vertical="center")
+        ws.row_dimensions[4].height = 28
+        for col, width in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(col)].width = width
+        for row in ws.iter_rows(min_row=5):
+            for cell in row:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+            ws.row_dimensions[row[0].row].height = 30
+
     wb = openpyxl.Workbook()
     ws = wb.active; ws.title = "Requirements"
     ws.append(["ID", "Track", "Title", "Type", "Deliverable", "Source", "Clarification", "Assumption", "Domains"])
@@ -410,6 +452,10 @@ def _write_registers(c, pid):
         md = r.get("metadata") or {}
         ws.append([r["code"], md.get("track"), r["title"], md.get("requirement_type"), md.get("deliverable_type"),
                    r.get("source_type"), md.get("clarification_state"), md.get("assumption_state"), ",".join(md.get("domains") or [])])
+    style_register(ws, [16, 12, 42, 18, 20, 18, 18, 18, 32], "Requirement Register")
+    if ws.max_row > 4:
+        ws.conditional_formatting.add(f"G5:G{ws.max_row}", FormulaRule(formula=['G5="OPEN"'], fill=PatternFill("solid", fgColor=amber)))
+        ws.conditional_formatting.add(f"H5:H{ws.max_row}", FormulaRule(formula=['H5="OPEN"'], fill=PatternFill("solid", fgColor=amber)))
     wb.save(os.path.join(OUT, "01_REQUIREMENTS_REGISTER.xlsx"))
 
     # clarifications / assumptions / decisions registers
@@ -418,8 +464,10 @@ def _write_registers(c, pid):
                          ("Assumptions", mem["assumptions"]),
                          ("Decisions", mem["decisions"])]:
         wb2 = openpyxl.Workbook(); ws2 = wb2.active; ws2.title = sheet
+        ws2.append(["Reference", "Question / statement", "Answer / outcome"])
         for it in items:
             ws2.append([it.get("id"), it.get("question") or it.get("content") or it.get("title"), it.get("answer") or ""])
+        style_register(ws2, [20, 68, 68], f"{sheet[:-1] if sheet.endswith('s') else sheet} Register")
         name = {"Clarifications": "13_CLARIFICATION_REGISTER.xlsx", "Assumptions": "14_ASSUMPTION_REGISTER.xlsx", "Decisions": "15_DECISION_REGISTER.xlsx"}[sheet]
         wb2.save(os.path.join(OUT, name))
 

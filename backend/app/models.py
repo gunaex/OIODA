@@ -15,11 +15,12 @@ exact artifact→revision pairs that existed at confirmation time.
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -128,11 +129,35 @@ class RequirementStatus(str, enum.Enum):
 
 
 class ChangeRequestStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
     OPEN = "OPEN"
+    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
+    IMPACT_ANALYZED = "IMPACT_ANALYZED"
+    UNDER_HUMAN_REVIEW = "UNDER_HUMAN_REVIEW"
+    INTERNAL_REVIEW_COMPLETE = "INTERNAL_REVIEW_COMPLETE"
     ACCEPTED = "ACCEPTED"
+    IMPLEMENTATION_PLANNED = "IMPLEMENTATION_PLANNED"
     IMPLEMENTED = "IMPLEMENTED"
     REJECTED = "REJECTED"
     DEFERRED = "DEFERRED"
+    CLOSED = "CLOSED"
+
+
+class ImpactReviewState(str, enum.Enum):
+    NOT_REVIEWED = "NOT_REVIEWED"
+    REVIEW_IN_PROGRESS = "REVIEW_IN_PROGRESS"
+    REVIEWED = "REVIEWED"
+
+
+class SuggestionStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    ANSWERED = "ANSWERED"
+    AI_REVIEWED = "AI_REVIEWED"
+    PROPOSED_UPDATE = "PROPOSED_UPDATE"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    RESOLVED = "RESOLVED"
+    NEEDS_FOLLOW_UP = "NEEDS_FOLLOW_UP"
 
 
 # ---------------------------------------------------------------------------
@@ -148,11 +173,79 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     tenant_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    project_meta: Mapped[dict | None] = mapped_column("metadata", JSON, default=dict, nullable=True)
+    # R16 project lifecycle authority (Document Again owns the lifecycle state).
+    lifecycle_state: Mapped[str] = mapped_column(String(20), default="ACTIVE")  # ACTIVE|ARCHIVED|DELETE_REQUESTED|DELETED
+    cloned_from_project_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    cloned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cloned_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    clone_policy_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
 
     artifacts: Mapped[list["Artifact"]] = relationship(back_populates="project")
     requirements: Mapped[list["Requirement"]] = relationship(back_populates="project")
+
+
+class Suggestion(Base):
+    """A grounded, auditable OIDA concern/question. AI observes and suggests;
+    the human always decides. A suggestion never mutates confirmed truth on its
+    own — accepting it only drafts a project-memory record (clarification /
+    assumption) that flows through the normal review/impact workflow."""
+
+    __tablename__ = "suggestions"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("sug"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    domain: Mapped[str | None] = mapped_column(String(40), nullable=True)  # requirement|design|pm|qa|infra|commercial
+    related_object_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    type: Mapped[str | None] = mapped_column(String(40), nullable=True)  # CLARIFICATION_REQUIRED|MISSING_INFORMATION|...
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    why_it_matters: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggested_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    severity: Mapped[str | None] = mapped_column(String(20), nullable=True)  # HIGH|MEDIUM|LOW
+    status: Mapped[SuggestionStatus] = mapped_column(
+        Enum(SuggestionStatus), default=SuggestionStatus.OPEN
+    )
+    created_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    # Customer / owner answer and its interpretation (never auto-applied).
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answer_source: Mapped[str | None] = mapped_column(String(40), nullable=True)  # CUSTOMER|PROJECT_OWNER|ARCHITECT|PM|QA|INFRA|OTHER
+    interpretation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interpretation_confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)  # HIGH|MEDIUM|LOW
+    follow_up: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposed_update: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_decision: Mapped[str | None] = mapped_column(String(40), nullable=True)  # ACCEPTED|REJECTED
+    consultation: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # provider runs + aggregation snapshot
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Consultation(Base):
+    """R15 Multi-Agent Council consultation record. Stores the context snapshot
+    used for the independent runs (reproducibility + stale detection), the
+    provider run cards, the deterministic aggregation, and human review. It is
+    a consultation record — it never writes to any authority service."""
+
+    __tablename__ = "consultations"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("con"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    task_type: Mapped[str] = mapped_column(String(60), default="GENERAL_REVIEW")
+    role: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    question: Mapped[str] = mapped_column(Text)
+    context_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    runs: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    aggregation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    human_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    stale: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +373,62 @@ class Requirement(Base):
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
 
     project: Mapped[Project] = relationship(back_populates="requirements")
+    revisions: Mapped[list["RequirementRevision"]] = relationship(
+        back_populates="requirement",
+        cascade="all, delete-orphan",
+        order_by="RequirementRevision.revision_number",
+    )
+
+
+class RequirementRevision(Base):
+    """Immutable versioned history of a requirement. Confirmed revisions are
+    never edited in place — a new DRAFT revision is created instead."""
+
+    __tablename__ = "requirement_revisions"
+    __table_args__ = (UniqueConstraint("requirement_id", "revision_number"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("rqrev"))
+    requirement_id: Mapped[str] = mapped_column(ForeignKey("requirements.id"), index=True)
+    revision_number: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    source_reference: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    priority: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    status: Mapped[RequirementStatus] = mapped_column(
+        Enum(RequirementStatus), default=RequirementStatus.DRAFT
+    )
+    based_on_revision_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    actor_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    requirement: Mapped[Requirement] = relationship(back_populates="revisions")
+
+
+class RequirementChange(Base):
+    """A controlled edit lifecycle: draft → impact → regenerate → review →
+    confirm → baseline. Historical truth and audit data live here."""
+
+    __tablename__ = "requirement_changes"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("chg"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    requirement_id: Mapped[str] = mapped_column(ForeignKey("requirements.id"), index=True)
+    from_revision_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    to_revision_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="DRAFT")  # DRAFT | IMPACT_READY | REGENERATED | REVIEWED | CONFIRMED | CANCELLED
+    impact_json: Mapped[dict | None] = mapped_column("impact", JSON, nullable=True)
+    generated_revision_ids: Mapped[list] = mapped_column(JSON, default=list)
+    baseline_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    label: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    actor_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -409,16 +558,23 @@ class ChangeRequest(Base):
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cr"))
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     code: Mapped[str] = mapped_column(String(40), unique=True)  # CR-0001
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
     requested_by: Mapped[str] = mapped_column(String(100), default="local-user")
+    requested_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     requested_change: Mapped[str] = mapped_column(Text)
+    source_reference: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[ChangeRequestStatus] = mapped_column(
-        Enum(ChangeRequestStatus), default=ChangeRequestStatus.OPEN
+        Enum(ChangeRequestStatus), default=ChangeRequestStatus.DRAFT
     )
     target_release: Mapped[str | None] = mapped_column(String(60), nullable=True)
     schedule_impact: Mapped[str | None] = mapped_column(String(300), nullable=True)
     commercial_impact: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
     actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
@@ -437,6 +593,68 @@ class ChangeRequestLink(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     change_request: Mapped[ChangeRequest] = relationship(back_populates="links")
+
+
+class ChangeRequestImpact(Base):
+    """Commercial/scope impact of a Change Request — kept separate from the CR
+    row so the impact model can evolve without migrating confirmed CR history.
+    Effort/timeline/commercial values are only ever what a human entered or an
+    approved estimator supplied; unknowns stay explicit, never zero."""
+
+    __tablename__ = "change_request_impacts"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cri"))
+    change_request_id: Mapped[str] = mapped_column(ForeignKey("change_requests.id"), index=True)
+    classification: Mapped[str | None] = mapped_column(String(40), nullable=True)  # CLARIFICATION | CORRECTION | REQUIREMENT_CHANGE | SCOPE_EXPANSION | CHANGE_REQUEST
+    function_impact: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {added:[], modified:[], removed:[], unaffected:[]}
+    effort_impact: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {status, total_md, by_role:[{role, effort, unit, basis, confidence}], history:[]}
+    timeline_impact: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {status, extension_days, proposed_completion, confidence, activities:[]}
+    technical_impact: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {affected:[], unaffected:[], unknown:[]}
+    qa_impact: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {new_scenarios:[], regression:[], evidence:"PRESERVED", effort_status}
+    infra_impact: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {new:[], modified:[], unchanged:[], note}
+    commercial_status: Mapped[str | None] = mapped_column(String(40), nullable=True)  # NO_ADDITIONAL_COST | ADDITIONAL_COST_REQUIRED | ESTIMATION_REQUIRED | PROPOSED | CUSTOMER_REVIEW | APPROVED | REJECTED
+    pricing_basis: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)  # HIGH | MEDIUM | LOW | UNKNOWN
+    customer_approval: Mapped[str | None] = mapped_column(String(20), nullable=True)  # APPROVED | REJECTED | PENDING
+    approval_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {approved_by, approved_at, reference, note, amount}
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class ImpactAnalysis(Base):
+    """A point-in-time snapshot of an impact analysis, so a future user can
+    answer "why did OIDA say this was the impact at that time?".
+
+    ``result_json`` holds the full enriched analysis (known/potential/unknown,
+    confidence, coverage, per-item reasons and paths, human review decisions).
+    ``trace_fingerprint`` is a hash of the trace graph + baseline used, so a
+    later re-read can mark the snapshot STALE without trusting memory."""
+
+    __tablename__ = "impact_analyses"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("ian"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    target_type: Mapped[str] = mapped_column(String(20))  # change_request | requirement_change
+    target_id: Mapped[str] = mapped_column(String(40), index=True)
+    baseline_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    baseline_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)  # HIGH|MEDIUM|LOW|UNKNOWN
+    coverage_status: Mapped[str | None] = mapped_column(String(40), nullable=True)  # FULL|PARTIAL|NOT_MEASURABLE
+    trace_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stale: Mapped[bool] = mapped_column(Boolean, default=False)
+    stale_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    review_state: Mapped[ImpactReviewState] = mapped_column(
+        Enum(ImpactReviewState), default=ImpactReviewState.NOT_REVIEWED
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 # ---------------------------------------------------------------------------

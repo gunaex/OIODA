@@ -109,6 +109,25 @@ class AccountAgainClient:
             kwargs["transport"] = self._transport
         return httpx.Client(**kwargs)
 
+    def verify_confirmation_token(self, token: str) -> dict:
+        """Verify a short-lived admin re-auth confirmation token with Account
+        Again. The token (never the password) is exchanged for its claims."""
+        if not self.base_url:
+            raise AccountAgainError("ACCOUNT_AGAIN_URL is not configured", 503)
+        if not token:
+            raise AccountAgainError("Confirmation token required", 401)
+        try:
+            with self._client() as client:
+                resp = client.post(
+                    f"{self.base_url}{ACCOUNT_AGAIN_PREFIX}/auth/verify-confirmation",
+                    json={"token": token},
+                )
+        except httpx.HTTPError as exc:
+            raise AccountAgainError(f"Account Again unreachable for confirmation verify: {exc}", 503) from exc
+        if resp.status_code != 200:
+            raise AccountAgainError("Account Again rejected the confirmation token", resp.status_code)
+        return resp.json()
+
     def validate_actor(self, token: str, account_id: str, tenant_id: str | None) -> dict:
         """Validate a caller against Account Again. Returns resolved actor.
 

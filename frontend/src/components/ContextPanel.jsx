@@ -96,13 +96,13 @@ export function ContextPanel() {
   const evidenceAnnotations = annotations.filter((a) => EVIDENCE_TYPES.includes(a.type));
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-line bg-surface-1">
-      <div className="flex border-b border-line">
+    <aside className="hidden w-80 shrink-0 flex-col border-l border-line bg-surface-1 2xl:flex">
+      <div className="flex overflow-x-auto border-b border-line">
         {TABS.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`flex-1 px-2 py-2 text-[11px] font-medium ${
+            className={`shrink-0 px-2.5 py-2 text-[11px] font-medium ${
               tab === t ? "border-b-2 border-brand-500 text-slate-200" : "text-slate-500 hover:text-slate-300"
             }`}
           >

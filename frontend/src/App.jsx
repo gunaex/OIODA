@@ -7,24 +7,35 @@ import { ContextPanel } from "./components/ContextPanel.jsx";
  * Heavy workspace pages are code-split with React.lazy so the initial
  * bundle stays small and each design workspace loads only when opened.
  */
-const Projects = lazy(() => import("./pages/Projects.jsx"));
-const Requirements = lazy(() => import("./pages/Requirements.jsx"));
-const Artifacts = lazy(() => import("./pages/Artifacts.jsx"));
-const Database = lazy(() => import("./pages/Database.jsx"));
-const ChangeRequests = lazy(() => import("./pages/ChangeRequests.jsx"));
-const Baselines = lazy(() => import("./pages/Baselines.jsx"));
-const Comments = lazy(() => import("./pages/Comments.jsx"));
-const Reviews = lazy(() => import("./pages/Reviews.jsx"));
-const Compare = lazy(() => import("./pages/Compare.jsx"));
-const TraceExplorer = lazy(() => import("./pages/TraceExplorer.jsx"));
-const ImpactAnalysis = lazy(() => import("./pages/ImpactAnalysis.jsx"));
-const Search = lazy(() => import("./pages/Search.jsx"));
-const FlowDesigner = lazy(() => import("./pages/FlowDesigner.jsx"));
-const ApiDesign = lazy(() => import("./pages/ApiDesign.jsx"));
-const Architecture = lazy(() => import("./pages/Architecture.jsx"));
-const Decisions = lazy(() => import("./pages/Decisions.jsx"));
-const Ecosystem = lazy(() => import("./pages/Ecosystem.jsx"));
-const Audit = lazy(() => import("./pages/Audit.jsx"));
+/*
+ * React 19 `lazy` requires a default export, but these workspace pages export
+ * a single named component (e.g. `export function Requirements`). Wrap the
+ * dynamic import so the named component is surfaced as the default — without
+ * this the app renders a blank page (P1 frontend fix).
+ */
+function lazyPage(loader, name) {
+  return lazy(() => loader().then((m) => ({ default: m[name] })));
+}
+
+const Projects = lazyPage(() => import("./pages/Projects.jsx"), "Projects");
+const ProjectHome = lazyPage(() => import("./pages/ProjectHome.jsx"), "ProjectHome");
+const Requirements = lazyPage(() => import("./pages/Requirements.jsx"), "Requirements");
+const Artifacts = lazyPage(() => import("./pages/Artifacts.jsx"), "Artifacts");
+const Database = lazyPage(() => import("./pages/Database.jsx"), "Database");
+const ChangeRequests = lazyPage(() => import("./pages/ChangeRequests.jsx"), "ChangeRequests");
+const Baselines = lazyPage(() => import("./pages/Baselines.jsx"), "Baselines");
+const Comments = lazyPage(() => import("./pages/Comments.jsx"), "Comments");
+const Reviews = lazyPage(() => import("./pages/Reviews.jsx"), "Reviews");
+const Compare = lazyPage(() => import("./pages/Compare.jsx"), "Compare");
+const TraceExplorer = lazyPage(() => import("./pages/TraceExplorer.jsx"), "TraceExplorer");
+const ImpactAnalysis = lazyPage(() => import("./pages/ImpactAnalysis.jsx"), "ImpactAnalysis");
+const Search = lazyPage(() => import("./pages/Search.jsx"), "Search");
+const FlowDesigner = lazyPage(() => import("./pages/FlowDesigner.jsx"), "FlowDesigner");
+const ApiDesign = lazyPage(() => import("./pages/ApiDesign.jsx"), "ApiDesign");
+const Architecture = lazyPage(() => import("./pages/Architecture.jsx"), "Architecture");
+const Decisions = lazyPage(() => import("./pages/Decisions.jsx"), "Decisions");
+const Ecosystem = lazyPage(() => import("./pages/Ecosystem.jsx"), "Ecosystem");
+const Audit = lazyPage(() => import("./pages/Audit.jsx"), "Audit");
 
 function PageFallback() {
   return <div className="p-10 text-[13px] text-slate-500">Loading workspace page…</div>;
@@ -83,11 +94,11 @@ export default function App() {
         <Header />
         <div className="flex min-h-0 flex-1">
           <Nav />
-          <main className="min-w-0 flex-1 overflow-y-auto p-4">
+          <main className="min-w-0 flex-1 overflow-y-auto p-4 xl:p-5">
             {project ? (
               <Suspense fallback={<PageFallback />}>
                 <Routes>
-                  <Route path="/" element={<Navigate to="requirements" replace />} />
+                  <Route path="/" element={<ProjectHome />} />
                   <Route path="/requirements" element={<Requirements />} />
                   <Route path="/requirements/ur" element={<Artifacts type="UR" />} />
                   <Route path="/design/dr" element={<Artifacts type="DR" />} />
@@ -148,6 +159,7 @@ function Header() {
 
 const NAV = [
   { section: "PROJECT" },
+  { to: "/", label: "Project Home" },
   { to: "requirements", label: "Requirement Register" },
   { to: "requirements/ur", label: "UR" },
   { section: "DESIGN" },

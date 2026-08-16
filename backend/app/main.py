@@ -8,13 +8,60 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from .account_client import AUTH_MODE, ACCOUNT_AGAIN_URL
-from .db import DATABASE_URL, engine
+from .db import Base, DATABASE_URL, engine
+from . import models  # noqa: F401 — register ORM tables with Base.metadata
 from .observability import configure_logging, log, metrics, set_request_id, started_at
 from .routers.api import router
 from .routers.deps import tenant_scope
 from .services import DomainError
 
 configure_logging()
+
+# Local schema bootstrap: create any missing tables (idempotent — never alters
+# existing tables). Production migrations remain Alembic's job; this only
+# ensures newly-introduced tables exist on existing development databases.
+Base.metadata.create_all(bind=engine)
+
+
+def _ensure_dev_columns() -> None:
+    """Idempotent additive-column bootstrap for existing SQLite dev databases.
+
+    ``create_all`` never ALTERs existing tables, so columns introduced after a
+    table first existed are added here (guarded by PRAGMA table_info). This runs
+    only for SQLite dev databases; production (Postgres) uses Alembic."""
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    additions = {
+        "change_requests": {
+            "title": "VARCHAR(200)",
+            "requested_date": "DATE",
+            "source_reference": "VARCHAR(300)",
+            "notes": "TEXT",
+            "updated_at": "DATETIME",
+        },
+        "projects": {
+            "metadata": "JSON",
+            "lifecycle_state": "VARCHAR(20)",
+            "cloned_from_project_id": "VARCHAR(40)",
+            "cloned_at": "DATETIME",
+            "cloned_by": "VARCHAR(100)",
+            "clone_policy_version": "VARCHAR(20)",
+        },
+    }
+    with engine.begin() as conn:
+        for table, cols in additions.items():
+            existing = {
+                row[1] for row in conn.execute(text(f'PRAGMA table_info("{table}")'))
+            }
+            for name, ddl in cols.items():
+                if name not in existing:
+                    conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN {name} {ddl}'))
+        # Backfill: SQLite ADD COLUMN leaves NULL on pre-existing rows; the
+        # ORM default only applies to new inserts.
+        conn.execute(text("UPDATE projects SET lifecycle_state = 'ACTIVE' WHERE lifecycle_state IS NULL"))
+
+
+_ensure_dev_columns()
 
 app = FastAPI(title="Document Again", version="0.1.0", dependencies=[Depends(tenant_scope)])
 

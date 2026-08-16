@@ -12,6 +12,7 @@ import difflib
 import io as _io
 import json as _json
 import os
+import re
 import zipfile as _zipfile
 from collections import Counter
 from datetime import timedelta
@@ -74,14 +75,388 @@ def guard_project(db: Session, project_id: str) -> m.Project:
 # ---------------------------------------------------------------------------
 
 
-def create_project(db: Session, *, key: str, name: str, description=None, actor="local-user", tenant_id: str | None = None):
+def create_project(db: Session, *, key: str, name: str, description=None, actor="local-user", tenant_id: str | None = None, metadata: dict | None = None):
     project = m.Project(
         key=key, name=name, description=description, created_by=actor,
         tenant_id=tenant_id if tenant_id is not None else current_tenant(),
+        project_meta=metadata or {},
     )
     db.add(project)
     db.commit()
     return project
+
+
+# ---------------------------------------------------------------------------
+# R16 — Project lifecycle (Document Again is the lifecycle authority)
+# ---------------------------------------------------------------------------
+
+LIFECYCLE_STATES = ("ACTIVE", "ARCHIVED", "DELETE_REQUESTED", "DELETED")
+CLONE_POLICY_VERSION = "1.0"
+
+
+def list_projects(db: Session, *, state: str | None = None):
+    q = select(m.Project)
+    tenant = current_tenant()
+    if tenant is not None:
+        q = q.where(m.Project.tenant_id == tenant)
+    if state and state.upper() in LIFECYCLE_STATES:
+        q = q.where(m.Project.lifecycle_state == state.upper())
+    return db.execute(q).scalars().all()
+
+
+def _require_lifecycle(project: m.Project, allowed: tuple[str, ...]) -> None:
+    if project.lifecycle_state not in allowed:
+        raise DomainError(
+            f"Project is {project.lifecycle_state} — must be {'/'.join(allowed)} for this action.",
+            status_code=409,
+        )
+
+
+def archive_project(db: Session, project_id: str, *, actor="local-user", actor_id: str | None = None) -> dict:
+    """ACTIVE → ARCHIVED. Preserves all bounded-service truth; removes the
+    project from the default Active view only."""
+    project = guard_project(db, project_id)
+    _require_lifecycle(project, ("ACTIVE",))
+    project.lifecycle_state = "ARCHIVED"
+    db.commit()
+    record_audit(
+        db, action="PROJECT_ARCHIVED", project_id=project_id, actor_id=actor_id,
+        object_type="Project", object_id=project_id,
+        metadata={"from": "ACTIVE", "to": "ARCHIVED"},
+    )
+    return {"project_id": project.id, "lifecycle_state": project.lifecycle_state}
+
+
+def restore_project(db: Session, project_id: str, *, actor="local-user", actor_id: str | None = None) -> dict:
+    """ARCHIVED → ACTIVE."""
+    project = guard_project(db, project_id)
+    _require_lifecycle(project, ("ARCHIVED",))
+    project.lifecycle_state = "ACTIVE"
+    db.commit()
+    record_audit(
+        db, action="PROJECT_RESTORED", project_id=project_id, actor_id=actor_id,
+        object_type="Project", object_id=project_id,
+        metadata={"from": "ARCHIVED", "to": "ACTIVE"},
+    )
+    return {"project_id": project.id, "lifecycle_state": project.lifecycle_state}
+
+
+def clone_project(db: Session, project_id: str, *, key: str, name: str,
+                  description: str | None = None, actor="local-user",
+                  actor_id: str | None = None) -> dict:
+    """Clone reusable project knowledge into a NEW project. Execution/history
+    truth is NOT cloned. Every cloned authority object is created through the
+    owning service (Document Again) — no direct DB copies of other services.
+
+    Cross-service scope (PM planning / QA test design / Infra design) is
+    reported as NOT_APPLICABLE here because PM/QA/Infra do not expose a clone
+    endpoint — the clone is Document-level, honestly reported."""
+    source = guard_project(db, project_id)
+    new = create_project(
+        db, key=key, name=name, description=description, actor=actor,
+        metadata={"cloned": True},
+    )
+    new.cloned_from_project_id = source.id
+    new.cloned_at = m.utcnow()
+    new.cloned_by = actor
+    new.clone_policy_version = CLONE_POLICY_VERSION
+    db.commit()
+
+    # Reusable Document scope: requirements + project memory (assumptions,
+    # clarifications, decisions). Fresh ids; codes preserved within the new
+    # project scope; globally-unique semantic ids get a clone suffix.
+    copied = {"requirements": 0, "assumptions": 0, "clarifications": 0, "decisions": 0}
+    for r in db.execute(select(m.Requirement).where(m.Requirement.project_id == source.id)).scalars():
+        db.add(m.Requirement(
+            project_id=new.id, code=r.code, title=r.title, description=r.description,
+            source_type=r.source_type, source_reference=r.source_reference,
+            status=r.status, priority=r.priority, metadata_json=dict(r.metadata_json or {}),
+            created_by=actor,
+        ))
+        copied["requirements"] += 1
+    for a in db.execute(select(m.Assumption).where(m.Assumption.project_id == source.id)).scalars():
+        db.add(m.Assumption(
+            project_id=new.id, semantic_id=f"{a.semantic_id}-{key}", content=a.content,
+            status=a.status, created_by=actor,
+        ))
+        copied["assumptions"] += 1
+    for c in db.execute(select(m.Clarification).where(m.Clarification.project_id == source.id)).scalars():
+        db.add(m.Clarification(
+            project_id=new.id, semantic_id=None, question=c.question, answer=c.answer,
+            asked_by=actor, resolved=c.resolved,
+        ))
+        copied["clarifications"] += 1
+    for d in db.execute(select(m.Decision).where(m.Decision.project_id == source.id)).scalars():
+        db.add(m.Decision(
+            project_id=new.id, semantic_id=f"{d.semantic_id}-{key}", title=d.title,
+            content=d.content, decided_by=actor,
+        ))
+        copied["decisions"] += 1
+    db.commit()
+
+    record_audit(
+        db, action="PROJECT_CLONED", project_id=new.id, actor_id=actor_id,
+        object_type="Project", object_id=new.id,
+        metadata={"cloned_from": source.id, "policy": CLONE_POLICY_VERSION, "copied": copied},
+    )
+    return {
+        "project_id": new.id, "key": new.key, "name": new.name,
+        "cloned_from_project_id": source.id, "clone_policy_version": CLONE_POLICY_VERSION,
+        "copied": copied,
+        "service_clone_status": {
+            "DOCUMENT_AGAIN": "COMPLETED",
+            "PM_AGAIN": "NOT_APPLICABLE",
+            "QA_AGAIN": "NOT_APPLICABLE",
+            "INFRA_AGAIN": "NOT_APPLICABLE",
+        },
+        "note": "Execution/history truth is NOT cloned. PM/QA/Infra clone endpoints do not exist.",
+    }
+
+
+def delete_impact(db: Session, project_id: str) -> dict:
+    """Impact inspection before delete (Phase 12). Counts every Document-owned
+    object for this project, honestly."""
+    project = guard_project(db, project_id)
+    counts = {}
+    for model, name in (
+        (m.Requirement, "requirements"),
+        (m.ChangeRequest, "change_requests"),
+        (m.Artifact, "artifacts"),
+        (m.Suggestion, "suggestions"),
+        (m.Consultation, "consultations"),
+        (m.Clarification, "clarifications"),
+        (m.Assumption, "assumptions"),
+        (m.Decision, "decisions"),
+        (m.Baseline, "baselines"),
+        (m.TraceLink, "trace_links"),
+    ):
+        counts[name] = len(db.execute(select(model).where(model.project_id == project_id)).scalars().all())
+    return {"project_id": project_id, "name": project.name, "key": project.key,
+            "lifecycle_state": project.lifecycle_state, "document": counts,
+            "bounded_services": {"PM_AGAIN": "EXTERNAL", "QA_AGAIN": "EXTERNAL", "INFRA_AGAIN": "EXTERNAL"}}
+
+
+def delete_project(db: Session, project_id: str, *, actor="local-user", actor_id: str | None = None) -> dict:
+    """Delete orchestration (Phase 13). Document Again owns its own truth and
+    tombstones it; bounded services report their own capability. No direct SQL
+    against PM/QA/Infra — every service reports its own status."""
+    project = guard_project(db, project_id)
+    _require_lifecycle(project, ("ARCHIVED", "DELETE_REQUESTED"))
+
+    # Tombstone Document-owned truth: set lifecycle to DELETED, keep rows for
+    # audit/traceability (never silently destroy).
+    project.lifecycle_state = "DELETED"
+    db.commit()
+
+    record_audit(
+        db, action="PROJECT_DELETED", project_id=project_id, actor_id=actor_id,
+        object_type="Project", object_id=project_id,
+        metadata={"method": "tombstone"},
+    )
+    return {
+        "project_id": project.id,
+        "lifecycle_state": "DELETED",
+        "service_status": {
+            "DOCUMENT_AGAIN": "COMPLETED",
+            "PM_AGAIN": "NOT_APPLICABLE",
+            "QA_AGAIN": "NOT_APPLICABLE",
+            "INFRA_AGAIN": "NOT_APPLICABLE",
+        },
+        "note": "Document truth tombstoned (retained for audit). PM/QA/Infra do not expose a delete endpoint — their data is NOT touched.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# R16 — Project export / import package (versioned, authority-annotated)
+# ---------------------------------------------------------------------------
+
+EXPORT_PACKAGE_VERSION = "1.0"
+_SECRET_PATTERNS = [
+    (r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "private_key"),
+    (r"\b(sk|pk|api[_-]?key|secret|token|password)\b\s*[:=]\s*[\"']?[A-Za-z0-9_\-]{8,}", "credential_assignment"),
+    (r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}", "jwt"),
+    (r"-----BEGIN CERTIFICATE-----", "certificate"),
+]
+
+
+def secret_scan(data: dict) -> dict:
+    """Deterministic, pattern-based secret scan. Never prints matched values."""
+    text = _json.dumps(data, default=str, ensure_ascii=False)
+    findings = []
+    for pattern, kind in _SECRET_PATTERNS:
+        if re.search(pattern, text):
+            findings.append(kind)
+    return {"scanned_at": m.utcnow().isoformat(), "findings": sorted(set(findings)),
+            "clean": len(findings) == 0}
+
+
+def export_project(db: Session, project_id: str) -> dict:
+    """Versioned project migration package (*.oida-project). Exports Document
+    truth only — PM/QA/Infra truth stays in its bounded services. Never exports
+    passwords, JWTs, API keys, or signing material."""
+    project = guard_project(db, project_id)
+    package = {
+        "package_version": EXPORT_PACKAGE_VERSION,
+        "exported_at": m.utcnow().isoformat(),
+        "source_environment": "LOCAL",
+        "project": {"id": project.id, "key": project.key, "name": project.name,
+                    "description": project.description, "lifecycle_state": project.lifecycle_state,
+                    "demo_reference": project.key == "TCM"},
+        "authorities": ["DOCUMENT_AGAIN", "PM_AGAIN", "QA_AGAIN", "INFRA_AGAIN"],
+        "bindings": get_workspace_bindings(db, project_id),
+        "document": {
+            "requirements": [
+                {"code": r.code, "title": r.title, "description": r.description,
+                 "source_type": r.source_type, "source_reference": r.source_reference,
+                 "status": r.status.value, "priority": r.priority}
+                for r in db.execute(select(m.Requirement).where(m.Requirement.project_id == project_id)).scalars()
+            ],
+            "clarifications": [
+                {"semantic_id": c.semantic_id, "question": c.question, "answer": c.answer, "resolved": c.resolved}
+                for c in db.execute(select(m.Clarification).where(m.Clarification.project_id == project_id)).scalars()
+            ],
+            "assumptions": [
+                {"semantic_id": a.semantic_id, "content": a.content, "status": a.status}
+                for a in db.execute(select(m.Assumption).where(m.Assumption.project_id == project_id)).scalars()
+            ],
+            "decisions": [
+                {"semantic_id": d.semantic_id, "title": d.title, "content": d.content}
+                for d in db.execute(select(m.Decision).where(m.Decision.project_id == project_id)).scalars()
+            ],
+            "change_requests": [
+                {"code": cr.code, "title": cr.title, "requested_change": cr.requested_change,
+                 "status": cr.status.value if hasattr(cr.status, "value") else str(cr.status)}
+                for cr in db.execute(select(m.ChangeRequest).where(m.ChangeRequest.project_id == project_id)).scalars()
+            ],
+            "suggestions": [
+                {"title": s.title, "type": s.type, "severity": s.severity, "status": s.status.value if hasattr(s.status, "value") else str(s.status)}
+                for s in db.execute(select(m.Suggestion).where(m.Suggestion.project_id == project_id)).scalars()
+            ],
+            "consultations": [
+                {"task_type": c.task_type, "question": c.question,
+                 "aggregation_mode": (c.aggregation or {}).get("aggregation_mode")}
+                for c in db.execute(select(m.Consultation).where(m.Consultation.project_id == project_id)).scalars()
+            ],
+            "trace_links": [
+                {"source": t.source_semantic_id, "target": t.target_semantic_id,
+                 "relation": t.relation_type.value if hasattr(t.relation_type, "value") else str(t.relation_type)}
+                for t in db.execute(select(m.TraceLink).where(m.TraceLink.project_id == project_id)).scalars()
+            ],
+        },
+    }
+    package["secret_scan"] = secret_scan(package)
+    return package
+
+
+def import_project(db: Session, package: dict, *, actor="local-user", actor_id: str | None = None) -> dict:
+    """Import a project package THROUGH Document Again (no DB copies of other
+    services). Rebuilds Document truth + bindings; PM/QA/Infra import is
+    reported NOT_APPLICABLE (no import endpoint). Records source→target id
+    mappings. Restartable/idempotent via a stable import key."""
+    if not isinstance(package, dict) or package.get("package_version") != EXPORT_PACKAGE_VERSION:
+        raise DomainError(f"Unsupported package version (expected {EXPORT_PACKAGE_VERSION}).", status_code=422)
+
+    scan = secret_scan(package)
+    if not scan["clean"]:
+        raise DomainError(f"Package failed secret scan: {', '.join(scan['findings'])}. Refusing import.", status_code=422)
+
+    proj = package.get("project") or {}
+    key = (proj.get("key") or "IMPORT")[:20]
+    # Idempotency: reuse an existing project created by the same import key.
+    existing = db.execute(select(m.Project).where(m.Project.key == key)).scalars().first()
+    if existing:
+        return {"project_id": existing.id, "reused": True,
+                "migration_report": {"package_version": EXPORT_PACKAGE_VERSION, "note": "Already imported (idempotent reuse)."}}
+
+    project = create_project(db, key=key, name=proj.get("name") or key,
+                             description=proj.get("description"), actor=actor)
+    doc = package.get("document") or {}
+    mappings = {"requirements": {}, "clarifications": {}, "assumptions": {}, "decisions": {}}
+    for r in doc.get("requirements", []):
+        row = m.Requirement(project_id=project.id, code=r.get("code"), title=r.get("title"),
+                            description=r.get("description"), source_type=r.get("source_type"),
+                            source_reference=r.get("source_reference"), priority=r.get("priority"),
+                            status=m.RequirementStatus(r.get("status", "DRAFT")), created_by=actor)
+        db.add(row)
+        mappings["requirements"][r.get("code")] = row.id
+    for c in doc.get("clarifications", []):
+        row = m.Clarification(project_id=project.id, semantic_id=None, question=c.get("question"),
+                              answer=c.get("answer"), resolved=c.get("resolved", False), asked_by=actor)
+        db.add(row)
+    for a in doc.get("assumptions", []):
+        row = m.Assumption(project_id=project.id, semantic_id=f"{a.get('semantic_id')}-{key}",
+                           content=a.get("content"), status=a.get("status", "OPEN"), created_by=actor)
+        db.add(row)
+    for d in doc.get("decisions", []):
+        row = m.Decision(project_id=project.id, semantic_id=f"{d.get('semantic_id')}-{key}",
+                         title=d.get("title"), content=d.get("content"), decided_by=actor)
+        db.add(row)
+    db.commit()
+
+    # Rebuild bindings as pointers (never import PM/QA/Infra data).
+    bindings = package.get("bindings") or {}
+    if bindings:
+        put_workspace_bindings(db, project.id,
+                               pm_project_slug=bindings.get("pm_project_slug"),
+                               qa_project_slugs=bindings.get("qa_project_slugs"),
+                               infra_design_id=bindings.get("infra_design_id"))
+
+    record_audit(db, action="PROJECT_IMPORTED", project_id=project.id, actor_id=actor_id,
+                 object_type="Project", object_id=project.id,
+                 metadata={"package_version": EXPORT_PACKAGE_VERSION, "source": proj.get("id")})
+    return {
+        "project_id": project.id, "key": project.key, "reused": False,
+        "service_import_status": {"DOCUMENT_AGAIN": "COMPLETED", "PM_AGAIN": "NOT_APPLICABLE",
+                                  "QA_AGAIN": "NOT_APPLICABLE", "INFRA_AGAIN": "NOT_APPLICABLE"},
+        "migration_report": {"package_version": EXPORT_PACKAGE_VERSION,
+                             "source_project_id": proj.get("id"), "target_project_id": project.id,
+                             "mappings": {k: v for k, v in mappings.items() if v},
+                             "secret_scan": scan,
+                             "note": "PM/QA/Infra truth not imported (no import endpoint); bindings rebuilt as pointers."},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Workspace bindings (R12) — correlation metadata only. OIDA stores the mapping
+# between a Document project and its PM/QA workspaces; the bounded services keep
+# all business truth.
+# ---------------------------------------------------------------------------
+
+def get_workspace_bindings(db: Session, project_id: str) -> dict:
+    project = guard_project(db, project_id)
+    meta = project.project_meta or {}
+    bindings = meta.get("workspace_bindings") or {}
+    return {
+        "project_id": project.id,
+        "pm_project_slug": bindings.get("pm_project_slug"),
+        "qa_project_slugs": bindings.get("qa_project_slugs") or {},
+        "infra_design_id": bindings.get("infra_design_id"),
+    }
+
+
+def put_workspace_bindings(db: Session, project_id: str, *, pm_project_slug: str | None = None, qa_project_slugs: dict | None = None, infra_design_id: str | None = None) -> dict:
+    project = guard_project(db, project_id)
+    meta = dict(project.project_meta or {})
+    bindings = dict(meta.get("workspace_bindings") or {})
+    if pm_project_slug is not None:
+        bindings["pm_project_slug"] = pm_project_slug
+    if qa_project_slugs is not None:
+        merged = dict(bindings.get("qa_project_slugs") or {})
+        merged.update({k: v for k, v in qa_project_slugs.items() if v})
+        bindings["qa_project_slugs"] = merged
+    if infra_design_id is not None:
+        bindings["infra_design_id"] = infra_design_id
+    meta["workspace_bindings"] = bindings
+    project.project_meta = meta
+    db.commit()
+    record_audit(
+        db, action="WORKSPACE_BINDINGS_UPDATED", project_id=project_id,
+        object_type="Project", object_id=project_id,
+        metadata={"pm_project_slug": bindings.get("pm_project_slug"),
+                  "qa_project_slugs": bindings.get("qa_project_slugs"),
+                  "infra_design_id": bindings.get("infra_design_id")},
+    )
+    return get_workspace_bindings(db, project_id)
 
 
 # ---------------------------------------------------------------------------
@@ -755,8 +1130,989 @@ def create_requirement(
         display_name=title,
         entity_ref=requirement.id,
     )
+    _seed_requirement_revision(db, requirement, actor=actor, initial_status=requirement.status)
     db.commit()
     return requirement
+
+
+def _seed_requirement_revision(
+    db: Session,
+    requirement: m.Requirement,
+    *,
+    actor: str = "local-user",
+    initial_status: m.RequirementStatus | None = None,
+) -> m.RequirementRevision:
+    """Create revision #1 from the requirement's current fields. Existing
+    requirements (which predate revisioning) are seeded once, idempotently."""
+    existing = db.execute(
+        select(m.RequirementRevision.id).where(
+            m.RequirementRevision.requirement_id == requirement.id
+        )
+    ).scalars().first()
+    if existing:
+        return db.get(m.RequirementRevision, existing)
+    rev = m.RequirementRevision(
+        requirement_id=requirement.id,
+        revision_number=1,
+        title=requirement.title,
+        description=requirement.description,
+        source_type=requirement.source_type,
+        source_reference=requirement.source_reference,
+        priority=requirement.priority,
+        status=initial_status or requirement.status,
+        based_on_revision_id=None,
+        created_by=requirement.created_by or actor,
+        confirmed_at=m.utcnow() if requirement.status == m.RequirementStatus.CONFIRMED else None,
+        confirmed_by=requirement.created_by if requirement.status == m.RequirementStatus.CONFIRMED else None,
+    )
+    db.add(rev)
+    db.flush()
+    return rev
+
+
+def seed_requirement_revisions(db: Session, project_id: str) -> int:
+    """One-time backfill: give every existing requirement a revision #1."""
+    requirements = db.execute(
+        select(m.Requirement).where(m.Requirement.project_id == project_id)
+    ).scalars().all()
+    created = 0
+    for req in requirements:
+        before = db.execute(
+            select(m.RequirementRevision.id).where(
+                m.RequirementRevision.requirement_id == req.id
+            )
+        ).scalars().first()
+        if before is None:
+            _seed_requirement_revision(db, req, actor=req.created_by)
+            created += 1
+    db.commit()
+    return created
+
+
+def _latest_requirement_revision(db: Session, requirement_id: str) -> m.RequirementRevision:
+    return db.execute(
+        select(m.RequirementRevision)
+        .where(m.RequirementRevision.requirement_id == requirement_id)
+        .order_by(m.RequirementRevision.revision_number.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def create_requirement_draft(
+    db: Session, requirement_id: str, *, actor="local-user", actor_id: str | None = None
+) -> tuple[m.RequirementChange, m.RequirementRevision]:
+    """Edit a requirement without touching the confirmed revision: clone the
+    latest revision into a new DRAFT and open a RequirementChange record."""
+    requirement = get_or_404(db, m.Requirement, requirement_id, "Requirement")
+    latest = _latest_requirement_revision(db, requirement_id)
+    if latest is None:
+        _seed_requirement_revision(db, requirement, actor=actor)
+        latest = _latest_requirement_revision(db, requirement_id)
+
+    # If a DRAFT change is already open for this requirement, reuse it.
+    open_change = db.execute(
+        select(m.RequirementChange).where(
+            m.RequirementChange.requirement_id == requirement_id,
+            m.RequirementChange.status.in_(["DRAFT", "IMPACT_READY", "REGENERATED", "REVIEWED"]),
+        )
+    ).scalars().first()
+    if open_change and open_change.to_revision_id:
+        draft = db.get(m.RequirementRevision, open_change.to_revision_id)
+        if draft and draft.status == m.RequirementStatus.DRAFT:
+            return open_change, draft
+
+    draft = m.RequirementRevision(
+        requirement_id=requirement_id,
+        revision_number=(latest.revision_number if latest else 0) + 1,
+        title=latest.title if latest else requirement.title,
+        description=latest.description if latest else requirement.description,
+        source_type=latest.source_type if latest else requirement.source_type,
+        source_reference=latest.source_reference if latest else requirement.source_reference,
+        priority=latest.priority if latest else requirement.priority,
+        status=m.RequirementStatus.DRAFT,
+        based_on_revision_id=latest.id if latest else None,
+        created_by=actor,
+        actor_id=actor_id,
+    )
+    db.add(draft)
+    db.flush()
+
+    change = m.RequirementChange(
+        project_id=requirement.project_id,
+        requirement_id=requirement_id,
+        from_revision_id=latest.id if latest else None,
+        to_revision_id=draft.id,
+        status="DRAFT",
+        created_by=actor,
+        actor_id=actor_id,
+        label=f"{requirement.code} {requirement.title}",
+    )
+    db.add(change)
+    db.commit()
+    db.refresh(change)
+    record_audit(
+        db, action="REQUIREMENT_DRAFT_CREATED", project_id=requirement.project_id,
+        actor_id=actor_id, object_type="RequirementChange", object_id=change.id,
+        metadata={"requirement_id": requirement_id, "code": requirement.code,
+                  "from_revision": change.from_revision_id, "to_revision": draft.id},
+    )
+    return change, draft
+
+
+def update_requirement_draft(
+    db: Session,
+    requirement_id: str,
+    revision_id: str,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    source_type: str | None = None,
+    source_reference: str | None = None,
+    priority: str | None = None,
+) -> m.RequirementRevision:
+    draft = get_or_404(db, m.RequirementRevision, revision_id, "Requirement revision")
+    if draft.requirement_id != requirement_id:
+        raise DomainError("Revision does not belong to this requirement")
+    if draft.status != m.RequirementStatus.DRAFT:
+        raise DomainError("Only DRAFT requirement revisions are editable")
+    if title is not None:
+        draft.title = title
+    if description is not None:
+        draft.description = description
+    if source_type is not None:
+        draft.source_type = source_type
+    if source_reference is not None:
+        draft.source_reference = source_reference
+    if priority is not None:
+        draft.priority = priority
+    db.commit()
+    return draft
+
+
+def list_requirement_revisions(db: Session, requirement_id: str) -> list[m.RequirementRevision]:
+    get_or_404(db, m.Requirement, requirement_id, "Requirement")
+    return db.execute(
+        select(m.RequirementRevision)
+        .where(m.RequirementRevision.requirement_id == requirement_id)
+        .order_by(m.RequirementRevision.revision_number.desc())
+    ).scalars().all()
+
+
+_RELATION_REASON = {
+    "DERIVED_FROM": "directly defined by this requirement",
+    "IMPLEMENTS": "implements this requirement",
+    "DESIGNED_BY": "designed from this requirement",
+    "VALIDATED_BY": "validated against this requirement",
+    "AFFECTS": "affected by this requirement",
+    "REFERENCES": "references this requirement",
+    "GENERATED_FROM": "generated from this requirement",
+    "CONFIRMED_BY": "confirmed by this requirement",
+    "SUPERSEDES": "superseded by this requirement",
+}
+
+_REGEN_ELIGIBILITY = {
+    "DOCUMENT_SECTION": "ARTIFACT_DRAFT",
+    "PROCESS_FLOW": "NEEDS_REGENERATION",
+    "PROCESS_STEP": "NEEDS_REGENERATION",
+    "ARCHITECTURE_NODE": "NEEDS_REGENERATION",
+    "DB_SCHEMA": "NEEDS_REGENERATION",
+    "DB_TABLE": "NEEDS_REGENERATION",
+    "API_ENDPOINT": "NEEDS_REGENERATION",
+    "SCREEN": "NEEDS_REGENERATION",
+}
+
+
+def requirement_change_impact(db: Session, change_id: str) -> dict:
+    """Downstream impact of a requirement change using exact trace links.
+
+    DIRECT = one hop from the requirement; INDIRECT = further hops. Each
+    affected node carries a human reason, a dependency path and a regeneration
+    eligibility. Unaffected objects are never regenerated.
+
+    The result is enriched with a truthful trust view: known / potential /
+    unknown areas, confidence and coverage — never claiming completeness when
+    trace coverage is incomplete.
+    """
+    change = get_or_404(db, m.RequirementChange, change_id, "Change")
+    requirement = get_or_404(db, m.Requirement, change.requirement_id, "Requirement")
+    project_id = change.project_id
+
+    nodes = {
+        n.semantic_id: n
+        for n in db.execute(
+            select(m.SemanticObject).where(m.SemanticObject.project_id == project_id)
+        ).scalars().all()
+    }
+    edges = db.execute(
+        select(m.TraceLink).where(m.TraceLink.project_id == project_id)
+    ).scalars().all()
+
+    adj_down = {}  # semantic_id -> [(target, relation)]
+    for e in edges:
+        adj_down.setdefault(e.source_semantic_id, []).append((e.target_semantic_id, e.relation_type.value))
+
+    start = requirement.code
+    affected = []
+    seen = set()
+    path_of = {start: [start]}
+    # BFS downstream (requirement defines/derives downstream objects).
+    queue = [(start, 0)]
+    while queue:
+        cur, depth = queue.pop(0)
+        for target, rel in adj_down.get(cur, []):
+            if target in seen or target == start:
+                continue
+            seen.add(target)
+            path_of[target] = path_of.get(cur, []) + [target]
+            level = "DIRECT" if depth == 0 else "INDIRECT"
+            node = nodes.get(target)
+            affected.append({
+                "semantic_id": target,
+                "object_type": node.object_type.value if node else "UNKNOWN",
+                "display_name": node.display_name if node else target,
+                "level": level,
+                "depth": depth + 1,
+                "relation": rel,
+                "reason": _RELATION_REASON.get(rel, f"linked via {rel}"),
+                "path": path_of[target],
+                "regeneration": _REGEN_ELIGIBILITY.get(node.object_type.value if node else "", "NONE"),
+            })
+            if depth + 1 < 2:  # follow up to INDIRECT (depth 2)
+                queue.append((target, depth + 1))
+
+    # Incoming REFERENCES: objects that reference the requirement are POTENTIAL.
+    for e in edges:
+        if e.target_semantic_id == start and e.source_semantic_id not in seen and e.source_semantic_id != start:
+            node = nodes.get(e.source_semantic_id)
+            path_of[e.source_semantic_id] = [e.source_semantic_id, start]
+            affected.append({
+                "semantic_id": e.source_semantic_id,
+                "object_type": node.object_type.value if node else "UNKNOWN",
+                "display_name": node.display_name if node else e.source_semantic_id,
+                "level": "POTENTIAL",
+                "depth": 1,
+                "relation": e.relation_type.value,
+                "reason": _RELATION_REASON.get(e.relation_type.value, f"linked via {e.relation_type.value}"),
+                "path": path_of[e.source_semantic_id],
+                "regeneration": _REGEN_ELIGIBILITY.get(node.object_type.value if node else "", "NONE"),
+            })
+            seen.add(e.source_semantic_id)
+
+    affected_count = len(affected)
+    unaffected_count = max(0, len(nodes) - affected_count - 1)
+    unaffected = [n.semantic_id for n in nodes.values() if n.semantic_id not in seen and n.semantic_id != start]
+
+    trust = _trust_impact_view(db, project_id, affected, unaffected)
+
+    draft = db.get(m.RequirementRevision, change.to_revision_id) if change.to_revision_id else None
+    result = {
+        "change_id": change.id,
+        "requirement": {"id": requirement.id, "code": requirement.code, "title": requirement.title},
+        "from_revision": _requirement_revision_dict(db.get(m.RequirementRevision, change.from_revision_id)) if change.from_revision_id else None,
+        "to_revision": _requirement_revision_dict(draft) if draft else None,
+        "affected": affected,
+        "affected_count": affected_count,
+        "unaffected_count": unaffected_count,
+        # Downstream services reached via Conductor on confirm.
+        "cross_domain": ["pm", "qa"],
+        **trust,
+    }
+    change.impact_json = result
+    if change.status == "DRAFT":
+        change.status = "IMPACT_READY"
+    db.commit()
+    record_audit(
+        db, action="IMPACT_ANALYSIS_CALCULATED", project_id=project_id,
+        actor_id=change.actor_id, object_type="RequirementChange", object_id=change.id,
+        metadata={"affected": affected_count, "unaffected": unaffected_count,
+                  "confidence": trust["impact_confidence"]},
+    )
+    return result
+
+
+def _requirement_revision_dict(r: m.RequirementRevision | None) -> dict | None:
+    if r is None:
+        return None
+    return {
+        "id": r.id, "requirement_id": r.requirement_id, "revision_number": r.revision_number,
+        "title": r.title, "description": r.description, "source_type": r.source_type,
+        "source_reference": r.source_reference, "priority": r.priority, "status": r.status.value,
+        "based_on_revision_id": r.based_on_revision_id, "created_at": r.created_at.isoformat(),
+        "created_by": r.created_by, "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
+        "confirmed_by": r.confirmed_by,
+    }
+
+
+def regenerate_change(db: Session, change_id: str, *, mode: str = "affected", actor="local-user", actor_id: str | None = None) -> dict:
+    """Create draft revisions for affected derived artifacts.
+
+    mode = "affected" (default): only artifacts that contain an affected
+    DOCUMENT_SECTION are cloned into a new draft. mode = "full" clones every
+    project artifact (elevated choice). Confirmed history is never modified.
+    """
+    change = get_or_404(db, m.RequirementChange, change_id, "Change")
+    if change.status not in ("IMPACT_READY", "REVIEWED"):
+        raise DomainError("Run impact analysis before regenerating")
+    project_id = change.project_id
+
+    if mode == "full":
+        artifacts = db.execute(
+            select(m.Artifact).where(m.Artifact.project_id == project_id)
+        ).scalars().all()
+        artifact_ids = {a.id for a in artifacts}
+    else:
+        artifact_ids = set()
+        for item in (change.impact_json or {}).get("affected", []):
+            if item.get("regeneration") == "ARTIFACT_DRAFT":
+                so = db.execute(
+                    select(m.SemanticObject).where(
+                        m.SemanticObject.project_id == project_id,
+                        m.SemanticObject.semantic_id == item["semantic_id"],
+                    )
+                ).scalar_one_or_none()
+                if so and so.entity_ref:
+                    artifact_ids.add(so.entity_ref)
+
+    generated = []
+    for artifact_id in sorted(artifact_ids):
+        artifact = db.get(m.Artifact, artifact_id)
+        if artifact is None:
+            continue
+        # Clone the latest CONFIRMED revision (fall back to latest).
+        base = db.execute(
+            select(m.ArtifactRevision)
+            .where(m.ArtifactRevision.artifact_id == artifact_id)
+            .order_by(m.ArtifactRevision.revision_number.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if base is None:
+            continue
+        draft = create_revision(
+            db, artifact_id=artifact_id, based_on_revision_id=base.id,
+            actor=actor, actor_id=actor_id,
+        )
+        generated.append({
+            "artifact_id": artifact_id,
+            "artifact_title": artifact.title,
+            "revision_id": draft.id,
+            "revision_number": draft.revision_number,
+            "based_on": base.id,
+        })
+
+    change.generated_revision_ids = [g["revision_id"] for g in generated]
+    change.status = "REGENERATED"
+    db.commit()
+    record_audit(
+        db, action="REGENERATION_STARTED", project_id=project_id, actor_id=actor_id,
+        object_type="RequirementChange", object_id=change.id,
+        metadata={"mode": mode, "generated": len(generated)},
+    )
+    return {"mode": mode, "generated": generated, "needs_regeneration": [
+        i for i in (change.impact_json or {}).get("affected", [])
+        if i.get("regeneration") == "NEEDS_REGENERATION"
+    ]}
+
+
+def _verify_confirmation_token(token: str) -> dict:
+    """Ask Account Again to verify a short-lived admin re-auth token."""
+    from .account_client import AccountAgainClient
+    client = AccountAgainClient()
+    return client.verify_confirmation_token(token)
+
+
+def _next_baseline_name(db: Session, project_id: str) -> str:
+    rows = db.execute(
+        select(m.Baseline.name).where(m.Baseline.project_id == project_id)
+    ).scalars().all()
+    versions = []
+    for name in rows:
+        mch = re.search(r"v(\d+)", name or "")
+        if mch:
+            versions.append(int(mch.group(1)))
+    return f"True Cloud Migration v{max(versions) + 1 if versions else 1}.0"
+
+
+def confirm_change(
+    db: Session,
+    change_id: str,
+    *,
+    confirmation_token: str,
+    actor="local-user",
+    actor_id: str | None = None,
+) -> dict:
+    """Privileged confirm: verify admin re-auth, confirm the requirement draft,
+    confirm generated artifact drafts, create the next baseline, and dispatch
+    PM/QA handoffs via Conductor. Historical truth is preserved throughout."""
+    change = get_or_404(db, m.RequirementChange, change_id, "Change")
+    if change.status not in ("REGENERATED", "REVIEWED"):
+        raise DomainError("Change must be regenerated and reviewed before confirmation")
+
+    # 1. Admin re-auth via Account Again (short-lived token, never the password).
+    try:
+        claims = _verify_confirmation_token(confirmation_token)
+    except Exception as exc:
+        raise DomainError(f"Admin re-authentication failed: {exc}", status_code=403)
+
+    requirement = get_or_404(db, m.Requirement, change.requirement_id, "Requirement")
+    project_id = change.project_id
+
+    # 2. Confirm the requirement draft.
+    draft = db.get(m.RequirementRevision, change.to_revision_id)
+    if draft is None or draft.status != m.RequirementStatus.DRAFT:
+        raise DomainError("Requirement draft missing or not DRAFT")
+    old_confirmed = db.execute(
+        select(m.RequirementRevision).where(
+            m.RequirementRevision.requirement_id == requirement.id,
+            m.RequirementRevision.id != draft.id,
+            m.RequirementRevision.status == m.RequirementStatus.CONFIRMED,
+        )
+    ).scalars().all()
+    draft.status = m.RequirementStatus.CONFIRMED
+    draft.confirmed_at = m.utcnow()
+    draft.confirmed_by = actor
+    for old in old_confirmed:
+        old.status = m.RequirementStatus.SUPERSEDED
+    # Reflect the confirmed revision on the requirement row.
+    requirement.title = draft.title
+    requirement.description = draft.description
+    requirement.source_type = draft.source_type
+    requirement.source_reference = draft.source_reference
+    requirement.priority = draft.priority
+    requirement.status = m.RequirementStatus.CONFIRMED
+
+    # 3. Confirm generated artifact drafts.
+    confirmed_artifact_revisions = []
+    for rid in change.generated_revision_ids or []:
+        rev, _ = confirm_revision(db, rid, actor=actor, actor_id=actor_id)
+        confirmed_artifact_revisions.append(rev.id)
+
+    db.commit()
+
+    # 4. Create the next baseline (bind the confirmed artifact drafts).
+    baseline = create_baseline(
+        db,
+        project_id=project_id,
+        name=_next_baseline_name(db, project_id),
+        description=f"Confirmed from change {change.id} ({requirement.code})",
+        artifact_revision_ids=confirmed_artifact_revisions,
+        actor=actor,
+        actor_id=actor_id,
+    )
+
+    # 5. Dispatch PM + QA handoffs via Conductor (best-effort, partial sync is
+    #    reported honestly and never rolls back the confirmed baseline).
+    sync = {"pm": {"status": "SKIPPED"}, "qa": {"status": "SKIPPED"}}
+    try:
+        ex = create_execution_handoff(
+            db, project_id, baseline_id=baseline.id,
+            actor=actor, actor_id=actor_id, status="READY",
+        )
+        deliver_handoff_to_conductor(db, ex["id"], "execution")
+        sync["pm"] = {"status": "SYNCED", "handoff_id": ex["id"]}
+    except Exception as exc:
+        sync["pm"] = {"status": "FAILED", "error": str(exc)[:300]}
+    try:
+        qa = create_qa_validation_handoff(
+            db, project_id, baseline_id=baseline.id,
+            requirement_ids=[requirement.id],
+            design_revision_ids=confirmed_artifact_revisions,
+            actor=actor, actor_id=actor_id, status="READY",
+        )
+        deliver_handoff_to_conductor(db, qa["id"], "qa")
+        sync["qa"] = {"status": "SYNCED", "handoff_id": qa["id"]}
+    except Exception as exc:
+        sync["qa"] = {"status": "FAILED", "error": str(exc)[:300]}
+
+    sync["infra"] = {"status": "NOT_LINKED", "note": "No infrastructure object directly linked to this change"}
+
+    change.status = "CONFIRMED"
+    change.baseline_id = baseline.id
+    change.confirmed_at = m.utcnow()
+    db.commit()
+
+    record_audit(
+        db, action="BASELINE_CONFIRMED", project_id=project_id, actor_id=actor_id,
+        object_type="RequirementChange", object_id=change.id, baseline_id=baseline.id,
+        metadata={"requirement_id": requirement.id, "code": requirement.code,
+                  "baseline": baseline.name, "sync": sync},
+    )
+    return {
+        "change_id": change.id,
+        "baseline": {"id": baseline.id, "name": baseline.name},
+        "requirement": {"id": requirement.id, "code": requirement.code, "revision": draft.revision_number},
+        "generated": len(confirmed_artifact_revisions),
+        "sync": sync,
+        "overall": "SYNCED" if all(s["status"] == "SYNCED" for s in sync.values()) else "PARTIALLY_SYNCHRONIZED",
+    }
+
+
+def list_requirement_changes(db: Session, project_id: str | None = None) -> list[dict]:
+    q = select(m.RequirementChange).order_by(m.RequirementChange.created_at.desc())
+    if project_id:
+        q = q.where(m.RequirementChange.project_id == project_id)
+    out = []
+    for c in db.execute(q).scalars().all():
+        requirement = db.get(m.Requirement, c.requirement_id)
+        draft = db.get(m.RequirementRevision, c.to_revision_id) if c.to_revision_id else None
+        out.append({
+            "id": c.id, "project_id": c.project_id, "requirement_id": c.requirement_id,
+            "code": requirement.code if requirement else None,
+            "label": c.label, "status": c.status,
+            "from_revision_id": c.from_revision_id, "to_revision_id": c.to_revision_id,
+            "draft_title": draft.title if draft else None,
+            "affected_count": (c.impact_json or {}).get("affected_count"),
+            "unaffected_count": (c.impact_json or {}).get("unaffected_count"),
+            "baseline_id": c.baseline_id, "correlation_id": c.correlation_id,
+            "created_at": c.created_at.isoformat(), "created_by": c.created_by,
+            "confirmed_at": c.confirmed_at.isoformat() if c.confirmed_at else None,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Impact trust engine (R10.1)
+#
+# Truthfulness contract: an impact analysis is decision support, not an oracle.
+# It must separate what the system KNOWS (explicit trace) from what it INFERS
+# (inferred/heuristic) and where it has NO information (untraced domains), and
+# must never claim completeness when trace coverage is incomplete.
+# ---------------------------------------------------------------------------
+
+# Human names for the downstream domains Document Again hands off to. A domain
+# is "traced" only when an explicit link (external reference or handoff) exists.
+_TRACED_DOMAINS = [
+    ("pm-again", "Planning / PM execution"),
+    ("qa-again", "QA validation"),
+    ("infra-again", "Infrastructure implementation"),
+]
+
+
+def _project_traced_services(db: Session, project_id: str) -> set[str]:
+    services: set[str] = set()
+    for ref in db.execute(
+        select(m.ExternalReference).where(m.ExternalReference.project_id == project_id)
+    ).scalars():
+        if ref.service:
+            services.add(ref.service)
+    if db.execute(
+        select(m.ExecutionHandoff).where(m.ExecutionHandoff.project_id == project_id).limit(1)
+    ).scalar_one_or_none():
+        services.add("pm-again")
+    if db.execute(
+        select(m.QAValidationHandoff).where(m.QAValidationHandoff.project_id == project_id).limit(1)
+    ).scalar_one_or_none():
+        services.add("qa-again")
+    return services
+
+
+def _unknown_areas(db: Session, project_id: str, has_trace_edges: bool) -> list[dict]:
+    """Domains the analysis cannot claim to have assessed, because no explicit
+    trace relationship exists. These are honest gaps, not failures."""
+    if not has_trace_edges:
+        return [{
+            "domain": None,
+            "label": "No explicit trace relationships",
+            "reason": "This project has no trace links yet, so downstream impact cannot be derived — nothing is claimed.",
+        }]
+    traced = _project_traced_services(db, project_id)
+    areas = []
+    for svc, human in _TRACED_DOMAINS:
+        if svc not in traced:
+            areas.append({
+                "domain": svc,
+                "label": human,
+                "reason": f"{human} is not traced into this project — no explicit link exists, so impact there is unknown.",
+            })
+    # External / vendor dependencies.
+    has_external = any(
+        ref.service not in {s for s, _ in _TRACED_DOMAINS}
+        for ref in db.execute(
+            select(m.ExternalReference).where(m.ExternalReference.project_id == project_id)
+        ).scalars()
+        if ref.service
+    )
+    if not has_external:
+        areas.append({
+            "domain": "vendor-external",
+            "label": "Vendor / external operational dependencies",
+            "reason": "No external dependency is traced in this project.",
+        })
+    return areas
+
+
+def _trust_impact_view(db: Session, project_id: str, affected: list[dict], unaffected: list[str]) -> dict:
+    """Split BFS results into known / potential / unknown and derive a
+    deterministic confidence + coverage estimate from what the graph supports."""
+    known: list[dict] = []
+    potential: list[dict] = []
+    for item in affected:
+        entry = {
+            "id": item["semantic_id"],
+            "object_type": item["object_type"],
+            "display_name": item["display_name"],
+            "level": item["level"],
+            "reason": item["reason"],
+            "path": item.get("path") or [item["semantic_id"]],
+            "regeneration": item.get("regeneration"),
+            # DIRECT/INDIRECT are explicit one/multi-hop trace; POTENTIAL is
+            # inferred (a reference points at the changed object).
+            "source": "SYSTEM-DERIVED" if item["level"] in ("DIRECT", "INDIRECT") else "INFERRED",
+        }
+        if item["level"] == "POTENTIAL":
+            potential.append(entry)
+        else:
+            known.append(entry)
+
+    has_edges = bool(affected) or bool(
+        db.execute(select(m.TraceLink).where(m.TraceLink.project_id == project_id).limit(1)).scalar_one_or_none()
+    )
+    unknown = _unknown_areas(db, project_id, has_edges)
+
+    explicit = len(known)
+    inferred = len(potential)
+    unknown_n = len(unknown)
+
+    if explicit == 0 and inferred == 0:
+        confidence = "UNKNOWN"
+        coverage_status = "NOT_MEASURABLE"
+    elif inferred == 0 and unknown_n == 0:
+        confidence = "HIGH"
+        coverage_status = "FULL"
+    elif unknown_n == 0:
+        confidence = "MEDIUM"
+        coverage_status = "PARTIAL"
+    else:
+        confidence = "LOW"
+        coverage_status = "PARTIAL"
+
+    return {
+        "known_impact": known,
+        "potential_impact": potential,
+        "unknown_areas": unknown,
+        "unaffected": unaffected[:200],
+        "impact_confidence": confidence,
+        "trace_coverage": {
+            "status": coverage_status,
+            "confirmed_relationships": explicit,
+            "inferred_or_unresolved": inferred + unknown_n,
+            "note": "Confirmed counts trace-derived explicit relationships only; inferred and untraced areas are reported separately and never counted as confirmed.",
+        },
+    }
+
+
+def _baseline_sort_key(name: str) -> tuple:
+    import re
+    m = re.search(r"(\d+)(?:\.(\d+))?", name or "")
+    return (int(m.group(1)) if m else 0, int(m.group(2) or 0) if m and m.group(2) else 0)
+
+
+def _current_baseline(db: Session, project_id: str) -> m.Baseline | None:
+    rows = db.execute(select(m.Baseline).where(m.Baseline.project_id == project_id)).scalars().all()
+    if not rows:
+        return None
+    return sorted(rows, key=lambda b: _baseline_sort_key(b.name))[-1]
+
+
+def _trace_fingerprint(db: Session, project_id: str, baseline_id: str | None) -> str:
+    import hashlib
+    edges = sorted(
+        (e.source_semantic_id, e.target_semantic_id, e.relation_type.value)
+        for e in db.execute(select(m.TraceLink).where(m.TraceLink.project_id == project_id)).scalars()
+    )
+    h = hashlib.sha256()
+    for e in edges:
+        h.update(("|".join(e)).encode())
+    h.update(("baseline:" + (baseline_id or "")).encode())
+    return h.hexdigest()
+
+
+def suggest_cr_classification(db: Session, project_id: str, affected_semantic_ids: list[str]) -> dict:
+    """Deterministic, transparent classification suggestion. Explicitly a
+    heuristic — the user always confirms or overrides before analysis."""
+    ids = [s for s in (affected_semantic_ids or []) if s]
+    if not ids:
+        return {
+            "classification": "CLARIFICATION",
+            "reason": "No affected objects declared — likely a clarification or correction.",
+            "confidence": "LOW",
+            "basis": "no affected objects declared",
+        }
+    existing = {
+        so.semantic_id
+        for so in db.execute(
+            select(m.SemanticObject).where(m.SemanticObject.project_id == project_id)
+        ).scalars()
+    }
+    known = [s for s in ids if s in existing]
+    baseline = _current_baseline(db, project_id)
+    baseline_objects: set[str] = set()
+    if baseline:
+        baseline_objects = {
+            b.semantic_object_id
+            for b in db.execute(
+                select(m.BaselineBinding).where(m.BaselineBinding.baseline_id == baseline.id)
+            ).scalars()
+        }
+
+    if not known:
+        return {
+            "classification": "SCOPE_EXPANSION",
+            "reason": "Introduces a new capability not found in the current project; likely additional execution scope.",
+            "confidence": "MEDIUM",
+            "basis": f"none of {len(ids)} affected object(s) exist as project objects",
+        }
+    in_baseline = [s for s in known if s in baseline_objects]
+    if len(known) == len(ids) and in_baseline:
+        return {
+            "classification": "REQUIREMENT_CHANGE",
+            "reason": "Modifies objects already present in the current baseline.",
+            "confidence": "MEDIUM",
+            "basis": f"affected object(s) are in baseline {baseline.name}",
+        }
+    if len(known) == len(ids):
+        return {
+            "classification": "REQUIREMENT_CHANGE",
+            "reason": "Modifies existing project objects.",
+            "confidence": "MEDIUM",
+            "basis": f"all {len(ids)} affected object(s) already exist in the project",
+        }
+    return {
+        "classification": "SCOPE_EXPANSION",
+        "reason": "Mix of new and existing objects; likely additional execution scope.",
+        "confidence": "MEDIUM",
+        "basis": f"{len(known)}/{len(ids)} affected object(s) already exist in the project",
+    }
+
+
+def _impact_analysis_dict(row: m.ImpactAnalysis) -> dict:
+    result = row.result_json or {}
+    return {
+        "id": row.id,
+        "project_id": row.project_id,
+        "target_type": row.target_type,
+        "target_id": row.target_id,
+        "baseline_id": row.baseline_id,
+        "baseline_name": row.baseline_name,
+        "calculated_at": row.created_at.isoformat(),
+        "confidence": row.confidence,
+        "coverage_status": row.coverage_status,
+        "stale": row.stale,
+        "stale_reason": row.stale_reason,
+        "review_state": row.review_state.value,
+        "reviewed_by": row.reviewed_by,
+        "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
+        "result": result,
+    }
+
+
+def _cr_affected_bfs(db: Session, project_id: str, starts: list[str]) -> tuple[list[dict], list[str]]:
+    """BFS downstream impact from a set of start semantic ids, reusing the exact
+    trace graph. Returns (affected entries with paths, unaffected semantic ids)."""
+    nodes = {
+        n.semantic_id: n
+        for n in db.execute(
+            select(m.SemanticObject).where(m.SemanticObject.project_id == project_id)
+        ).scalars().all()
+    }
+    edges = db.execute(
+        select(m.TraceLink).where(m.TraceLink.project_id == project_id)
+    ).scalars().all()
+    adj_down: dict[str, list] = {}
+    for e in edges:
+        adj_down.setdefault(e.source_semantic_id, []).append((e.target_semantic_id, e.relation_type.value))
+
+    best: dict[str, dict] = {}
+    rank = {"DIRECT": 0, "INDIRECT": 1, "POTENTIAL": 2}
+
+    for start in starts:
+        path_of: dict[str, list] = {start: [start]}
+        queue = [(start, 0)]
+        while queue:
+            cur, depth = queue.pop(0)
+            for target, rel in adj_down.get(cur, []):
+                if target in best:
+                    continue
+                path = path_of.get(cur, []) + [target]
+                path_of[target] = path
+                level = "DIRECT" if depth == 0 else "INDIRECT"
+                node = nodes.get(target)
+                best[target] = {
+                    "semantic_id": target,
+                    "object_type": node.object_type.value if node else "UNKNOWN",
+                    "display_name": node.display_name if node else target,
+                    "level": level,
+                    "depth": depth + 1,
+                    "relation": rel,
+                    "reason": _RELATION_REASON.get(rel, f"linked via {rel}"),
+                    "path": path,
+                    "regeneration": _REGEN_ELIGIBILITY.get(node.object_type.value if node else "", "NONE"),
+                }
+                if depth + 1 < 2:
+                    queue.append((target, depth + 1))
+        # Incoming references → POTENTIAL.
+        for e in edges:
+            if e.target_semantic_id == start and e.source_semantic_id not in best and e.source_semantic_id not in starts:
+                node = nodes.get(e.source_semantic_id)
+                candidate = {
+                    "semantic_id": e.source_semantic_id,
+                    "object_type": node.object_type.value if node else "UNKNOWN",
+                    "display_name": node.display_name if node else e.source_semantic_id,
+                    "level": "POTENTIAL",
+                    "depth": 1,
+                    "relation": e.relation_type.value,
+                    "reason": _RELATION_REASON.get(e.relation_type.value, f"linked via {e.relation_type.value}"),
+                    "path": [e.source_semantic_id, start],
+                    "regeneration": _REGEN_ELIGIBILITY.get(node.object_type.value if node else "", "NONE"),
+                }
+                prev = best.get(e.source_semantic_id)
+                if prev is None or rank[candidate["level"]] < rank[prev["level"]]:
+                    best[e.source_semantic_id] = candidate
+
+    affected = list(best.values())
+    affected_ids = {a["semantic_id"] for a in affected}
+    unaffected = [n.semantic_id for n in nodes.values() if n.semantic_id not in affected_ids and n.semantic_id not in starts]
+    return affected, unaffected
+
+
+def analyze_cr_impact(
+    db: Session,
+    change_request_id: str,
+    *,
+    actor="local-user",
+    actor_id: str | None = None,
+) -> dict:
+    """Run a truthful impact analysis for a CR and persist an immutable
+    point-in-time snapshot. Does not alter confirmed requirements, baselines,
+    PM tasks, QA scope, infra state or commercial commitments."""
+    cr = get_or_404(db, m.ChangeRequest, change_request_id, "ChangeRequest")
+    project_id = cr.project_id
+
+    starts = [link.semantic_id for link in cr.links]
+    affected, unaffected = _cr_affected_bfs(db, project_id, starts)
+    trust = _trust_impact_view(db, project_id, affected, unaffected)
+
+    baseline = _current_baseline(db, project_id)
+    fingerprint = _trace_fingerprint(db, project_id, baseline.id if baseline else None)
+
+    result_json = {
+        "code": cr.code,
+        "requested_change": cr.requested_change,
+        "classification": (db.execute(select(m.ChangeRequestImpact.classification).where(m.ChangeRequestImpact.change_request_id == cr.id)).scalar_one_or_none()),
+        "baseline_name": baseline.name if baseline else None,
+        "known_impact": trust["known_impact"],
+        "potential_impact": trust["potential_impact"],
+        "unknown_areas": trust["unknown_areas"],
+        "unaffected": trust["unaffected"],
+        "unaffected_count": len(trust["unaffected"]),
+        "impact_confidence": trust["impact_confidence"],
+        "trace_coverage": trust["trace_coverage"],
+        "review": {"state": "NOT_REVIEWED", "decisions": {}, "human_added": [], "comments": []},
+    }
+
+    row = m.ImpactAnalysis(
+        project_id=project_id,
+        target_type="change_request",
+        target_id=cr.id,
+        baseline_id=baseline.id if baseline else None,
+        baseline_name=baseline.name if baseline else None,
+        confidence=trust["impact_confidence"],
+        coverage_status=trust["trace_coverage"]["status"],
+        trace_fingerprint=fingerprint,
+        result_json=result_json,
+    )
+    db.add(row)
+    if cr.status == m.ChangeRequestStatus.DRAFT:
+        cr.status = m.ChangeRequestStatus.IMPACT_ANALYZED
+    db.commit()
+    db.refresh(row)
+    record_audit(
+        db, action="CR_IMPACT_ANALYZED", project_id=project_id, actor_id=actor_id,
+        object_type="ChangeRequest", object_id=cr.id,
+        metadata={"analysis_id": row.id, "confidence": trust["impact_confidence"],
+                  "coverage": trust["trace_coverage"]["status"]},
+    )
+    return _impact_analysis_dict(row)
+
+
+def get_cr_impact_analysis(db: Session, change_request_id: str) -> dict:
+    """Return the latest impact analysis snapshot, re-marking it STALE if the
+    project trace graph or baseline changed since it was calculated."""
+    cr = get_or_404(db, m.ChangeRequest, change_request_id, "ChangeRequest")
+    row = db.execute(
+        select(m.ImpactAnalysis)
+        .where(m.ImpactAnalysis.target_id == cr.id, m.ImpactAnalysis.target_type == "change_request")
+        .order_by(m.ImpactAnalysis.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        raise DomainError("No impact analysis has been run for this change request", status_code=404)
+    current_fp = _trace_fingerprint(db, cr.project_id, row.baseline_id)
+    if row.trace_fingerprint != current_fp:
+        row.stale = True
+        row.stale_reason = "Project trace graph or baseline changed since this analysis was calculated."
+        db.commit()
+    return _impact_analysis_dict(row)
+
+
+def review_cr_impact_analysis(
+    db: Session,
+    change_request_id: str,
+    analysis_id: str,
+    *,
+    decisions: dict[str, dict] | None = None,
+    human_added: list[dict] | None = None,
+    comments: list[str] | None = None,
+    finalize: bool = False,
+    reviewer: str = "local-user",
+    actor_id: str | None = None,
+) -> dict:
+    """Human review of an impact analysis. Confirm, mark not-impacted, add
+    missing impact or comment — every decision is audited and never masquerades
+    as system-derived."""
+    cr = get_or_404(db, m.ChangeRequest, change_request_id, "ChangeRequest")
+    row = get_or_404(db, m.ImpactAnalysis, analysis_id, "ImpactAnalysis")
+    if row.target_id != cr.id or row.target_type != "change_request":
+        raise DomainError("Analysis does not belong to this change request", status_code=422)
+
+    rj = row.result_json or {}
+    review = rj.setdefault("review", {})
+    review.setdefault("decisions", {})
+    review.setdefault("human_added", [])
+    review.setdefault("comments", [])
+
+    for item_id, d in (decisions or {}).items():
+        review["decisions"][item_id] = {
+            "decision": (d.get("decision") or "CONFIRMED").upper(),
+            "reason": d.get("reason"),
+            "reviewer": reviewer,
+            "at": m.utcnow().isoformat(),
+        }
+    for h in (human_added or []):
+        entry = dict(h)
+        entry["source"] = "HUMAN-ADDED"
+        entry["added_by"] = reviewer
+        entry["added_at"] = m.utcnow().isoformat()
+        review["human_added"].append(entry)
+    for c in (comments or []):
+        review["comments"].append({"comment": c, "reviewer": reviewer, "at": m.utcnow().isoformat()})
+
+    row.result_json = rj
+    row.review_state = (
+        m.ImpactReviewState.REVIEWED if finalize else m.ImpactReviewState.REVIEW_IN_PROGRESS
+    )
+    if finalize:
+        row.reviewed_by = reviewer
+        row.reviewed_at = m.utcnow()
+        if cr.status in (m.ChangeRequestStatus.DRAFT, m.ChangeRequestStatus.IMPACT_ANALYZED):
+            cr.status = m.ChangeRequestStatus.INTERNAL_REVIEW_COMPLETE
+    db.commit()
+    record_audit(
+        db, action="CR_IMPACT_REVIEWED", project_id=cr.project_id, actor_id=actor_id,
+        object_type="ChangeRequest", object_id=cr.id,
+        metadata={"analysis_id": row.id, "finalized": finalize, "reviewer": reviewer,
+                  "decisions": len(decisions or {}), "human_added": len(human_added or [])},
+    )
+    return _impact_analysis_dict(row)
 
 
 # ---------------------------------------------------------------------------
@@ -780,16 +2136,21 @@ def create_change_request(
     *,
     project_id: str,
     requested_change: str,
-    affected_semantic_ids: list[str],
+    affected_semantic_ids: list[str] | None = None,
+    title=None,
     reason=None,
     requested_by="local-user",
+    requested_date=None,
+    source_reference=None,
+    notes=None,
     target_release=None,
     schedule_impact=None,
     commercial_impact=None,
+    classification=None,
     actor="local-user",
     actor_id: str | None = None,
 ) -> m.ChangeRequest:
-    for sid in affected_semantic_ids:
+    for sid in affected_semantic_ids or []:
         exists = db.execute(
             select(m.SemanticObject.id).where(
                 m.SemanticObject.project_id == project_id,
@@ -801,23 +2162,36 @@ def create_change_request(
                 f"Change request references unknown semantic object '{sid}'",
                 status_code=422,
             )
+    from datetime import date as _date
+
     cr = m.ChangeRequest(
         project_id=project_id,
         code=next_cr_code(db, project_id),
+        title=title,
         requested_by=requested_by,
+        requested_date=(_date.fromisoformat(requested_date) if requested_date else None),
         reason=reason,
         requested_change=requested_change,
+        source_reference=source_reference,
+        notes=notes,
         target_release=target_release,
         schedule_impact=schedule_impact,
         commercial_impact=commercial_impact,
+        status=m.ChangeRequestStatus.DRAFT,  # saved as a draft first, never applied
         created_by=actor,
         actor_id=actor_id,
     )
     db.add(cr)
     db.flush()
-    for sid in affected_semantic_ids:
+    for sid in affected_semantic_ids or []:
         db.add(m.ChangeRequestLink(change_request_id=cr.id, semantic_id=sid))
+    db.add(m.ChangeRequestImpact(change_request_id=cr.id, classification=classification))
     db.commit()
+    record_audit(
+        db, action="CR_CREATED_DRAFT", project_id=project_id, actor_id=actor_id,
+        object_type="ChangeRequest", object_id=cr.id,
+        metadata={"code": cr.code, "classification": classification},
+    )
     return cr
 
 
@@ -912,23 +2286,316 @@ def change_request_detail(db: Session, change_request_id: str) -> dict:
                     "based_on_revision_id": rev.based_on_revision_id,
                 })
 
+    impact_row = db.execute(
+        select(m.ChangeRequestImpact).where(
+            m.ChangeRequestImpact.change_request_id == cr.id
+        )
+    ).scalar_one_or_none()
+
     return {
         "id": cr.id,
         "code": cr.code,
         "project_id": cr.project_id,
+        "title": cr.title,
         "requested_by": cr.requested_by,
+        "requested_date": cr.requested_date.isoformat() if cr.requested_date else None,
         "reason": cr.reason,
         "requested_change": cr.requested_change,
+        "source_reference": cr.source_reference,
+        "notes": cr.notes,
         "status": cr.status.value,
+        "classification": impact_row.classification if impact_row else None,
         "target_release": cr.target_release,
         "schedule_impact": cr.schedule_impact,
         "commercial_impact": cr.commercial_impact,
         "created_at": cr.created_at.isoformat(),
+        "updated_at": cr.updated_at.isoformat() if cr.updated_at else None,
         "created_by": cr.created_by,
         "affected": affected,
         "impact": impact,
         "spawned_revisions": spawned,
     }
+
+
+def _cr_impact_row(db: Session, change_request_id: str) -> m.ChangeRequestImpact:
+    row = db.execute(
+        select(m.ChangeRequestImpact).where(
+            m.ChangeRequestImpact.change_request_id == change_request_id
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        row = m.ChangeRequestImpact(change_request_id=change_request_id)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def _cr_impact_dict(row: m.ChangeRequestImpact | None, cr: m.ChangeRequest) -> dict:
+    return {
+        "change_request_id": cr.id,
+        "code": cr.code,
+        "requested_change": cr.requested_change,
+        "status": cr.status.value,
+        "classification": row.classification if row else None,
+        "function_impact": row.function_impact if row else None,
+        "effort_impact": row.effort_impact if row else None,
+        "timeline_impact": row.timeline_impact if row else None,
+        "technical_impact": row.technical_impact if row else None,
+        "qa_impact": row.qa_impact if row else None,
+        "infra_impact": row.infra_impact if row else None,
+        "commercial_status": row.commercial_status if row else None,
+        "pricing_basis": row.pricing_basis if row else None,
+        "confidence": row.confidence if row else None,
+        "customer_approval": row.customer_approval if row else None,
+        "approval_evidence": row.approval_evidence if row else None,
+    }
+
+
+def cr_impact(db: Session, change_request_id: str) -> dict:
+    """Return the stored CR impact plus the technical impact derived from the
+    exact trace graph for any affected object — no human memory required."""
+    cr = get_or_404(db, m.ChangeRequest, change_request_id, "ChangeRequest")
+    row = _cr_impact_row(db, change_request_id)
+    out = _cr_impact_dict(row, cr)
+
+    # Derive technical impact from trace for affected semantic ids.
+    technical = out.get("technical_impact") or {"affected": [], "unaffected": [], "unknown": []}
+    for link in cr.links:
+        impact = impact_of(db, cr.project_id, link.semantic_id)
+        for d in impact["downstream"]:
+            so = db.execute(
+                select(m.SemanticObject).where(
+                    m.SemanticObject.project_id == cr.project_id,
+                    m.SemanticObject.semantic_id == d["semantic_id"],
+                )
+            ).scalar_one_or_none()
+            entry = {
+                "semantic_id": d["semantic_id"],
+                "object_type": so.object_type.value if so else None,
+                "display_name": so.display_name if so else d["semantic_id"],
+                "relation": d["relation"],
+            }
+            if entry not in technical["affected"]:
+                technical["affected"].append(entry)
+    out["technical_impact"] = technical
+    return out
+
+
+def save_cr_impact(
+    db: Session,
+    change_request_id: str,
+    *,
+    classification: str | None = None,
+    function_impact: dict | None = None,
+    effort_impact: dict | None = None,
+    timeline_impact: dict | None = None,
+    technical_impact: dict | None = None,
+    qa_impact: dict | None = None,
+    infra_impact: dict | None = None,
+    commercial_status: str | None = None,
+    pricing_basis: str | None = None,
+    confidence: str | None = None,
+) -> dict:
+    """Store a human/estimator-supplied impact. Nothing is invented here — the
+    caller passes only what is known; unknown dimensions stay absent."""
+    cr = get_or_404(db, m.ChangeRequest, change_request_id, "ChangeRequest")
+    row = _cr_impact_row(db, change_request_id)
+    for field, value in {
+        "classification": classification, "function_impact": function_impact,
+        "effort_impact": effort_impact, "timeline_impact": timeline_impact,
+        "technical_impact": technical_impact, "qa_impact": qa_impact,
+        "infra_impact": infra_impact, "commercial_status": commercial_status,
+        "pricing_basis": pricing_basis, "confidence": confidence,
+    }.items():
+        if value is not None:
+            setattr(row, field, value)
+    db.commit()
+    record_audit(
+        db, action="CR_IMPACT_SAVED", project_id=cr.project_id, actor_id=cr.actor_id,
+        object_type="ChangeRequest", object_id=cr.id,
+        metadata={"classification": classification, "commercial_status": commercial_status},
+    )
+    return _cr_impact_dict(row, cr)
+
+
+def set_cr_customer_approval(
+    db: Session,
+    change_request_id: str,
+    *,
+    decision: str,  # APPROVED | REJECTED | PENDING
+    approved_by: str | None = None,
+    reference: str | None = None,
+    note: str | None = None,
+    amount: str | None = None,
+    actor="local-user",
+) -> dict:
+    """Customer commercial decision. Distinct from admin technical confirmation:
+    this records whether the customer approved the scope/price, never whether
+    the system truth was published."""
+    cr = get_or_404(db, m.ChangeRequest, change_request_id, "ChangeRequest")
+    decision = decision.upper()
+    if decision not in ("APPROVED", "REJECTED", "PENDING"):
+        raise DomainError("decision must be APPROVED, REJECTED or PENDING")
+    row = _cr_impact_row(db, change_request_id)
+    row.customer_approval = decision
+    row.approval_evidence = {
+        "approved_by": approved_by,
+        "approved_at": m.utcnow().isoformat(),
+        "reference": reference,
+        "note": note,
+        "amount": amount,
+    }
+    if decision == "APPROVED":
+        cr.status = m.ChangeRequestStatus.ACCEPTED
+    elif decision == "REJECTED":
+        cr.status = m.ChangeRequestStatus.REJECTED
+    db.commit()
+    record_audit(
+        db, action="CR_CUSTOMER_APPROVAL", project_id=cr.project_id, actor_id=cr.actor_id,
+        object_type="ChangeRequest", object_id=cr.id,
+        metadata={"decision": decision, "approved_by": approved_by, "amount": amount},
+    )
+    return _cr_impact_dict(row, cr)
+
+
+# ---------------------------------------------------------------------------
+# ChangeRequest lifecycle transitions (human-driven, guarded)
+# ---------------------------------------------------------------------------
+
+def _cr_dict(cr: m.ChangeRequest) -> dict:
+    return {
+        "id": cr.id,
+        "code": cr.code,
+        "title": cr.title,
+        "project_id": cr.project_id,
+        "requested_change": cr.requested_change,
+        "requested_by": cr.requested_by,
+        "requested_date": cr.requested_date.isoformat() if cr.requested_date else None,
+        "reason": cr.reason,
+        "source_reference": cr.source_reference,
+        "notes": cr.notes,
+        "status": cr.status.value,
+        "created_at": cr.created_at.isoformat(),
+        "updated_at": cr.updated_at.isoformat() if cr.updated_at else None,
+    }
+
+_CR_ALLOWED_TRANSITIONS: dict = {
+    m.ChangeRequestStatus.DRAFT: {
+        m.ChangeRequestStatus.OPEN,
+        m.ChangeRequestStatus.NEEDS_CLARIFICATION,
+        m.ChangeRequestStatus.UNDER_HUMAN_REVIEW,
+        m.ChangeRequestStatus.REJECTED,
+        m.ChangeRequestStatus.DEFERRED,
+    },
+    m.ChangeRequestStatus.OPEN: {
+        m.ChangeRequestStatus.NEEDS_CLARIFICATION,
+        m.ChangeRequestStatus.IMPACT_ANALYZED,
+        m.ChangeRequestStatus.UNDER_HUMAN_REVIEW,
+        m.ChangeRequestStatus.REJECTED,
+        m.ChangeRequestStatus.DEFERRED,
+    },
+    m.ChangeRequestStatus.NEEDS_CLARIFICATION: {
+        m.ChangeRequestStatus.OPEN,
+        m.ChangeRequestStatus.IMPACT_ANALYZED,
+        m.ChangeRequestStatus.UNDER_HUMAN_REVIEW,
+        m.ChangeRequestStatus.REJECTED,
+        m.ChangeRequestStatus.DEFERRED,
+    },
+    m.ChangeRequestStatus.IMPACT_ANALYZED: {
+        m.ChangeRequestStatus.NEEDS_CLARIFICATION,
+        m.ChangeRequestStatus.UNDER_HUMAN_REVIEW,
+        m.ChangeRequestStatus.INTERNAL_REVIEW_COMPLETE,
+        m.ChangeRequestStatus.REJECTED,
+        m.ChangeRequestStatus.DEFERRED,
+    },
+    m.ChangeRequestStatus.UNDER_HUMAN_REVIEW: {
+        m.ChangeRequestStatus.NEEDS_CLARIFICATION,
+        m.ChangeRequestStatus.INTERNAL_REVIEW_COMPLETE,
+        m.ChangeRequestStatus.ACCEPTED,
+        m.ChangeRequestStatus.REJECTED,
+        m.ChangeRequestStatus.DEFERRED,
+    },
+    m.ChangeRequestStatus.INTERNAL_REVIEW_COMPLETE: {
+        m.ChangeRequestStatus.UNDER_HUMAN_REVIEW,
+        m.ChangeRequestStatus.ACCEPTED,
+        m.ChangeRequestStatus.IMPLEMENTATION_PLANNED,
+        m.ChangeRequestStatus.REJECTED,
+        m.ChangeRequestStatus.DEFERRED,
+    },
+    m.ChangeRequestStatus.ACCEPTED: {
+        m.ChangeRequestStatus.IMPLEMENTATION_PLANNED,
+        m.ChangeRequestStatus.IMPLEMENTED,
+        m.ChangeRequestStatus.REJECTED,
+        m.ChangeRequestStatus.DEFERRED,
+    },
+    m.ChangeRequestStatus.IMPLEMENTATION_PLANNED: {
+        m.ChangeRequestStatus.IMPLEMENTED,
+        m.ChangeRequestStatus.ACCEPTED,
+        m.ChangeRequestStatus.DEFERRED,
+    },
+    m.ChangeRequestStatus.IMPLEMENTED: {
+        m.ChangeRequestStatus.CLOSED,
+        m.ChangeRequestStatus.IMPLEMENTATION_PLANNED,
+    },
+    m.ChangeRequestStatus.REJECTED: {
+        m.ChangeRequestStatus.OPEN,
+        m.ChangeRequestStatus.DRAFT,
+    },
+    m.ChangeRequestStatus.DEFERRED: {
+        m.ChangeRequestStatus.OPEN,
+        m.ChangeRequestStatus.DRAFT,
+        m.ChangeRequestStatus.ACCEPTED,
+    },
+    m.ChangeRequestStatus.CLOSED: {
+        m.ChangeRequestStatus.OPEN,
+    },
+}
+
+
+def transition_change_request(
+    db: Session,
+    change_request_id: str,
+    *,
+    to_status: str,
+    note: str | None = None,
+    actor="local-user",
+    actor_id: str | None = None,
+) -> dict:
+    """Human-driven lifecycle transition with a guarded state machine.
+
+    Every call is an explicit human action (the caller supplies the actor),
+    and the state machine never allows a jump that would let a computed
+    analysis silently become APPROVED. APPROVED/ACCEPTED is only reachable
+    from UNDER_HUMAN_REVIEW or INTERNAL_REVIEW_COMPLETE."""
+    cr = get_or_404(db, m.ChangeRequest, change_request_id, "ChangeRequest")
+    try:
+        target = m.ChangeRequestStatus(to_status.upper())
+    except ValueError:
+        raise DomainError(
+            f"Unknown status '{to_status}'. Allowed: "
+            + ", ".join(s.value for s in m.ChangeRequestStatus),
+            status_code=422,
+        )
+    allowed = _CR_ALLOWED_TRANSITIONS.get(cr.status, set())
+    if target not in allowed and target != cr.status:
+        raise DomainError(
+            f"Transition {cr.status.value} → {target.value} is not allowed. "
+            f"Allowed: {', '.join(s.value for s in sorted(allowed, key=lambda s: s.value)) or 'none'}",
+            status_code=409,
+        )
+    if target == cr.status:
+        return {"change_request": _cr_dict(cr), "note": note, "unchanged": True}
+
+    prev = cr.status.value
+    cr.status = target
+    db.commit()
+    record_audit(
+        db, action="CR_STATUS_TRANSITION", project_id=cr.project_id, actor_id=actor_id,
+        object_type="ChangeRequest", object_id=cr.id,
+        metadata={"from": prev, "to": target.value, "note": note, "actor": actor},
+    )
+    return {"change_request": _cr_dict(cr), "from": prev, "to": target.value, "note": note}
 
 
 # ---------------------------------------------------------------------------
@@ -2755,6 +4422,194 @@ def list_project_memory(db: Session, project_id: str) -> dict:
     }
 
 
+def _doc_updated_iso(rev: m.ArtifactRevision) -> str:
+    """Human 'last updated' for a revision — confirmation wins over creation."""
+    return _iso(rev.confirmed_at or rev.created_at)
+
+
+def project_home(db: Session, project_id: str) -> dict:
+    """Aggregate Project Home payload (P1 UX). One request answers:
+    what project, current baseline, what documents exist + which is current,
+    what PM/QA are doing, what changed recently, and what is open.
+
+    Human-facing titles/versions are computed here so the UI never has to
+    resolve semantic IDs. Technical IDs are still carried as metadata only.
+    """
+    project = guard_project(db, project_id)
+
+    baselines = db.execute(
+        select(m.Baseline).where(m.Baseline.project_id == project_id)
+        .order_by(m.Baseline.created_at.desc())
+    ).scalars().all()
+    current_baseline = baselines[0] if baselines else None
+
+    artifacts = db.execute(
+        select(m.Artifact).where(m.Artifact.project_id == project_id)
+    ).scalars().all()
+    revisions_by_artifact: dict[str, list[m.ArtifactRevision]] = {}
+    for a in artifacts:
+        revs = db.execute(
+            select(m.ArtifactRevision)
+            .where(m.ArtifactRevision.artifact_id == a.id)
+            .order_by(m.ArtifactRevision.revision_number.desc())
+        ).scalars().all()
+        revisions_by_artifact[a.id] = revs
+
+    # Which revision is bound to the *current* baseline per artifact.
+    current_bindings: dict[str, str] = {}
+    if current_baseline:
+        for bb in current_baseline.bindings:
+            if bb.artifact_id:
+                current_bindings[bb.artifact_id] = bb.artifact_revision_id
+
+    requirements = db.execute(
+        select(m.Requirement).where(m.Requirement.project_id == project_id)
+        .order_by(m.Requirement.code)
+    ).scalars().all()
+
+    memory = list_project_memory(db, project_id)
+    handoffs_pm = list_execution_handoffs(db, project_id)
+    handoffs_qa = list_qa_handoffs(db, project_id)
+    tl = timeline(db, project_id)
+
+    arch = db.execute(
+        select(m.ArchitectureDiagram).where(m.ArchitectureDiagram.project_id == project_id)
+    ).scalars().all()
+    flows = db.execute(
+        select(m.ProcessFlow).where(m.ProcessFlow.project_id == project_id)
+    ).scalars().all()
+
+    # ── Documents (human-readable, current-first) ──
+    documents: list[dict] = []
+
+    def _rev_meta(a: m.Artifact):
+        revs = revisions_by_artifact.get(a.id) or []
+        rev = None
+        bound = current_bindings.get(a.id)
+        if bound:
+            rev = next((r for r in revs if r.id == bound), None)
+        if rev is None:
+            rev = next((r for r in revs if r.status == m.RevisionStatus.CONFIRMED), None) or (revs[0] if revs else None)
+        return revs, rev
+
+    # Requirement Register
+    latest_req_ts = max((r.created_at for r in requirements), default=project.created_at)
+    documents.append({
+        "key": "requirements", "title": "Requirement Register", "type": "REQUIREMENT_REGISTER",
+        "version": None, "status": "CURRENT", "count": len(requirements),
+        "updated_at": _iso(latest_req_ts), "open_route": "/requirements", "download": None,
+    })
+
+    for a in artifacts:
+        revs, rev = _rev_meta(a)
+        human = a.type.value.upper()
+        version = f"v{rev.revision_number}" if rev else None
+        documents.append({
+            "key": a.id, "title": a.title, "type": human,
+            "version": version, "status": rev.status.value if rev else "DRAFT",
+            "updated_at": _doc_updated_iso(rev) if rev else _iso(a.created_at),
+            "revision_id": rev.id if rev else None,
+            "open_route": "/requirements/ur" if a.type == m.ArtifactType.UR else "/design/dr",
+            "download": f"/api/revisions/{rev.id}/export?format=xlsx" if rev else None,
+        })
+
+    documents.append({
+        "key": "traceability", "title": "Traceability Matrix", "type": "TRACEABILITY_MATRIX",
+        "version": None, "status": "CURRENT",
+        "updated_at": _iso(max((l.created_at for l in db.execute(select(m.TraceLink).where(m.TraceLink.project_id == project_id)).scalars().all()), default=project.created_at)),
+        "open_route": "/design/trace", "download": None,
+    })
+
+    for d in arch:
+        documents.append({
+            "key": d.id, "title": d.name, "type": "ARCHITECTURE", "version": None,
+            "status": "CURRENT", "updated_at": _iso(d.created_at),
+            "open_route": "/design/architecture", "download": None,
+        })
+    for f in flows:
+        documents.append({
+            "key": f.id, "title": f.name, "type": "PROCESS_FLOW", "version": None,
+            "status": "CURRENT", "updated_at": _iso(f.created_at),
+            "open_route": "/design/flows", "download": None,
+        })
+
+    for key, title, items in (
+        ("clarifications", "Clarification Register", memory["clarifications"]),
+        ("assumptions", "Assumption Register", memory["assumptions"]),
+        ("decisions", "Decision Register", memory["decisions"]),
+    ):
+        documents.append({
+            "key": key, "title": title, "type": key.upper() + "_REGISTER",
+            "version": None, "status": "CURRENT", "count": len(items),
+            "updated_at": _iso(project.created_at), "open_route": "/decisions", "download": None,
+        })
+
+    # ── PM / QA status (handoff truth; never fabricate) ──
+    def _pm_qa_status(handoffs, target):
+        if not handoffs:
+            return {"state": "NOT_SENT", "human": "Not sent"}
+        acked = [h for h in handoffs if h.get("status") == "ACKNOWLEDGED"]
+        failed = [h for h in handoffs if h.get("status") == "FAILED"]
+        if acked:
+            return {"state": "SENT", "human": "Delivered", "handoff": acked[-1]}
+        if failed:
+            return {"state": "FAILED", "human": "Delivery failed", "handoff": failed[-1]}
+        return {"state": handoffs[-1].get("status") or "DRAFT", "human": "Pending", "handoff": handoffs[-1]}
+
+    pm_status = _pm_qa_status(handoffs_pm, "pm")
+    qa_status = _pm_qa_status(handoffs_qa, "qa")
+
+    # Requirements with resolved human trace targets (REQ -> UR/DR/flow/baseline).
+    trace_graph_data = trace_graph(db, project_id)
+    nodes = {n["semantic_id"]: n for n in trace_graph_data["nodes"]}
+    edges = trace_graph_data["edges"]
+
+    reqs_out = []
+    for r in requirements:
+        targets = []
+        for e in edges:
+            if e["source"] == r.code:
+                t = nodes.get(e["target"])
+                targets.append({
+                    "relation": e["relation"], "target": e["target"],
+                    "display_name": (t or {}).get("display_name") if t else e["target"],
+                    "object_type": (t or {}).get("object_type") if t else None,
+                })
+        reqs_out.append({
+            "id": r.id, "code": r.code, "title": r.title, "status": r.status.value,
+            "targets": targets,
+        })
+
+    # Last updated across the whole project.
+    timestamps = [ev["at"] for ev in tl] + [d["updated_at"] for d in documents if d["updated_at"]]
+    last_updated = max(timestamps) if timestamps else _iso(project.created_at)
+
+    return {
+        "project": {
+            "id": project.id, "key": project.key, "name": project.name,
+            "description": project.description, "tenant_id": project.tenant_id,
+            "created_at": _iso(project.created_at), "created_by": project.created_by,
+        },
+        "current_baseline": {
+            "id": current_baseline.id, "name": current_baseline.name,
+            "created_at": _iso(current_baseline.created_at),
+        } if current_baseline else None,
+        "baselines": [
+            {"id": b.id, "name": b.name, "created_at": _iso(b.created_at)} for b in baselines
+        ],
+        "last_updated": last_updated,
+        "open_clarifications": sum(1 for c in memory["clarifications"] if not c["resolved"]),
+        "assumptions": len(memory["assumptions"]),
+        "decisions": len(memory["decisions"]),
+        "clarifications": memory["clarifications"],
+        "documents": documents,
+        "pm": pm_status,
+        "qa": qa_status,
+        "requirements": reqs_out,
+        "activity": tl[:20],
+    }
+
+
 def promote_annotation(db: Session, *, annotation_id: str, to_kind: str, actor="local-user") -> dict:
     """Promote a comment/annotation into a first-class project-memory record.
 
@@ -3342,22 +5197,58 @@ def _qa_handoff_dict(h: m.QAValidationHandoff) -> dict:
     }
 
 
+def _requirement_refs(db: Session, req_ids: list[str]) -> list[dict]:
+    """Resolve requirement ids to human {id, code, title} refs (P1 UX)."""
+    if not req_ids:
+        return []
+    rows = db.execute(select(m.Requirement).where(m.Requirement.id.in_(req_ids))).scalars().all()
+    by_id = {r.id: r for r in rows}
+    return [{"id": rid, "code": by_id[rid].code, "title": by_id[rid].title} for rid in req_ids if rid in by_id]
+
+
+def _workstreams(db: Session, project_id: str | None) -> list[dict]:
+    """Expose the project's architecture tracks as human workstream names.
+
+    PM Again materializes one Function per workstream; these names come from
+    the confirmed design (architecture diagrams), not from invented scope."""
+    if not project_id:
+        return []
+    rows = db.execute(
+        select(m.ArchitectureDiagram).where(m.ArchitectureDiagram.project_id == project_id)
+    ).scalars().all()
+    return [{"semantic_id": d.semantic_id, "name": d.name} for d in rows if d.name]
+
+
 def build_handoff_payload(db: Session, handoff_id: str, kind: str) -> dict:
     """Versioned ``document-again-handoff`` envelope for Conductor Main."""
     model = m.ExecutionHandoff if kind == "execution" else m.QAValidationHandoff
     h = get_or_404(db, model, handoff_id, "Handoff")
+    project = db.get(m.Project, h.project_id) if h.project_id else None
+    baseline = db.get(m.Baseline, h.baseline_id) if h.baseline_id else None
+    title = project.name if project else None
+    baseline_name = baseline.name if baseline else None
     if kind == "execution":
+        req_ids = (h.payload_snapshot or {}).get("requirementIds") or []
+        if not req_ids and h.project_id:
+            req_ids = [r.id for r in db.execute(select(m.Requirement).where(m.Requirement.project_id == h.project_id)).scalars().all()]
         fields = {
             "handoff_type": "EXECUTION",
-            "requirement_ids": (h.payload_snapshot or {}).get("requirementIds") or [],
+            "title": title,
+            "baseline_name": baseline_name,
+            "requirement_ids": req_ids,
+            "requirement_refs": _requirement_refs(db, req_ids),
             "artifact_revision_ids": [h.source_revision_id] if h.source_revision_id else [],
             "semantic_object_ids": (h.payload_snapshot or {}).get("semanticObjectIds") or [],
+            "workstreams": _workstreams(db, h.project_id),
             "change_request_id": h.change_request_id,
         }
     else:
         fields = {
             "handoff_type": "QA_VALIDATION",
+            "title": title,
+            "baseline_name": baseline_name,
             "requirement_ids": h.requirement_ids or [],
+            "requirement_refs": _requirement_refs(db, h.requirement_ids or []),
             "artifact_revision_ids": h.design_revision_ids or [],
             "semantic_object_ids": h.semantic_object_ids or [],
             "target_release": h.target_release,
@@ -3942,8 +5833,8 @@ def export_design_package(db: Session, baseline_id: str) -> bytes:
 
 def _traceability_rows(db: Session, project_id: str) -> list[dict]:
     """Traceability matrix rows from current trace links (labelled as live)."""
-    types = {
-        so.semantic_id: so.object_type.value
+    objects = {
+        so.semantic_id: so
         for so in db.execute(
             select(m.SemanticObject).where(m.SemanticObject.project_id == project_id)
         ).scalars().all()
@@ -3954,9 +5845,12 @@ def _traceability_rows(db: Session, project_id: str) -> list[dict]:
     ).scalars().all()
     return [
         {
-            "source": l.source_semantic_id, "source_type": types.get(l.source_semantic_id),
+            "source": l.source_semantic_id,
+            "source_title": objects.get(l.source_semantic_id).display_name if objects.get(l.source_semantic_id) else l.source_semantic_id,
+            "source_type": objects.get(l.source_semantic_id).object_type.value if objects.get(l.source_semantic_id) else None,
             "relation": l.relation_type.value, "target": l.target_semantic_id,
-            "target_type": types.get(l.target_semantic_id),
+            "target_title": objects.get(l.target_semantic_id).display_name if objects.get(l.target_semantic_id) else l.target_semantic_id,
+            "target_type": objects.get(l.target_semantic_id).object_type.value if objects.get(l.target_semantic_id) else None,
             "revision_context": l.revision_context,
         }
         for l in links
@@ -3965,40 +5859,138 @@ def _traceability_rows(db: Session, project_id: str) -> list[dict]:
 
 def _render_xlsx(meta: dict, sections: list[dict], dd_rows: list[dict], trace_rows: list[dict]) -> bytes:
     import openpyxl
-    from openpyxl.styles import Font
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
 
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Metadata"
-    for i, (k, v) in enumerate(meta.items(), start=1):
-        ws.cell(row=i, column=1, value=k).font = Font(bold=True)
-        ws.cell(row=i, column=2, value=v)
+    wb.remove(wb.active)
+    navy = "1F4E78"
+    pale_blue = "D9EAF7"
+    pale_gray = "F3F4F6"
+    white = "FFFFFF"
+    thin = Side(style="thin", color="D1D5DB")
 
+    def setup_page(sheet, landscape=False, repeat=None):
+        sheet.sheet_view.showGridLines = False
+        sheet.page_setup.orientation = "landscape" if landscape else "portrait"
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = 0
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+        sheet.page_margins.left = sheet.page_margins.right = 0.3
+        if repeat:
+            sheet.print_title_rows = repeat
+
+    def table_header(sheet, row):
+        for cell in sheet[row]:
+            if cell.value is not None:
+                cell.fill = PatternFill("solid", fgColor=navy)
+                cell.font = Font(bold=True, color=white)
+                cell.alignment = Alignment(wrap_text=True, vertical="center")
+                cell.border = Border(bottom=thin)
+        sheet.row_dimensions[row].height = 28
+
+    # Narrative content is the first visible sheet for UR/DR.
     if sections:
         ws2 = wb.create_sheet("Document")
-        r = 1
+        setup_page(ws2, repeat="1:4")
+        ws2.freeze_panes = "A5"
+        ws2.column_dimensions["A"].width = 24
+        ws2.column_dimensions["B"].width = 92
+        ws2.merge_cells("A1:B1")
+        title = ws2["A1"]
+        title.value = str(meta.get("artifact_title") or "Project document")
+        title.font = Font(bold=True, size=18, color=white)
+        title.fill = PatternFill("solid", fgColor=navy)
+        title.alignment = Alignment(vertical="center")
+        ws2.row_dimensions[1].height = 34
+        ws2.merge_cells("A2:B2")
+        ws2["A2"] = f"{meta.get('project') or 'Project'} · {meta.get('artifact_type') or 'Document'} · Version {meta.get('revision_number') or '—'} · {str(meta.get('status') or '—').replace('_', ' ').title()}"
+        ws2["A2"].font = Font(bold=True, color="374151")
+        ws2.merge_cells("A3:B3")
+        ws2["A3"] = f"Updated {meta.get('confirmed_at') or meta.get('generated_at') or '—'} · Generated {meta.get('generated_at') or '—'}"
+        ws2["A3"].font = Font(size=10, color="6B7280")
+        ws2.append(["Section", "Content"])
+        table_header(ws2, 4)
+        r = 5
         for sec in sections:
-            ws2.cell(row=r, column=1, value=sec.get("id") or "").font = Font(bold=True)
-            ws2.cell(row=r, column=2, value=sec.get("heading") or "").font = Font(bold=True)
+            sc = ws2.cell(row=r, column=1, value=str(sec.get("heading") or "Section"))
+            hc = ws2.cell(row=r, column=2, value=str(sec.get("heading") or "Section"))
+            for cell in (sc, hc):
+                cell.font = Font(bold=True, color="1F2937")
+                cell.fill = PatternFill("solid", fgColor=pale_blue)
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+                cell.border = Border(bottom=thin)
+            # Keep semantic identity for audit, but unobtrusively in a note.
+            sc.value = f"Section\n{sec.get('id') or ''}" if sec.get("id") else "Section"
+            sc.font = Font(bold=True, color="374151", size=10)
+            ws2.row_dimensions[r].height = 34
             r += 1
             for blk in _flatten_section(sec):
-                ws2.cell(row=r, column=2, value=blk["text"])
+                kind = str(blk.get("kind") or "Content").replace("_", " ").title()
+                ws2.cell(row=r, column=1, value=kind).alignment = Alignment(vertical="top")
+                cell = ws2.cell(row=r, column=2, value=blk["text"])
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+                for c in ws2[r]:
+                    c.border = Border(bottom=Side(style="hair", color="E5E7EB"))
+                lines = max(1, len(str(blk["text"])) // 105 + str(blk["text"]).count("\n") + 1)
+                ws2.row_dimensions[r].height = min(90, max(22, lines * 15))
                 r += 1
+
+    ws = wb.create_sheet("Metadata")
+    setup_page(ws)
+    ws.column_dimensions["A"].width = 26
+    ws.column_dimensions["B"].width = 88
+    ws.append(["Document metadata", None])
+    ws.merge_cells("A1:B1")
+    ws["A1"].font = Font(bold=True, size=16, color=white)
+    ws["A1"].fill = PatternFill("solid", fgColor=navy)
+    ws.row_dimensions[1].height = 30
+    for i, (k, v) in enumerate(meta.items(), start=1):
+        row = i + 2
+        c = ws.cell(row=row, column=1, value=str(k).replace("_", " ").title())
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor=pale_gray)
+        vc = ws.cell(row=row, column=2, value=str(v))
+        vc.alignment = Alignment(wrap_text=True, vertical="top")
 
     if dd_rows:
         ws3 = wb.create_sheet("Data Dictionary")
+        setup_page(ws3, landscape=True, repeat="1:1")
+        ws3.freeze_panes = "A2"
         headers = ["table", "field", "data_type", "length", "nullable", "primary_key",
                    "foreign_key", "reference", "description", "remark", "field_semantic_id"]
         ws3.append(headers)
+        table_header(ws3, 1)
+        ws3.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
         for row in dd_rows:
             ws3.append([row.get(h) for h in headers])
+        for col in range(1, len(headers) + 1):
+            ws3.column_dimensions[get_column_letter(col)].width = 18 if col not in (8, 9, 10) else 34
 
     if trace_rows:
         ws4 = wb.create_sheet("Traceability")
-        ws4.append(["source", "source_type", "relation", "target", "target_type", "revision_context"])
+        setup_page(ws4, landscape=True, repeat="1:1")
+        ws4.freeze_panes = "A2"
+        headers = ["Source ID", "Source title", "Source type", "Relationship", "Target ID", "Target title", "Target type", "Revision context"]
+        ws4.append(headers)
+        table_header(ws4, 1)
+        ws4.auto_filter.ref = "A1:H1"
+        human_relations = {"DERIVED_FROM": "Designed in", "REFERENCES": "References", "TRACES_TO": "Traces to"}
         for row in trace_rows:
-            ws4.append([row["source"], row["source_type"], row["relation"],
-                        row["target"], row["target_type"], row["revision_context"]])
+            ws4.append([row["source"], row.get("source_title"), row["source_type"],
+                        human_relations.get(row["relation"], row["relation"].replace("_", " ").title()),
+                        row["target"], row.get("target_title"), row["target_type"], row["revision_context"]])
+        for i, width in enumerate((18, 34, 18, 18, 22, 38, 20, 22), start=1):
+            ws4.column_dimensions[get_column_letter(i)].width = width
+        for row in ws4.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    # Open on the owner-facing content, not the technical metadata sheet.
+    if sections:
+        wb.active = wb.sheetnames.index("Document")
+    elif trace_rows:
+        wb.active = wb.sheetnames.index("Traceability")
 
     buf = _io.BytesIO()
     wb.save(buf)
@@ -4179,3 +6171,328 @@ def export_design_package_v4(db: Session, baseline_id: str) -> bytes:
             "revisions": meta_rows,
         }, indent=2, default=str))
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# OIDA Suggestion (R11) — AI observes & suggests; the human decides.
+# ---------------------------------------------------------------------------
+
+def _suggestion_out(s: m.Suggestion) -> dict:
+    return {
+        "id": s.id, "project_id": s.project_id, "domain": s.domain,
+        "related_object_id": s.related_object_id, "type": s.type,
+        "title": s.title, "description": s.description,
+        "why_it_matters": s.why_it_matters, "question": s.question,
+        "suggested_action": s.suggested_action, "severity": s.severity,
+        "status": s.status.value, "created_by": s.created_by,
+        "created_at": s.created_at.isoformat(),
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+        "answer": s.answer, "answer_source": s.answer_source,
+        "interpretation": s.interpretation,
+        "interpretation_confidence": s.interpretation_confidence,
+        "follow_up": s.follow_up, "proposed_update": s.proposed_update,
+        "review_decision": s.review_decision, "consultation": s.consultation,
+        "resolved_at": s.resolved_at.isoformat() if s.resolved_at else None,
+    }
+
+
+def _suggestion_dedupe_key(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (title or "").lower())[:60]
+
+
+def generate_suggestions(db: Session, project_id: str, *, mode: str = "STANDARD", actor="local-user", actor_id: str | None = None) -> list[dict]:
+    """Consult the AI runtime (independent where available; deterministic no-key
+    fallback) and persist grounded OIDA Suggestions, skipping duplicates."""
+    guard_project(db, project_id)
+    from . import ai as ai_runtime
+    consultation = ai_runtime.consult(db, project_id, purpose="PROJECT_REVIEW", mode=mode)
+
+    existing_keys = {
+        _suggestion_dedupe_key(s.title)
+        for s in db.execute(select(m.Suggestion).where(m.Suggestion.project_id == project_id)).scalars()
+    }
+    # Only RESOLVED clarifications count as "already answered". Unresolved ones
+    # are exactly what the Suggestion flow should surface for the human to answer.
+    clarifications = db.execute(select(m.Clarification).where(m.Clarification.project_id == project_id)).scalars().all()
+    answered_text = " ".join(
+        (c.question or "") + " " + (c.answer or "") for c in clarifications if c.resolved
+    ).lower()
+    # Clarification semantic ids that already have a suggestion (avoid duplicates).
+    surfaced_clr = {
+        s.related_object_id
+        for s in db.execute(select(m.Suggestion).where(m.Suggestion.project_id == project_id)).scalars()
+        if s.related_object_id and s.related_object_id.startswith("CLR")
+    }
+
+    created = []
+    for f in consultation.get("findings", []):
+        clr_id = f.get("clarification_id")
+        key = clr_id or _suggestion_dedupe_key(f["title"])
+        # Do not re-ask something already answered in project memory.
+        if key in existing_keys or key in surfaced_clr:
+            continue
+        if not clr_id and _suggestion_dedupe_key(f["title"]) in answered_text:
+            continue
+        row = m.Suggestion(
+            project_id=project_id, domain=f.get("domain"), related_object_id=f.get("related_object_id"),
+            type=f.get("type"), title=f["title"], description=f.get("description"),
+            why_it_matters=f.get("why_it_matters"), question=f.get("question"),
+            suggested_action=f.get("suggested_action"), severity=f.get("severity", "MEDIUM"),
+            created_by=actor, actor_id=actor_id, consultation=consultation,
+        )
+        db.add(row)
+        created.append(row)
+        if clr_id:
+            surfaced_clr.add(clr_id)
+        else:
+            existing_keys.add(_suggestion_dedupe_key(f["title"]))
+    db.commit()
+    record_audit(
+        db, action="SUGGESTIONS_GENERATED", project_id=project_id, actor_id=actor_id,
+        object_type="Project", object_id=project_id,
+        metadata={"count": len(created), "mode": mode},
+    )
+    return [_suggestion_out(s) for s in created]
+
+
+def list_suggestions(db: Session, project_id: str) -> list[dict]:
+    rows = db.execute(
+        select(m.Suggestion).where(m.Suggestion.project_id == project_id).order_by(m.Suggestion.created_at.desc())
+    ).scalars().all()
+    return [_suggestion_out(s) for s in rows]
+
+
+def answer_suggestion(db: Session, suggestion_id: str, *, answer: str, source: str = "CUSTOMER", actor="local-user", actor_id: str | None = None) -> dict:
+    s = get_or_404(db, m.Suggestion, suggestion_id, "Suggestion")
+    s.answer = answer
+    s.answer_source = source
+    s.status = m.SuggestionStatus.ANSWERED
+    db.commit()
+    record_audit(
+        db, action="SUGGESTION_ANSWERED", project_id=s.project_id, actor_id=actor_id,
+        object_type="Suggestion", object_id=s.id, metadata={"source": source},
+    )
+    return _suggestion_out(s)
+
+
+def interpret_suggestion(db: Session, suggestion_id: str, *, actor="local-user", actor_id: str | None = None) -> dict:
+    s = get_or_404(db, m.Suggestion, suggestion_id, "Suggestion")
+    if not s.answer:
+        raise DomainError("Suggestion has no answer yet", status_code=422)
+    from . import ai as ai_runtime
+    result = ai_runtime.interpret_answer(s.answer, s.title)
+    s.interpretation = result["interpretation"]
+    s.interpretation_confidence = result["confidence"]
+    s.follow_up = result.get("follow_up")
+    s.proposed_update = result.get("proposed_update")
+    if result.get("follow_up"):
+        s.status = m.SuggestionStatus.NEEDS_FOLLOW_UP
+    else:
+        s.status = m.SuggestionStatus.PROPOSED_UPDATE
+    db.commit()
+    record_audit(
+        db, action="SUGGESTION_INTERPRETED", project_id=s.project_id, actor_id=actor_id,
+        object_type="Suggestion", object_id=s.id,
+        metadata={"confidence": result["confidence"], "follow_up": bool(result.get("follow_up"))},
+    )
+    return _suggestion_out(s)
+
+
+def review_suggestion(db: Session, suggestion_id: str, *, decision: str, actor="local-user", actor_id: str | None = None) -> dict:
+    """Human review of a proposed update. Accepting only DRAFTS project-memory
+    records (clarification / assumption); it never confirms requirements or
+    baselines and never bypasses impact analysis or admin re-auth."""
+    s = get_or_404(db, m.Suggestion, suggestion_id, "Suggestion")
+    decision = (decision or "").upper()
+    if decision not in ("ACCEPTED", "REJECTED"):
+        raise DomainError("decision must be ACCEPTED or REJECTED")
+    s.review_decision = decision
+
+    applied = []
+    if decision == "ACCEPTED" and s.proposed_update:
+        pu = s.proposed_update
+        # If this suggestion surfaced an existing OPEN clarification, resolve it
+        # in place instead of duplicating it.
+        existing_clr = None
+        if s.related_object_id and s.related_object_id.startswith("CLR"):
+            existing_clr = db.execute(
+                select(m.Clarification).where(
+                    m.Clarification.project_id == s.project_id,
+                    m.Clarification.semantic_id == s.related_object_id,
+                )
+            ).scalar_one_or_none()
+        if existing_clr:
+            existing_clr.answer = s.answer
+            existing_clr.resolved = True
+            applied.append({"kind": "clarification_resolved", "id": existing_clr.semantic_id})
+        else:
+            clr = create_clarification(
+                db, project_id=s.project_id, question=s.question or s.title,
+                answer=s.answer, related_semantic_ids=[s.related_object_id] if s.related_object_id else None,
+                actor=actor,
+            )
+            applied.append({"kind": "clarification", "id": clr.semantic_id})
+        if pu.get("kind") == "assumption" and pu.get("text"):
+            asm = create_assumption(
+                db, project_id=s.project_id, content=pu["text"],
+                related_semantic_ids=[s.related_object_id] if s.related_object_id else None,
+                actor=actor,
+            )
+            applied.append({"kind": "assumption", "id": asm.semantic_id})
+        s.status = m.SuggestionStatus.ACCEPTED
+    else:
+        s.status = m.SuggestionStatus.REJECTED
+    s.resolved_at = m.utcnow()
+    db.commit()
+    record_audit(
+        db, action="SUGGESTION_REVIEWED", project_id=s.project_id, actor_id=actor_id,
+        object_type="Suggestion", object_id=s.id,
+        metadata={"decision": decision, "applied": applied},
+    )
+    out = _suggestion_out(s)
+    out["applied"] = applied
+    return out
+
+
+# ---------------------------------------------------------------------------
+# R15 — Multi-Agent Council consultation records
+# ---------------------------------------------------------------------------
+
+def _consultation_out(c: m.Consultation) -> dict:
+    return {
+        "id": c.id, "project_id": c.project_id, "task_type": c.task_type,
+        "role": c.role, "question": c.question, "context_snapshot": c.context_snapshot,
+        "runs": c.runs, "aggregation": c.aggregation, "human_review": c.human_review,
+        "stale": c.stale, "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+
+
+def create_consultation(db: Session, project_id: str, *, task_type: str, question: str,
+                        context_envelope: dict, role: str | None = None, actor="local-user",
+                        actor_id: str | None = None) -> dict:
+    guard_project(db, project_id)
+    from . import council
+    cid = m.new_id("con")
+    result = council.run_council(project_id, task_type, question, context_envelope, cid, role=role)
+    row = m.Consultation(
+        id=cid, project_id=project_id, task_type=task_type, role=role or "GENERAL_REVIEWER",
+        question=question, context_snapshot=result["snapshot"], runs=result["runs"],
+        aggregation=result["aggregation"],
+    )
+    db.add(row)
+    db.commit()
+    record_audit(
+        db, action="COUNCIL_CONSULTED", project_id=project_id, actor_id=actor_id,
+        object_type="Consultation", object_id=cid,
+        metadata={"task_type": task_type, "mode": result["council_mode"]["mode"],
+                  "completed": len([r for r in result["runs"] if r["status"] == "COMPLETED"])},
+    )
+    return _consultation_out(row)
+
+
+def list_consultations(db: Session, project_id: str) -> list[dict]:
+    rows = db.execute(
+        select(m.Consultation).where(m.Consultation.project_id == project_id)
+        .order_by(m.Consultation.created_at.desc())
+    ).scalars().all()
+    return [_consultation_out(c) for c in rows]
+
+
+def get_consultation(db: Session, consultation_id: str) -> dict:
+    c = get_or_404(db, m.Consultation, consultation_id, "Consultation")
+    return _consultation_out(c)
+
+
+def check_consultation_stale(db: Session, consultation_id: str, context_envelope: dict | None = None) -> dict:
+    """Stale detection (Phase 9): compare the freshly-computed current context
+    hash with the snapshot used for the runs. Never silently recomputes or
+    replaces a reviewed result."""
+    c = get_or_404(db, m.Consultation, consultation_id, "Consultation")
+    snap = c.context_snapshot or {}
+    stored = (snap.get("context_hash") or "").strip()
+    current = ""
+    if context_envelope:
+        from . import council
+        current = council.snapshot_hash(context_envelope)
+    changed = bool(current and stored and current != stored)
+    if changed and not c.stale:
+        c.stale = True
+        db.commit()
+    return {
+        "consultation_id": c.id, "stale": c.stale, "context_hash_now": current,
+        "context_hash_at_run": stored, "changed": changed,
+        "note": "Project truth changed after this consultation; re-run Council." if changed
+                else "Context matches the snapshot used for the runs.",
+    }
+
+
+def review_consultation(db: Session, consultation_id: str, *, decision: str,
+                        comment: str | None = None, important: list[str] | None = None,
+                        incorrect: list[str] | None = None, actor="local-user",
+                        actor_id: str | None = None) -> dict:
+    """Human review of a Council result (Phase 17). Advisory only — never writes
+    Council findings into any authority service."""
+    c = get_or_404(db, m.Consultation, consultation_id, "Consultation")
+    decision = (decision or "").upper()
+    if decision not in ("USEFUL", "REJECTED"):
+        raise DomainError("decision must be USEFUL or REJECTED")
+    c.human_review = {
+        "decision": decision, "comment": comment,
+        "marked_important": important or [], "marked_incorrect": incorrect or [],
+        "reviewed_by": actor, "reviewed_at": m.utcnow().isoformat(),
+    }
+    db.commit()
+    record_audit(
+        db, action="COUNCIL_REVIEWED", project_id=c.project_id, actor_id=actor_id,
+        object_type="Consultation", object_id=c.id, metadata={"decision": decision},
+    )
+    return _consultation_out(c)
+
+
+def council_finding_to_suggestion(db: Session, consultation_id: str, *, finding: dict,
+                                  actor="local-user", actor_id: str | None = None) -> dict:
+    """Convert a reviewed Council finding into an OIDA Suggestion (Phase 18).
+    Provenance source=COUNCIL; the Suggestion flows through the existing
+    human-led R11 lifecycle — Council never bypasses Suggestion governance."""
+    c = get_or_404(db, m.Consultation, consultation_id, "Consultation")
+    title = (finding.get("title") or finding.get("statement") or "Council finding")[:200]
+    row = m.Suggestion(
+        project_id=c.project_id,
+        domain=None, related_object_id=None,
+        type=(finding.get("finding_type") or "RISK"),
+        title=title,
+        description=finding.get("statement"),
+        why_it_matters=finding.get("statement"),
+        question=finding.get("question") or None,
+        suggested_action=(finding.get("recommendation") or None),
+        severity=(finding.get("severity") or "MEDIUM"),
+        created_by=actor, actor_id=actor_id,
+        consultation={
+            "source": "COUNCIL",
+            "consultation_id": consultation_id,
+            "run_ids": finding.get("run_ids") or finding.get("run_id") or None,
+            "providers": finding.get("providers"),
+            "human_selected_by": actor,
+        },
+    )
+    db.add(row)
+    db.commit()
+    record_audit(
+        db, action="COUNCIL_TO_SUGGESTION", project_id=c.project_id, actor_id=actor_id,
+        object_type="Suggestion", object_id=row.id, metadata={"consultation_id": consultation_id},
+    )
+    return _suggestion_out(row)
+
+
+def rerun_consultation(db: Session, consultation_id: str, *, context_envelope: dict | None = None,
+                       actor="local-user", actor_id: str | None = None) -> dict:
+    """Explicit re-run (Phase 30). Creates a NEW consultation record with a new
+    id; the old result is never overwritten."""
+    c = get_or_404(db, m.Consultation, consultation_id, "Consultation")
+    envelope = context_envelope or {}
+    if not envelope:
+        raise DomainError("Re-run requires the current context envelope (stale truth cannot be re-sent blindly).", 422)
+    return create_consultation(
+        db, c.project_id, task_type=c.task_type, question=c.question,
+        context_envelope=envelope, role=c.role, actor=actor, actor_id=actor_id,
+    )

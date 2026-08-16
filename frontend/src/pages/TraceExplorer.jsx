@@ -3,6 +3,17 @@ import { api } from "../api/client.js";
 import { useWorkspace } from "../App.jsx";
 import { Card, Empty, Field, inputClass } from "../components/ui.jsx";
 
+const RELATION_LABEL = {
+  DERIVED_FROM: "Designed in",
+  REFERENCES: "References",
+  TRACES_TO: "Traces to",
+  IMPLEMENTS: "Implemented by",
+};
+
+function objectLabel(node, fallback) {
+  return node?.display_name || fallback;
+}
+
 /*
  * Traceability explorer over TraceLink truth. Only relationships actually
  * stored are shown — nothing is inferred. Supports search by semantic id,
@@ -56,7 +67,7 @@ export function TraceExplorer() {
                 }`}
               >
                 <span className="font-mono">{n.semantic_id}</span>
-                <span className="ml-2 text-slate-500">({n.object_type})</span>
+                <span className="ml-2 text-slate-400">— {objectLabel(n, n.object_type)}</span>
               </button>
             ))}
             {filtered.length === 0 && <p className="p-2 text-[12px] text-slate-500">No matches.</p>}
@@ -77,9 +88,9 @@ export function TraceExplorer() {
                     {incoming.length === 0 && <p className="text-[12px] text-slate-600">none</p>}
                     {incoming.map((e, i) => (
                       <div key={i} className="flex items-center gap-2 border-b border-line/50 py-1 text-[12px]">
-                        <button className="font-mono text-slate-200 hover:text-brand-300" onClick={() => setSelected(e.source)}>{e.source}</button>
-                        <span className="text-brand-400">—{e.relation}→</span>
-                        <span className="font-mono text-slate-200">{e.target}</span>
+                        <button className="text-left text-slate-200 hover:text-brand-300" title={e.source} onClick={() => setSelected(e.source)}>{objectLabel(nodeMap[e.source], e.source)}</button>
+                        <span className="shrink-0 text-brand-400">— {RELATION_LABEL[e.relation] || e.relation.replaceAll("_", " ").toLowerCase()} →</span>
+                        <span className="text-slate-200" title={e.target}>{objectLabel(nodeMap[e.target], e.target)}</span>
                         {e.revision_context && <span className="text-slate-500">(rev {e.revision_context})</span>}
                       </div>
                     ))}
@@ -89,9 +100,9 @@ export function TraceExplorer() {
                     {outgoing.length === 0 && <p className="text-[12px] text-slate-600">none</p>}
                     {outgoing.map((e, i) => (
                       <div key={i} className="flex items-center gap-2 border-b border-line/50 py-1 text-[12px]">
-                        <span className="font-mono text-slate-200">{e.source}</span>
-                        <span className="text-brand-400">—{e.relation}→</span>
-                        <button className="font-mono text-slate-200 hover:text-brand-300" onClick={() => setSelected(e.target)}>{e.target}</button>
+                        <span className="text-slate-200" title={e.source}>{objectLabel(nodeMap[e.source], e.source)}</span>
+                        <span className="shrink-0 text-brand-400">— {RELATION_LABEL[e.relation] || e.relation.replaceAll("_", " ").toLowerCase()} →</span>
+                        <button className="text-left text-slate-200 hover:text-brand-300" title={e.target} onClick={() => setSelected(e.target)}>{objectLabel(nodeMap[e.target], e.target)}</button>
                         {e.revision_context && <span className="text-slate-500">(rev {e.revision_context})</span>}
                       </div>
                     ))}
