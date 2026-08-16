@@ -92,6 +92,36 @@ def verify_service_token(token: str) -> dict:
     return claims
 
 
+ECOSYSTEM_IDENTITY_AUDIENCE = "again-ecosystem-identity"
+
+
+def verify_ecosystem_identity_token(token: str) -> dict:
+    """Verifies an RS256 ecosystem human identity JWT issued by Account Again
+    (SSO) and returns its claims. Raises ServiceAuthError on any failure —
+    expired, bad signature, wrong issuer/audience, or JWKS unreachable. The
+    claims carry accountId/sub/email/tenantId/ecosystemRoles; the password is
+    never present. Callers must still resolve service-local authorization."""
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.InvalidTokenError as exc:
+        raise ServiceAuthError(f"Malformed identity token: {exc}") from exc
+
+    public_key = _public_key_for(header.get("kid"))
+    try:
+        claims = jwt.decode(
+            token,
+            key=public_key,
+            algorithms=["RS256"],
+            audience=ECOSYSTEM_IDENTITY_AUDIENCE,
+            issuer=EXPECTED_ISSUER,
+        )
+    except jwt.InvalidTokenError as exc:
+        raise ServiceAuthError(f"Identity token failed verification: {exc}") from exc
+    if "email" not in claims:
+        raise ServiceAuthError("Identity token missing email claim")
+    return claims
+
+
 class _EntitlementCache:
     def __init__(self):
         self._lock = threading.Lock()
