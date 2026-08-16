@@ -8,6 +8,7 @@ from account_again.models.tenant import _new_id, _now
 VALID_SYSTEM_IDS = {
     "CONDUCTOR_MAIN", "PM_AGAIN", "IDEA_TO_CODE",
     "INFRA_AGAIN", "QA_AGAIN", "LOCAL_AI_CONTROL_CENTER", "ACCOUNT_AGAIN",
+    "DOCUMENT_AGAIN",
 }
 
 
