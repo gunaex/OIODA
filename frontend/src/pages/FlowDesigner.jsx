@@ -1,6 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Handle, Position } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import { api } from "../api/client.js";
 import { useWorkspace } from "../App.jsx";
+import { applyPositionChanges, DiagramCanvas } from "../components/DiagramCanvas.jsx";
 import { Button, Card, Empty, ErrorNote, Field, inputClass } from "../components/ui.jsx";
 
 const STEP_TYPES = ["START", "ACTION", "DECISION", "APPROVAL", "SYSTEM", "MANUAL", "END"];
@@ -162,75 +165,64 @@ export function FlowDesigner() {
   );
 }
 
-/* Simple draggable diagram over the structured flow. */
+function FlowStepNode({ data }) {
+  return (
+    <div className="w-40 rounded-md border border-line bg-surface-1 shadow-md">
+      <Handle type="target" id={data.semantic_id} position={Position.Left} className="!h-2 !w-2 !border-line !bg-slate-500" />
+      <div className="rounded-t-md border-b border-line bg-surface-2 px-2 py-1 text-[12px] font-semibold text-slate-200">{data.name}</div>
+      <div className="flex items-center justify-between px-2 py-1 text-[10px]">
+        <span className="uppercase text-slate-500">{data.step_type}</span>
+        <button className="font-mono text-slate-600 hover:text-brand-300" onClick={() => data.onFocus(data.semantic_id, data.semantic_id)}>{data.semantic_id}</button>
+      </div>
+      <Handle type="source" id={data.semantic_id} position={Position.Right} className="!h-2 !w-2 !border-line !bg-slate-500" />
+    </div>
+  );
+}
+
+const flowNodeTypes = { flowStep: FlowStepNode };
+
+/* React Flow diagram over the structured flow. */
 function FlowDiagram({ flow, onSave, setFocus }) {
   const [pos, setPos] = useState({});
-  const posRef = useRef({});
 
   useEffect(() => {
     const layout = flow.layout || {};
     const next = { ...layout };
     flow.steps.forEach((s, i) => {
-      if (!next[s.semantic_id]) next[s.semantic_id] = { x: 40 + (i % 4) * 220, y: 40 + Math.floor(i / 4) * 140 };
+      if (!next[s.semantic_id]) next[s.semantic_id] = { x: 40 + (i % 4) * 240, y: 40 + Math.floor(i / 4) * 150 };
     });
     setPos(next);
-    posRef.current = next;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flow?.id]);
 
-  function onDown(e, id) {
-    e.preventDefault();
-    const p = posRef.current[id] || { x: 0, y: 0 };
-    const start = { id, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y };
-    const move = (ev) => {
-      const next = { ...posRef.current, [id]: { x: start.ox + (ev.clientX - start.sx), y: start.oy + (ev.clientY - start.sy) } };
-      posRef.current = next;
-      setPos(next);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      api.put(`/flows/${flow.id}/layout`, { layout: posRef.current }).catch(() => {});
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+  const rfNodes = useMemo(
+    () => flow.steps.map((s) => ({
+      id: s.semantic_id,
+      type: "flowStep",
+      position: pos[s.semantic_id] || { x: 0, y: 0 },
+      data: { name: s.name, step_type: s.step_type, semantic_id: s.semantic_id, onFocus: setFocus },
+    })),
+    [flow, pos, setFocus]
+  );
+
+  const rfEdges = useMemo(
+    () => flow.transitions.map((t) => ({
+      id: t.id, source: t.from, target: t.to, label: t.label, animated: true,
+      markerEnd: { type: "arrowclosed", color: "#6366f1" },
+      style: { stroke: "#6366f1" }, labelStyle: { fill: "#94a3b8", fontSize: 9 },
+    })),
+    [flow]
+  );
+
+  function onNodesChange(changes) {
+    const { layout, persisted } = applyPositionChanges(changes, pos);
+    setPos(layout);
+    if (persisted) api.put(`/flows/${flow.id}/layout`, { layout }).catch(() => {});
   }
 
   return (
     <Card title={`Diagram — ${flow.name}`} actions={<span className="text-[11px] text-slate-500">drag steps; layout is presentation state only</span>}>
-      <div className="relative h-72 overflow-hidden rounded border border-line bg-surface-0">
-        <svg className="pointer-events-none absolute inset-0 h-full w-full">
-          {flow.transitions.map((t) => {
-            const a = pos[t.from], b = pos[t.to];
-            if (!a || !b) return null;
-            const x1 = a.x + 100, y1 = a.y + 30, x2 = b.x + 100, y2 = b.y + 30;
-            const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-            return (
-              <g key={t.id}>
-                <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#6366f1" strokeWidth="1.5" markerEnd="url(#farrow)" />
-                {t.label && <text x={mx} y={my - 4} fill="#94a3b8" fontSize="9" textAnchor="middle">{t.label}</text>}
-              </g>
-            );
-          })}
-          <defs>
-            <marker id="farrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="#6366f1" />
-            </marker>
-          </defs>
-        </svg>
-        {flow.steps.map((s) => {
-          const p = pos[s.semantic_id] || { x: 0, y: 0 };
-          return (
-            <div key={s.id} className="absolute w-44 cursor-move rounded-md border border-line bg-surface-1 shadow-md" style={{ left: p.x, top: p.y, touchAction: "none" }} onPointerDown={(e) => onDown(e, s.semantic_id)}>
-              <div className="rounded-t-md border-b border-line bg-surface-2 px-2 py-1 text-[12px] font-semibold text-slate-200">{s.name}</div>
-              <div className="flex items-center justify-between px-2 py-1 text-[10px]">
-                <span className="uppercase text-slate-500">{s.step_type}</span>
-                <button className="font-mono text-slate-600 hover:text-brand-300" onClick={(e) => { e.stopPropagation(); setFocus(s.semantic_id, s.semantic_id); }}>{s.semantic_id}</button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <DiagramCanvas nodes={rfNodes} edges={rfEdges} nodeTypes={flowNodeTypes} onNodesChange={onNodesChange} height={320} />
     </Card>
   );
 }
