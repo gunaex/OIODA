@@ -32,6 +32,9 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
             "request_id": request_id(),
         }
+        for key in ("method", "path", "status", "duration_ms"):
+            if hasattr(record, key):
+                entry[key] = getattr(record, key)
         if record.exc_info:
             entry["exc"] = self.formatException(record.exc_info)
         return json.dumps(entry, default=str)
