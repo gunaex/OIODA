@@ -447,3 +447,36 @@ def test_outbox_inspect_endpoint(client, db, project):
     r = client.get(f"/api/outbox/{out.id}")
     assert r.status_code == 200
     assert r.json()["event"]["payload"] == {"x": 1}
+
+
+# ---------------------------------------------------------------------------
+# P4-M concurrency / conflict safety — double confirm exactly-once
+# ---------------------------------------------------------------------------
+
+
+def test_double_confirm_produces_exactly_one_confirmation(db, project):
+    art = svc.create_artifact(db, project_id=project.id, type=m.ArtifactType.DR, title="DR")
+    rev = db.execute(select(m.ArtifactRevision).where(
+        m.ArtifactRevision.artifact_id == art.id)).scalars().one()
+    svc.submit_for_review(db, rev.id)
+    svc.confirm_revision(db, rev.id, actor_id="acc-1")
+    # second confirmation must be rejected (revision already CONFIRMED)
+    from app.services import DomainError
+    with pytest.raises(DomainError):
+        svc.confirm_revision(db, rev.id, actor_id="acc-2")
+    confirmations = db.execute(select(m.Confirmation).where(
+        m.Confirmation.artifact_revision_id == rev.id)).scalars().all()
+    assert len(confirmations) == 1
+
+
+def test_confirmation_unique_constraint_blocks_duplicate(db, project):
+    art = svc.create_artifact(db, project_id=project.id, type=m.ArtifactType.UR, title="UR")
+    rev = db.execute(select(m.ArtifactRevision).where(
+        m.ArtifactRevision.artifact_id == art.id)).scalars().one()
+    svc.submit_for_review(db, rev.id)
+    svc.confirm_revision(db, rev.id)
+    db.add(m.Confirmation(project_id=project.id, artifact_revision_id=rev.id, confirmed_by="dup"))
+    from sqlalchemy.exc import IntegrityError
+    with pytest.raises(IntegrityError):
+        db.commit()
+    db.rollback()

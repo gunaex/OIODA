@@ -382,6 +382,7 @@ class Review(Base):
 
 class Confirmation(Base):
     __tablename__ = "confirmations"
+    __table_args__ = (UniqueConstraint("artifact_revision_id"),)
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cnf"))
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
