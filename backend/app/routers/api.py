@@ -1183,6 +1183,11 @@ def list_execution_handoffs(project_id: str, db: Session = Depends(db_session)):
     return svc.list_execution_handoffs(db, project_id=project_id)
 
 
+@router.post("/handoffs/execution/{handoff_id}/deliver")
+def deliver_execution_handoff(handoff_id: str, db: Session = Depends(db_session)):
+    return svc.deliver_handoff_to_conductor(db, handoff_id, "execution")
+
+
 @router.post("/handoffs/qa")
 def create_qa_handoff(body: QAHandoffIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
     svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
@@ -1192,6 +1197,11 @@ def create_qa_handoff(body: QAHandoffIn, db: Session = Depends(db_session), actx
 @router.get("/projects/{project_id}/handoffs/qa")
 def list_qa_handoffs(project_id: str, db: Session = Depends(db_session)):
     return svc.list_qa_handoffs(db, project_id=project_id)
+
+
+@router.post("/handoffs/qa/{handoff_id}/deliver")
+def deliver_qa_handoff(handoff_id: str, db: Session = Depends(db_session)):
+    return svc.deliver_handoff_to_conductor(db, handoff_id, "qa")
 
 
 @router.post("/external-references")

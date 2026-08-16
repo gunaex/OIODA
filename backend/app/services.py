@@ -11,6 +11,7 @@ import csv as _csv
 import difflib
 import io as _io
 import json as _json
+import os
 import zipfile as _zipfile
 from collections import Counter
 from datetime import timedelta
@@ -3110,8 +3111,17 @@ def list_outbox(db: Session, project_id: str | None = None, limit: int = 200) ->
 # Ecosystem handoffs (PM / QA) and external references
 # ---------------------------------------------------------------------------
 
-EXECUTION_HANDOFF_STATUSES = {"DRAFT", "READY", "SENT", "ACKNOWLEDGED", "FAILED", "CANCELLED"}
-QA_HANDOFF_STATUSES = {"DRAFT", "READY", "SENT", "ACKNOWLEDGED", "FAILED", "CANCELLED"}
+EXECUTION_HANDOFF_STATUSES = {
+    "DRAFT", "READY", "QUEUED", "DELIVERED_TO_CONDUCTOR",
+    "ACKNOWLEDGED", "FAILED", "CANCELLED", "SENT",
+}
+QA_HANDOFF_STATUSES = {
+    "DRAFT", "READY", "QUEUED", "DELIVERED_TO_CONDUCTOR",
+    "ACKNOWLEDGED", "FAILED", "CANCELLED", "SENT",
+}
+# Conductor Main is the ecosystem orchestration authority; Document Again
+# delivers design handoffs to its relay (never directly into PM/QA).
+CONDUCTOR_MAIN_URL = os.environ.get("CONDUCTOR_MAIN_URL", "http://localhost:8010/api").rstrip("/")
 EXTERNAL_RELATION_TYPES = {"IMPLEMENTED_BY", "VALIDATED_BY", "TRACKED_BY", "RELEASED_IN", "HANDED_OFF_TO"}
 
 
@@ -3297,6 +3307,7 @@ def _execution_handoff_dict(h: m.ExecutionHandoff) -> dict:
         "correlation_id": h.correlation_id, "created_at": h.created_at.isoformat(),
         "created_by": h.created_by, "actor_id": h.actor_id,
         "delivered_at": h.delivered_at.isoformat() if h.delivered_at else None,
+        "last_error": h.last_error,
     }
 
 
@@ -3310,7 +3321,88 @@ def _qa_handoff_dict(h: m.QAValidationHandoff) -> dict:
         "correlation_id": h.correlation_id, "created_at": h.created_at.isoformat(),
         "created_by": h.created_by, "actor_id": h.actor_id,
         "delivered_at": h.delivered_at.isoformat() if h.delivered_at else None,
+        "last_error": h.last_error,
     }
+
+
+def build_handoff_payload(db: Session, handoff_id: str, kind: str) -> dict:
+    """Versioned ``document-again-handoff`` envelope for Conductor Main."""
+    model = m.ExecutionHandoff if kind == "execution" else m.QAValidationHandoff
+    h = get_or_404(db, model, handoff_id, "Handoff")
+    if kind == "execution":
+        fields = {
+            "handoff_type": "EXECUTION",
+            "requirement_ids": (h.payload_snapshot or {}).get("requirementIds") or [],
+            "artifact_revision_ids": [h.source_revision_id] if h.source_revision_id else [],
+            "semantic_object_ids": (h.payload_snapshot or {}).get("semanticObjectIds") or [],
+            "change_request_id": h.change_request_id,
+        }
+    else:
+        fields = {
+            "handoff_type": "QA_VALIDATION",
+            "requirement_ids": h.requirement_ids or [],
+            "artifact_revision_ids": h.design_revision_ids or [],
+            "semantic_object_ids": h.semantic_object_ids or [],
+            "target_release": h.target_release,
+        }
+    return versioned_payload(
+        "document-again-handoff", 1,
+        handoff_id=h.id,
+        tenant_id=current_tenant(),
+        project_id=h.project_id,
+        baseline_id=h.baseline_id,
+        correlation_id=h.correlation_id,
+        source_service="DOCUMENT_AGAIN",
+        payload_snapshot=h.payload_snapshot or {},
+        **fields,
+    )
+
+
+def deliver_handoff_to_conductor(
+    db: Session, handoff_id: str, kind: str, client=None
+) -> dict:
+    """Deliver a handoff to Conductor Main's relay (authority boundary).
+
+    Conductor accepts DOCUMENT_AGAIN and dispatches to PM/QA. On success the
+    handoff becomes ACKNOWLEDGED with the relayed external reference; on
+    failure it becomes FAILED with the error retained (safe to retry).
+    """
+    from .ecosystem_client import DeliveryError, EcosystemDeliveryClient
+
+    model = m.ExecutionHandoff if kind == "execution" else m.QAValidationHandoff
+    h = get_or_404(db, model, handoff_id, "Handoff")
+    if h.status == "ACKNOWLEDGED":
+        return _execution_handoff_dict(h) if kind == "execution" else _qa_handoff_dict(h)
+
+    payload = build_handoff_payload(db, handoff_id, kind)
+    h.status = "QUEUED"
+    db.commit()
+
+    c = client or EcosystemDeliveryClient()
+    try:
+        ext_ref = c.deliver(
+            f"{CONDUCTOR_MAIN_URL}/ecosystem/document-handoffs",
+            payload, correlation_id=h.correlation_id, tenant_id=current_tenant(),
+        )
+    except DeliveryError as exc:
+        h.status = "FAILED"
+        h.last_error = str(exc)[:2000]
+        db.commit()
+        raise DomainError(f"Conductor handoff delivery failed: {exc}", status_code=502)
+
+    h.status = "ACKNOWLEDGED"
+    h.external_reference = ext_ref
+    h.delivered_at = m.utcnow()
+    h.last_error = None
+    db.commit()
+    db.refresh(h)
+    record_audit(
+        db, action="HANDOFF_DELIVERED", project_id=h.project_id, actor_id=h.actor_id,
+        object_type="ExecutionHandoff" if kind == "execution" else "QAValidationHandoff",
+        object_id=h.id, correlation_id=h.correlation_id,
+        metadata={"via": "conductor-main", "external_reference": ext_ref},
+    )
+    return _execution_handoff_dict(h) if kind == "execution" else _qa_handoff_dict(h)
 
 
 def _latest_baseline_id(db: Session, project_id: str) -> str | None:

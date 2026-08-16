@@ -19,6 +19,7 @@ SUPPORTED_CONTRACTS = {
     "acknowledgement": 1,
     "ecosystem-event": 1,
     "external-reference": 1,
+    "document-again-handoff": 1,
 }
 
 

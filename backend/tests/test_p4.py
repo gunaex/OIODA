@@ -549,3 +549,61 @@ def test_historical_export_remains_v1_after_v2(db, project):
     # DOCX embeds design summary tables (API/flow/architecture)
     docx_bytes = svc.export_revision_v2(db, rev2.id, "docx")[0]
     assert docx_bytes[:2] == b"PK"
+
+
+# ---------------------------------------------------------------------------
+# P5-B/C/D — Document -> Conductor relay handoff delivery
+# ---------------------------------------------------------------------------
+
+
+def _conductor_transport(respond_status=200, body=None):
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/auth/service-token"):
+            return httpx.Response(200, json={"accessToken": "tok", "tokenType": "Bearer", "expiresIn": 3600})
+        if request.url.path == "/api/ecosystem/document-handoffs":
+            if respond_status >= 400:
+                return httpx.Response(respond_status, json={"detail": "down"})
+            return httpx.Response(200, json=body or {"externalReferenceId": "dwp-ref-9"})
+        return httpx.Response(404, json={"detail": "nf"})
+
+    return httpx.MockTransport(handler)
+
+
+def test_handoff_payload_is_document_again_contract(db, project):
+    h = svc.create_execution_handoff(db, project_id=project.id, source_revision_id="rev-1")
+    payload = svc.build_handoff_payload(db, h["id"], "execution")
+    assert payload["contract"] == {"name": "document-again-handoff", "version": 1}
+    assert payload["handoff_type"] == "EXECUTION"
+    assert payload["handoff_id"] == h["id"]
+    assert payload["baseline_id"] is None or isinstance(payload["baseline_id"], str)
+
+
+def test_deliver_handoff_to_conductor_success(db, project):
+    from app.ecosystem_client import EcosystemDeliveryClient
+    h = svc.create_execution_handoff(db, project_id=project.id, source_revision_id="rev-1")
+    client = EcosystemDeliveryClient("http://aa", client_secret="s", transport=_conductor_transport())
+    out = svc.deliver_handoff_to_conductor(db, h["id"], "execution", client=client)
+    assert out["status"] == "ACKNOWLEDGED"
+    assert out["external_reference"] == "dwp-ref-9"
+    assert out["last_error"] is None
+
+
+def test_deliver_handoff_to_conductor_failure(db, project):
+    from app.ecosystem_client import EcosystemDeliveryClient
+    from app.services import DomainError
+    h = svc.create_execution_handoff(db, project_id=project.id, source_revision_id="rev-1")
+    client = EcosystemDeliveryClient("http://aa", client_secret="s", transport=_conductor_transport(respond_status=502))
+    with pytest.raises(DomainError):
+        svc.deliver_handoff_to_conductor(db, h["id"], "execution", client=client)
+    row = db.get(m.ExecutionHandoff, h["id"])
+    assert row.status == "FAILED" and row.last_error is not None
+
+
+def test_deliver_handoff_idempotent_no_redelivery(db, project):
+    from app.ecosystem_client import EcosystemDeliveryClient
+    h = svc.create_qa_validation_handoff(db, project_id=project.id, requirement_ids=["REQ-0001"])
+    client = EcosystemDeliveryClient("http://aa", client_secret="s", transport=_conductor_transport(body={"externalReferenceId": "qa-ref-1"}))
+    svc.deliver_handoff_to_conductor(db, h["id"], "qa", client=client)
+    # second delivery is a no-op (already acknowledged)
+    out2 = svc.deliver_handoff_to_conductor(db, h["id"], "qa", client=client)
+    assert out2["status"] == "ACKNOWLEDGED" and out2["external_reference"] == "qa-ref-1"

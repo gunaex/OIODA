@@ -825,6 +825,7 @@ class ExecutionHandoff(Base):
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
     actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class QAValidationHandoff(Base):
@@ -852,6 +853,7 @@ class QAValidationHandoff(Base):
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
     actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ExternalReference(Base):
