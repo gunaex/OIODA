@@ -1,0 +1,199 @@
+# Deployment
+
+Covers the backend (Fly.io) and its Cloudflare R2 evidence storage
+dependency (ADR-0002). Frontend deploy (Cloudflare Pages) is unchanged
+from the rebuild prompt's section 2 "Deploy" subsection — not repeated
+here.
+
+## Environments
+
+| Environment | Frontend | Backend | Storage | Purpose |
+|---|---|---|---|---|
+| **Local** | `npm run dev` (Vite, `localhost:5173`) | `uvicorn` on `127.0.0.1:8002` (canonical local port — do not use `:8000`, which is PM Again's) | `STORAGE_BACKEND=filesystem` (zero-config) | Day-to-day development. No real secrets needed. |
+| **Staging** | A Cloudflare Pages preview deployment (or a dedicated `staging.qaagain.*` domain) | A separate Fly app (e.g. `qa-again-backend-staging`) with its own volume | `STORAGE_BACKEND=r2` against a **separate** staging R2 bucket — never share a bucket between staging and production | Rehearse deploys, run the R2 staging smoke test (below), validate a release before it reaches real users. |
+| **Production** | `qaagain.kanphong.com` on Cloudflare Pages | `qa-again-backend` on Fly.io | `STORAGE_BACKEND=r2` against the production bucket | Real usage. |
+
+Staging and production are **separate Fly apps and separate R2
+buckets** — never point staging's `STORAGE_BACKEND=r2` config at the
+production bucket, and never share a `JWT_SECRET_KEY` between them
+(a staging session token must not be valid against production).
+
+## Backend environment variables
+
+None of these are committed anywhere — set them via `fly secrets set`
+(production) or a local `.env` file, never in git. `backend/.env.example`
+lists every variable with placeholder values.
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `DATA_DIR` | prod only | `backend/data` | Fly volume mount path in production. |
+| `ALLOWED_ORIGINS` | prod only | `http://localhost:5173` | Comma-separated CORS origins. |
+| `JWT_SECRET_KEY` | prod only | ephemeral random | Session signing key — set before deploying or every restart logs everyone out. |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | first boot | random | Bootstrap admin account. |
+| `COOKIE_SECURE` | prod only | `false` | Must be `true` in production. |
+| `STORAGE_BACKEND` | prod only | `filesystem` | `filesystem` (local dev) or `r2` (production). |
+| `R2_ACCOUNT_ID` | if `STORAGE_BACKEND=r2` | — | Cloudflare account ID (from the R2 dashboard). |
+| `R2_BUCKET_NAME` | if `STORAGE_BACKEND=r2` | — | The private bucket created below. |
+| `R2_ACCESS_KEY_ID` | if `STORAGE_BACKEND=r2` | — | R2 API token access key. |
+| `R2_SECRET_ACCESS_KEY` | if `STORAGE_BACKEND=r2` | — | R2 API token secret. |
+
+## Setting up the R2 bucket
+
+1. In the Cloudflare dashboard, go to **R2 Object Storage** → **Create
+   bucket**. Name it something like `qa-again-evidence`. Location: Automatic.
+2. Leave the bucket **private** — do not enable public access or attach a
+   custom domain to it. This app never links directly to R2; every
+   download goes through the authenticated backend route, which either
+   streams bytes or issues a short-lived presigned URL after its own
+   authorization check (ADR-0002).
+3. Storage class: **Standard** (the default). Do not select Infrequent
+   Access — this app's `R2EvidenceStorage` always writes with
+   `StorageClass=STANDARD` regardless, but the bucket-level default
+   should match so any tooling that inspects the bucket isn't surprised.
+4. Go to **R2** → **Manage API tokens** → **Create API token**. Scope it
+   to **Object Read & Write**, restricted to the one bucket created
+   above (not "all buckets"). Copy the Access Key ID and Secret Access
+   Key immediately — the secret is shown once.
+5. The R2 Account ID is shown on the main R2 dashboard page (also visible
+   in any bucket's **S3 API** connection details panel).
+
+## Setting the secrets on Fly
+
+```bash
+fly secrets set \
+  STORAGE_BACKEND=r2 \
+  R2_ACCOUNT_ID=<account-id> \
+  R2_BUCKET_NAME=qa-again-evidence \
+  R2_ACCESS_KEY_ID=<access-key-id> \
+  R2_SECRET_ACCESS_KEY=<secret-access-key> \
+  --app qa-again-backend
+```
+
+(Alongside the existing `JWT_SECRET_KEY`, `ADMIN_EMAIL`,
+`ADMIN_PASSWORD`, `ALLOWED_ORIGINS`, `COOKIE_SECURE` secrets from the
+rebuild prompt's original deploy setup.)
+
+## Local development
+
+Leave `STORAGE_BACKEND` unset (or `filesystem`) — evidence is stored
+under `backend/data/evidence/` exactly as before, zero configuration
+required, matching every other local-dev default in this app. Point it
+at a real (or moto-mocked, for testing) R2 bucket only when you
+specifically need to exercise the R2 path locally.
+
+### Morning quick start (Windows)
+
+Two equivalent one-shot launchers at the repo root — pick whichever
+shell you have open. Both: install `backend/.venv`/`frontend/node_modules`
+only if missing (never reinstall on a normal day), start uvicorn and
+Vite each in their own window, print the local URLs, never print the
+admin password to the console beyond what uvicorn's own bootstrap log
+already does, and never touch `backend/data/` (your existing local
+projects/evidence are untouched).
+
+```
+start.bat      REM cmd.exe / double-click from Explorer
+start.ps1      REM PowerShell: .\start.ps1
+```
+
+Then open `http://localhost:5173/login` (both scripts do this for you
+after a short delay). Use `http://localhost:5173`, not
+`127.0.0.1:5173` — the backend's default `ALLOWED_ORIGINS`/CSRF check
+only accepts the `localhost` origin (see `main.py::_origin_is_allowed`).
+
+Neither script sets `ADMIN_EMAIL`/`ADMIN_PASSWORD`. On first run against
+an empty local database, watch the backend window: it prints a
+one-time, randomly generated admin email/password (`seed.py`'s
+`seed_bootstrap_admin`) — log in with those, then change the password.
+To use your own known credentials instead, set `ADMIN_EMAIL` and
+`ADMIN_PASSWORD` as real environment variables in your own shell before
+running the script — **never** hardcode credentials into `start.bat`/
+`start.ps1` or any other tracked file; they only take effect while the
+user database is completely empty.
+
+If a required tool (`python`, `npm`) isn't on `PATH`, the script fails
+immediately with that specific error rather than continuing partway —
+install the missing tool and re-run.
+
+## R2 staging smoke test — required before first production release
+
+`tests/test_r2_storage.py` (moto-mocked) proves `R2EvidenceStorage`'s
+boto3 calls are wired up correctly against *an* S3-compatible API. It
+does not prove the real endpoint, real credentials, or real bucket
+permissions work — only a live run against real R2 can. Run this once
+against the staging bucket before the first production release, and
+again after any credential/bucket change:
+
+```bash
+cd backend
+R2_ACCOUNT_ID=... R2_BUCKET_NAME=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... \
+  ./.venv/Scripts/python scripts/r2_staging_smoke_test.py
+```
+
+It exercises, against the real bucket: `put` → `head`(exists) → `get`
+(byte-for-byte + checksum roundtrip) → an actual HTTP fetch of a
+presigned URL (proving real endpoint/signing, not just that a URL
+string was generated, and that the `Content-Disposition` filename
+override applies) → `delete` (cleanup). Exits non-zero naming the
+specific failed step. **This script has not been run in this
+environment** — no real Cloudflare credentials are available here; it
+must be run by whoever holds the staging R2 credentials before relying
+on this in production.
+
+## Verifying the R2 path after deploy (quick manual check)
+
+```bash
+curl -b cookies.txt -X POST https://api.qaagain.<yourdomain>/api/<slug>/cycles/<id>/results/<id>/evidence \
+  -F "file=@screenshot.png"
+```
+
+A successful response with a real `id`/`original_sha256` confirms R2
+connectivity, credentials, and bucket permissions are all correct. If
+`STORAGE_BACKEND=r2` but any of the four `R2_*` variables is missing,
+the backend returns a `500` naming the specific missing variable
+(`app/storage/__init__.py::_required_env`) rather than a generic boto3
+connection error — check that first.
+
+## Rollback
+
+**Backend (Fly.io)**:
+
+```bash
+fly releases --app qa-again-backend        # find the last known-good release
+fly deploy --image <previous-release-image> --app qa-again-backend
+```
+
+or, simpler for a recent bad deploy: `fly releases rollback` (rolls back
+to the immediately prior release). Fly keeps the persistent volume
+(SQLite files) untouched across a rollback — a code rollback does not by
+itself undo a schema/data change. If the bad release included a DB
+schema patch (`MASTER_COLUMN_PATCHES`/`PROJECT_COLUMN_PATCHES` in
+`database.py`), rolling back the *code* does not remove the
+already-applied *column* — this app's additive-only column-patch
+discipline (never remove/rename existing columns) means an old code
+version reading a DB with a newer column is safe (it just ignores the
+extra column), so this is not usually a blocker. If a rollback is needed
+because of *data* corruption, use `docs/BACKUP_RESTORE.md`'s restore
+procedure instead — a code rollback and a data restore are separate
+concerns, don't conflate them.
+
+**Frontend (Cloudflare Pages)**: Pages keeps every prior deployment —
+use the dashboard's **Deployments** tab, find the last known-good build,
+and **Rollback to this deployment**. No data implications (the frontend
+is stateless static assets).
+
+**Before rolling back either side**, check whether the bad deploy wrote
+any data in a new shape that the *old* code can't read — this app's
+additive-only schema discipline is specifically designed to make that
+not happen, but any deviation from that discipline (a column
+rename/removal) would need a manual data-compatibility check before
+rollback, not just an automatic assumption that rollback is safe.
+
+## Secrets summary (never committed)
+
+| Secret | Where it's set | Rotation procedure |
+|---|---|---|
+| `JWT_SECRET_KEY` | `fly secrets set` | Rotating invalidates every existing session (all users logged out) — acceptable for a planned rotation, not to be done casually. |
+| `ADMIN_PASSWORD` | `fly secrets set` (first boot only — only read if the `users` table is empty) | Change via the app's own change-password flow after first login, not by re-setting this secret (it has no effect after the bootstrap admin already exists). |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | `fly secrets set` | See `docs/EVIDENCE_STORAGE_LIFECYCLE.md`'s "R2 credential rotation" procedure — verify-then-revoke, never revoke-then-verify. |
+| Runner tokens (HYB-0) | Minted via `POST /api/runner-tokens`, not an env var | Revoke by setting `RunnerToken.revoked = True` directly (no revoke endpoint built yet — HYB-0 is a spike, not a production feature). |

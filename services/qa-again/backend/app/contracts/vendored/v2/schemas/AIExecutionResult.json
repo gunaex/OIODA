@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v2/AIExecutionResult.json",
+  "title": "AIExecutionResult",
+  "description": "Result of an AI capability execution from Local AI Control Center. Includes routing provenance and usage metadata. NO reasoning_content, NO chain-of-thought, NO raw provider secrets.",
+  "type": "object",
+  "version": "2.0.0",
+  "required": [
+    "requestId",
+    "correlationId",
+    "status",
+    "providerUsed",
+    "modelUsed",
+    "completedAt"
+  ],
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "Matches the AIExecutionRequest.requestId."
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Correlation ID linking to the business/delivery flow."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["COMPLETED", "PARTIAL", "FAILED", "BLOCKED_BY_AIRLOCK", "BLOCKED_BY_POLICY", "TIMED_OUT"],
+      "description": "Execution status."
+    },
+    "outputRef": {
+      "type": "string",
+      "description": "Reference to the output data (URI or system-internal reference)."
+    },
+    "outputSummary": {
+      "type": "string",
+      "description": "Brief summary of the AI output (NOT the full reasoning chain)."
+    },
+    "providerUsed": {
+      "type": "string",
+      "description": "Provider that executed the request (e.g., ollama, openai, anthropic, gemini)."
+    },
+    "modelUsed": {
+      "type": "string",
+      "description": "Specific model that executed the request (e.g., qwen2.5-coder:7b, gpt-4o)."
+    },
+    "routingProvenance": {
+      "type": "object",
+      "description": "How the provider/model was selected.",
+      "properties": {
+        "requestedCapability": { "type": "string" },
+        "routingPolicy": { "type": "string", "enum": ["LOCAL_ONLY", "LOCAL_FIRST", "COST_OPTIMIZED", "LATENCY_OPTIMIZED", "MANUAL"] },
+        "fallbackAttempted": { "type": "boolean" },
+        "fallbackProvider": { "type": "string" },
+        "fallbackModel": { "type": "string" }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "description": "Usage metadata.",
+      "properties": {
+        "promptTokens": { "type": "integer" },
+        "completionTokens": { "type": "integer" },
+        "totalTokens": { "type": "integer" },
+        "durationMs": { "type": "integer" },
+        "costCents": { "type": "integer" }
+      }
+    },
+    "policyResult": {
+      "type": "object",
+      "description": "AIRLOCK/policy evaluation result.",
+      "properties": {
+        "airlockDecision": { "type": "string", "enum": ["AUTO", "ASK", "BLOCK"] },
+        "toolsInvoked": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "permissionsUsed": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "evidenceRef": {
+      "type": "string",
+      "description": "Reference to the full AI execution trace/evidence."
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when execution completed."
+    }
+  }
+}

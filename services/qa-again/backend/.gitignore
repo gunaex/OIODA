@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+data/master.db
+data/projects/*.db
+data/projects/*/
+.env
+backups/
+tests/_tmp_data/
+.pytest_cache/

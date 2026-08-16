@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://again-ecosystem/contracts/v2/EvidenceReference.json",
+  "title": "EvidenceReference",
+  "description": "Lightweight reference to evidence owned by a Specialist OS. The authoritative evidence remains in the owning system. Do NOT create a shared evidence database.",
+  "type": "object",
+  "version": "2.0.0",
+  "required": [
+    "evidenceId",
+    "evidenceType",
+    "ownerSystem",
+    "reference"
+  ],
+  "properties": {
+    "evidenceId": {
+      "type": "string",
+      "description": "Unique identifier for this evidence reference."
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Correlation ID linking to the business/delivery flow."
+    },
+    "evidenceType": {
+      "type": "string",
+      "enum": [
+        "PLAN",
+        "PLAN_REVIEW",
+        "TEST_RESULTS",
+        "VERIFIER_REPORT",
+        "BUILD_LOG",
+        "DEPLOYMENT_LOG",
+        "VALIDATION_REPORT",
+        "QA_TEST_RESULTS",
+        "DEFECT_REGISTER",
+        "ACCEPTANCE_CHECKLIST",
+        "PROJECT_STATUS",
+        "BLOCKER_REPORT",
+        "ARCHITECTURE_DECISION",
+        "INFRA_PROVISION_LOG",
+        "INFRA_VALIDATION",
+        "AI_EXECUTION_TRACE",
+        "AIRLOCK_LOG",
+        "ENTITLEMENT_EVALUATION",
+        "AUDIT_LOG",
+        "BUSINESS_ACCEPTANCE"
+      ],
+      "description": "Type of evidence being referenced."
+    },
+    "ownerSystem": {
+      "type": "string",
+      "enum": [
+        "conductor-main",
+        "pm-again",
+        "idea-to-code",
+        "infrastructure-again",
+        "qa-again",
+        "account-again",
+        "local-ai-control-center"
+      ],
+      "description": "Specialist OS that owns the authoritative evidence."
+    },
+    "reference": {
+      "type": "string",
+      "description": "System-internal URI or identifier for retrieving the evidence (e.g., ic://evidences/test-run-abc123)."
+    },
+    "digest": {
+      "type": "object",
+      "description": "Content digest for integrity verification of the referenced evidence.",
+      "properties": {
+        "algorithm": { "type": "string", "enum": ["SHA-256"] },
+        "value": { "type": "string" }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "Brief human-readable summary of the evidence."
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the evidence was created."
+    }
+  }
+}

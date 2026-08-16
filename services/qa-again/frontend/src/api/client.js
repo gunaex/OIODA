@@ -1,0 +1,201 @@
+import axios from 'axios'
+
+// Local dev: VITE_API_BASE_URL is unset, so this resolves to '/api' — the
+// Vite dev server proxy (see vite.config.js) handles it. Production
+// (Cloudflare Pages): set VITE_API_BASE_URL to the deployed backend's
+// origin (e.g. https://api.qaagain.kanphong.com) so the built frontend
+// calls it directly — a cross-origin call, which is why the backend's
+// ALLOWED_ORIGINS needs to include the frontend's origin.
+const API_BASE = `${import.meta.env.VITE_API_BASE_URL || ''}/api`
+
+// withCredentials: true is required so the httpOnly auth cookies the
+// backend sets on login are actually sent back on every request — without
+// it every request is anonymous and gets 401.
+const api = axios.create({ baseURL: API_BASE, withCredentials: true })
+
+// Registered by AuthProvider so a 401 from any call (session expired,
+// cookie cleared) can clear the in-memory user and bounce to /login.
+// Login failures (wrong password) and the initial /auth/me probe are
+// expected to 401 sometimes and must not trigger this.
+let onUnauthorized = null
+export const setUnauthorizedHandler = (fn) => {
+  onUnauthorized = fn
+}
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const url = error.config?.url || ''
+    if (error.response?.status === 401 && !url.includes('/auth/login') && !url.includes('/auth/me')) {
+      onUnauthorized?.()
+    }
+    return Promise.reject(error)
+  },
+)
+
+// Auth
+export const login = (email, password) => api.post('/auth/login', { email, password }).then((r) => r.data)
+export const logout = () => api.post('/auth/logout').then((r) => r.data)
+export const getMe = () => api.get('/auth/me').then((r) => r.data)
+export const changePassword = (currentPassword, newPassword) =>
+  api
+    .post('/auth/change-password', { current_password: currentPassword, new_password: newPassword })
+    .then((r) => r.data)
+
+// Projects
+export const listProjects = (includeArchived = false) =>
+  api.get('/projects', { params: { include_archived: includeArchived } }).then((r) => r.data)
+export const createProject = (name, externalProjectUrl = null) =>
+  api.post('/projects', { name, external_project_url: externalProjectUrl }).then((r) => r.data)
+export const getProject = (slug) => api.get(`/projects/${slug}`).then((r) => r.data)
+export const archiveProject = (slug, archived, password) =>
+  api.put(`/projects/${slug}/archive`, { archived, password }).then((r) => r.data)
+export const deleteProject = (slug, password) =>
+  api.delete(`/projects/${slug}`, { data: { password } }).then((r) => r.data)
+
+// Test suites
+export const listSuites = (slug) => api.get(`/${slug}/suites`).then((r) => r.data)
+export const createSuite = (slug, payload) => api.post(`/${slug}/suites`, payload).then((r) => r.data)
+export const getSuite = (slug, suiteId) => api.get(`/${slug}/suites/${suiteId}`).then((r) => r.data)
+export const updateSuite = (slug, suiteId, payload) =>
+  api.put(`/${slug}/suites/${suiteId}`, payload).then((r) => r.data)
+export const deleteSuite = (slug, suiteId) => api.delete(`/${slug}/suites/${suiteId}`).then((r) => r.data)
+
+// Script revisions (nested under a suite)
+export const listRevisions = (slug, suiteId) => api.get(`/${slug}/suites/${suiteId}/revisions`).then((r) => r.data)
+export const createRevision = (slug, suiteId, payload) =>
+  api.post(`/${slug}/suites/${suiteId}/revisions`, payload).then((r) => r.data)
+export const getRevision = (slug, suiteId, revisionId) =>
+  api.get(`/${slug}/suites/${suiteId}/revisions/${revisionId}`).then((r) => r.data)
+export const publishRevision = (slug, suiteId, revisionId) =>
+  api.post(`/${slug}/suites/${suiteId}/revisions/${revisionId}/publish`).then((r) => r.data)
+export const cloneRevision = (slug, suiteId, revisionId, payload) =>
+  api.post(`/${slug}/suites/${suiteId}/revisions/${revisionId}/clone`, payload).then((r) => r.data)
+
+// Test cases (nested under a revision)
+export const listCases = (slug, revisionId) => api.get(`/${slug}/revisions/${revisionId}/cases`).then((r) => r.data)
+export const createCase = (slug, revisionId, payload) =>
+  api.post(`/${slug}/revisions/${revisionId}/cases`, payload).then((r) => r.data)
+export const updateCase = (slug, revisionId, caseId, payload) =>
+  api.put(`/${slug}/revisions/${revisionId}/cases/${caseId}`, payload).then((r) => r.data)
+export const deleteCase = (slug, revisionId, caseId) =>
+  api.delete(`/${slug}/revisions/${revisionId}/cases/${caseId}`).then((r) => r.data)
+export const caseExportUrl = (slug, revisionId) => `${API_BASE}/${slug}/revisions/${revisionId}/cases/export`
+export const caseImportTemplateUrl = (slug, revisionId) =>
+  `${API_BASE}/${slug}/revisions/${revisionId}/cases/import-template`
+export const importCasesExcel = (slug, revisionId, file) => {
+  const form = new FormData()
+  form.append('file', file)
+  return api
+    .post(`/${slug}/revisions/${revisionId}/cases/import-excel`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data)
+}
+export const importCasesCsv = (slug, revisionId, file) => {
+  const form = new FormData()
+  form.append('file', file)
+  return api
+    .post(`/${slug}/revisions/${revisionId}/cases/import-csv`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data)
+}
+
+// Test cycles
+export const listCycles = (slug) => api.get(`/${slug}/cycles`).then((r) => r.data)
+export const createCycle = (slug, payload) => api.post(`/${slug}/cycles`, payload).then((r) => r.data)
+export const getCycle = (slug, cycleId) => api.get(`/${slug}/cycles/${cycleId}`).then((r) => r.data)
+export const updateCycle = (slug, cycleId, payload) => api.put(`/${slug}/cycles/${cycleId}`, payload).then((r) => r.data)
+export const lockCycle = (slug, cycleId) => api.post(`/${slug}/cycles/${cycleId}/lock`).then((r) => r.data)
+export const reopenCycle = (slug, cycleId, reason) =>
+  api.post(`/${slug}/cycles/${cycleId}/reopen`, { reason }).then((r) => r.data)
+
+// Cycle test results (execution)
+export const listCycleResults = (slug, cycleId) => api.get(`/${slug}/cycles/${cycleId}/results`).then((r) => r.data)
+export const getCycleResult = (slug, cycleId, resultId) =>
+  api.get(`/${slug}/cycles/${cycleId}/results/${resultId}`).then((r) => r.data)
+export const updateCycleResult = (slug, cycleId, resultId, payload) =>
+  api.put(`/${slug}/cycles/${cycleId}/results/${resultId}`, payload).then((r) => r.data)
+export const reviewCycleResult = (slug, cycleId, resultId, payload) =>
+  api.post(`/${slug}/cycles/${cycleId}/results/${resultId}/review`, payload).then((r) => r.data)
+export const getCycleResultHistory = (slug, cycleId, resultId) =>
+  api.get(`/${slug}/cycles/${cycleId}/results/${resultId}/history`).then((r) => r.data)
+
+// Evidence
+export const listEvidence = (slug, cycleId, resultId) =>
+  api.get(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence`).then((r) => r.data)
+export const uploadEvidence = (slug, cycleId, resultId, blob, { evidenceType, caption, filename }) => {
+  const form = new FormData()
+  form.append('file', blob, filename || 'evidence.png')
+  form.append('evidence_type', evidenceType)
+  if (caption) form.append('caption', caption)
+  return api
+    .post(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data)
+}
+export const evidenceOriginalUrl = (slug, cycleId, resultId, evidenceId) =>
+  `${API_BASE}/${slug}/cycles/${cycleId}/results/${resultId}/evidence/${evidenceId}/original`
+export const archiveEvidence = (slug, cycleId, resultId, evidenceId) =>
+  api.put(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence/${evidenceId}/archive`).then((r) => r.data)
+
+// Annotations
+export const listAnnotations = (slug, cycleId, resultId, evidenceId) =>
+  api.get(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence/${evidenceId}/annotations`).then((r) => r.data)
+export const createAnnotation = (slug, cycleId, resultId, evidenceId, payload) =>
+  api
+    .post(`/${slug}/cycles/${cycleId}/results/${resultId}/evidence/${evidenceId}/annotations`, payload)
+    .then((r) => r.data)
+
+// Dashboard
+export const getDashboard = (slug) => api.get(`/${slug}/dashboard`).then((r) => r.data)
+
+// Reports
+export const getExecutionSummary = (slug, cycleId) =>
+  api.get(`/${slug}/reports/execution-summary`, { params: { cycle_id: cycleId } }).then((r) => r.data)
+export const getDetailedResults = (slug, cycleId, filters = {}) =>
+  api.get(`/${slug}/reports/detailed-results`, { params: { cycle_id: cycleId, ...filters } }).then((r) => r.data)
+export const getNgDefects = (slug, cycleId) =>
+  api.get(`/${slug}/reports/ng-defects`, { params: { cycle_id: cycleId } }).then((r) => r.data)
+export const getEvidenceCompletenessReport = (slug, cycleId) =>
+  api.get(`/${slug}/reports/evidence-completeness`, { params: { cycle_id: cycleId } }).then((r) => r.data)
+export const getRevisionComparison = (slug, revisionAId, revisionBId) =>
+  api.get(`/${slug}/reports/revision-comparison`, { params: { revision_a_id: revisionAId, revision_b_id: revisionBId } }).then((r) => r.data)
+export const getCycleComparison = (slug, cycleAId, cycleBId) =>
+  api.get(`/${slug}/reports/cycle-comparison`, { params: { cycle_a_id: cycleAId, cycle_b_id: cycleBId } }).then((r) => r.data)
+export const getTesterProgress = (slug, cycleId) =>
+  api.get(`/${slug}/reports/tester-progress`, { params: { cycle_id: cycleId } }).then((r) => r.data)
+export const getGoLiveReadinessReport = (slug, cycleId) =>
+  api.get(`/${slug}/reports/go-live-readiness`, { params: { cycle_id: cycleId } }).then((r) => r.data)
+export const getSignoffSummary = (slug, cycleId) =>
+  api.get(`/${slug}/reports/signoff-summary`, { params: { cycle_id: cycleId } }).then((r) => r.data)
+export const getStorageUsageReport = (slug) => api.get(`/${slug}/reports/storage-usage`).then((r) => r.data)
+
+// Defects
+export const listDefects = (slug, cycleId) => api.get(`/${slug}/defects`, { params: { cycle_id: cycleId } }).then((r) => r.data)
+export const createDefect = (slug, payload) => api.post(`/${slug}/defects`, payload).then((r) => r.data)
+export const updateDefect = (slug, defectId, payload) => api.put(`/${slug}/defects/${defectId}`, payload).then((r) => r.data)
+
+// Sign-offs
+export const listSignoffs = (slug, cycleId) => api.get(`/${slug}/cycles/${cycleId}/signoffs`).then((r) => r.data)
+export const createSignoff = (slug, cycleId, payload) => api.post(`/${slug}/cycles/${cycleId}/signoffs`, payload).then((r) => r.data)
+
+// Ecosystem (QA-E8) — the canonical QAResult only exists for a cycle that
+// was created via a Conductor QARequest; getQaResult rejects (404) for a
+// purely local/manual cycle, which callers treat as "not ecosystem-
+// originated" rather than an error to surface.
+export const getQaResult = (slug, cycleId) => api.get(`/${slug}/cycles/${cycleId}/qa-result`).then((r) => r.data)
+
+// Hybrid runner runs (QA-E7/E8) — automation provenance for a test result.
+export const listHybridRuns = (slug, params = {}) => api.get(`/${slug}/hybrid/runs`, { params }).then((r) => r.data)
+export const getHybridRun = (slug, runId) => api.get(`/${slug}/hybrid/runs/${runId}`).then((r) => r.data)
+export const hybridRunEvidenceUrl = (slug, runId, evidenceId) =>
+  `${API_BASE}/${slug}/hybrid/runs/${runId}/evidence/${evidenceId}`
+
+// Export
+export const exportExcelUrl = (slug, cycleId) => `${API_BASE}/${slug}/cycles/${cycleId}/export/excel`
+export const exportZipUrl = (slug, cycleId) => `${API_BASE}/${slug}/cycles/${cycleId}/export/zip`
+
+export default api
