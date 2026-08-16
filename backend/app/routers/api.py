@@ -1096,6 +1096,15 @@ def export_design_package_v2(baseline_id: str, db: Session = Depends(db_session)
     )
 
 
+@router.get("/baselines/{baseline_id}/package-v4")
+def export_design_package_v4(baseline_id: str, db: Session = Depends(db_session)):
+    content = svc.export_design_package_v4(db, baseline_id)
+    return Response(
+        content=content, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="baseline-{baseline_id}-v4.zip"'},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Ecosystem event + outbox
 # ---------------------------------------------------------------------------

@@ -657,3 +657,49 @@ def test_health_metrics_remain_public_in_account_mode(client, monkeypatch):
     monkeypatch.setattr(deps, "client", AccountAgainClient("http://aa", transport=_echo_aa_transport()))
     assert client.get("/api/health").status_code == 200
     assert client.get("/api/metrics").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# P5-G PNG rasterization + design package V4
+# ---------------------------------------------------------------------------
+
+
+def test_erd_png_and_flow_png_rasterize(db, project):
+    svc.create_schema(db, project_id=project.id, name="core", semantic_id="sch_core")
+    schema = db.execute(select(m.DatabaseSchema).where(
+        m.DatabaseSchema.project_id == project.id)).scalars().one()
+    svc.create_table(db, schema_id=schema.id, name="orders", semantic_id="tbl_orders")
+    dr = svc.create_artifact(db, project_id=project.id, type=m.ArtifactType.DR, title="DR")
+    rev = db.execute(select(m.ArtifactRevision).where(
+        m.ArtifactRevision.artifact_id == dr.id)).scalars().one()
+    svc.submit_for_review(db, rev.id)
+    svc.confirm_revision(db, rev.id)
+
+    png = svc.export_revision(db, rev.id, "png")[0]
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    flow_png = svc.export_revision(db, rev.id, "flow-png")[0]
+    assert flow_png[:8] == b"\x89PNG\r\n\x1a\n"
+    arch_png = svc.export_revision(db, rev.id, "architecture-png")[0]
+    assert arch_png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_design_package_v4_has_directory_structure(db, project):
+    svc.create_schema(db, project_id=project.id, name="core", semantic_id="sch_core")
+    schema = db.execute(select(m.DatabaseSchema).where(
+        m.DatabaseSchema.project_id == project.id)).scalars().one()
+    svc.create_table(db, schema_id=schema.id, name="orders", semantic_id="tbl_orders")
+    dr = svc.create_artifact(db, project_id=project.id, type=m.ArtifactType.DR, title="DR")
+    rev = db.execute(select(m.ArtifactRevision).where(
+        m.ArtifactRevision.artifact_id == dr.id)).scalars().one()
+    svc.submit_for_review(db, rev.id)
+    svc.confirm_revision(db, rev.id)
+    baseline = svc.create_baseline(db, project_id=project.id, name="v1", artifact_revision_ids=[rev.id])
+
+    import zipfile as _z, io as _io2
+    z = _z.ZipFile(_io2.BytesIO(svc.export_design_package_v4(db, baseline.id)))
+    names = z.namelist()
+    assert "manifest.json" in names
+    assert any(n.startswith("database/") and n.endswith(".erd.png") for n in names)
+    assert any(n.startswith("database/") and n.endswith(".erd.svg") for n in names)
+    assert "traceability/traceability.xlsx" in names
+    assert any(n.startswith("documents/") and n.endswith(".pdf") for n in names)

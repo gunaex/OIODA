@@ -3634,6 +3634,15 @@ def export_revision(db: Session, revision_id: str, format: str) -> tuple[bytes, 
     if format == "architecture-svg":
         return _render_arch_svg(snapshot), "image/svg+xml", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}-arch.svg"
 
+    if format == "png":
+        return _render_erd_png(snapshot), "image/png", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}.png"
+
+    if format == "flow-png":
+        return _render_flow_png(snapshot), "image/png", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}-flow.png"
+
+    if format == "architecture-png":
+        return _render_arch_png(snapshot), "image/png", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}-arch.png"
+
     raise DomainError(f"Unknown export format '{format}'", status_code=422)
 
 
@@ -3776,6 +3785,46 @@ def _render_arch_svg(snapshot: dict) -> bytes:
         y += 12
     parts.append("</svg>")
     return "".join(parts).encode()
+
+
+def _svg_to_png(svg_bytes: bytes) -> bytes:
+    """Rasterize SVG to PNG with CairoSVG (mature renderer; no hand-rolled
+    rasterization). Requires the cairo native library at runtime; on macOS
+    Homebrew cairo is resolved via an explicit find_library hint."""
+    # Homebrew cairo lives outside ctypes' default search path on macOS.
+    _cairo = "/opt/homebrew/lib/libcairo.2.dylib"
+    if os.path.exists(_cairo):
+        import ctypes.util
+        _orig = ctypes.util.find_library
+        if getattr(ctypes.util, "_da_cairo_patched", None) is None:
+            def _find(name: str) -> str | None:
+                if "cairo" in name:
+                    return _cairo
+                return _orig(name)
+            ctypes.util.find_library = _find
+            ctypes.util._da_cairo_patched = True
+    try:
+        import cairosvg
+    except Exception as exc:  # noqa: BLE001
+        raise DomainError(
+            f"PNG export unavailable: cairosvg not installed ({exc})", status_code=501
+        ) from exc
+    try:
+        return cairosvg.svg2png(bytestring=svg_bytes)
+    except Exception as exc:  # noqa: BLE001
+        raise DomainError(f"PNG rasterization failed: {exc}", status_code=501) from exc
+
+
+def _render_erd_png(snapshot: dict) -> bytes:
+    return _svg_to_png(_render_erd_svg(snapshot))
+
+
+def _render_flow_png(snapshot: dict) -> bytes:
+    return _svg_to_png(_render_flow_svg(snapshot))
+
+
+def _render_arch_png(snapshot: dict) -> bytes:
+    return _svg_to_png(_render_arch_svg(snapshot))
 
 
 def export_design_package(db: Session, baseline_id: str) -> bytes:
@@ -3990,4 +4039,66 @@ def export_design_package_v2(db: Session, baseline_id: str) -> bytes:
              "directory_structure": ["manifest.json", "documents/", "revisions/",
                                      "api/", "data-dictionary.xlsx", "traceability.xlsx"],
              "revisions": meta_rows}, indent=2, default=str))
+    return buf.getvalue()
+
+
+def export_design_package_v4(db: Session, baseline_id: str) -> bytes:
+    """Design package V4 — clean directory structure, PNG + SVG visuals.
+
+    Only includes what exists for the selected baseline; never mixes baseline
+    context (every artifact is derived from the same frozen bindings).
+    """
+    baseline = get_or_404(db, m.Baseline, baseline_id, "Baseline")
+    guard_project(db, baseline.project_id)
+    bindings = db.execute(
+        select(m.BaselineBinding).where(m.BaselineBinding.baseline_id == baseline_id)
+    ).scalars().all()
+    if not bindings:
+        raise DomainError("Baseline has no bindings")
+
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as z:
+        meta_rows = []
+        dd_rows = []
+        trace_rows = _traceability_rows(db, baseline.project_id)
+        for b in bindings:
+            rev = db.get(m.ArtifactRevision, b.artifact_revision_id)
+            if rev is None:
+                continue
+            meta = export_metadata(db, rev.id)
+            meta_rows.append(meta)
+            snapshot = rev.snapshot or {}
+            design = snapshot.get("technical_design") or {}
+            base = _safe_filename(meta["artifact_title"])
+            dd_rows.extend(_data_dictionary_from_snapshot(design))
+            json_bytes, _, _ = export_revision(db, rev.id, "json")
+            z.writestr(f"revisions/{rev.revision_number}-{rev.artifact.type.value}.json", json_bytes)
+            if rev.artifact.type in (m.ArtifactType.UR, m.ArtifactType.DR):
+                pdf, _, _ = export_revision(db, rev.id, "pdf")
+                docx, _, _ = export_revision_v2(db, rev.id, "docx")
+                z.writestr(f"documents/{base}-r{rev.revision_number}.pdf", pdf)
+                z.writestr(f"documents/{base}-r{rev.revision_number}.docx", docx)
+            if design.get("db_schemas"):
+                z.writestr(f"database/{base}.erd.svg", _render_erd_svg(snapshot))
+                z.writestr(f"database/{base}.erd.png", _render_erd_png(snapshot))
+            if design.get("flows"):
+                z.writestr(f"flow/{base}.flow.svg", _render_flow_svg(snapshot))
+                z.writestr(f"flow/{base}.flow.png", _render_flow_png(snapshot))
+            if design.get("architecture"):
+                z.writestr(f"architecture/{base}.arch.svg", _render_arch_svg(snapshot))
+                z.writestr(f"architecture/{base}.arch.png", _render_arch_png(snapshot))
+            if rev.artifact.type == m.ArtifactType.API_DESIGN and design.get("api_endpoints"):
+                z.writestr(f"api/{base}.openapi.json", _json.dumps(export_openapi(db, rev.id), indent=2, default=str))
+        if dd_rows:
+            z.writestr("database/data-dictionary.xlsx", _render_xlsx(
+                export_metadata(db, bindings[0].artifact_revision_id), [], dd_rows, []))
+        z.writestr("traceability/traceability.xlsx", _render_xlsx(
+            export_metadata(db, bindings[0].artifact_revision_id), [], [], trace_rows))
+        z.writestr("manifest.json", _json.dumps({
+            "baseline": baseline.name, "baseline_id": baseline.id,
+            "directory_structure": ["manifest.json", "documents/", "revisions/",
+                                     "database/", "flow/", "api/", "architecture/",
+                                     "traceability/", "changes/", "audit/"],
+            "revisions": meta_rows,
+        }, indent=2, default=str))
     return buf.getvalue()
