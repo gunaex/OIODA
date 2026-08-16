@@ -1,0 +1,39 @@
+# OIDA Gateway / BFF — Fly.io deployment template (R16 Phase 6/17).
+# The gateway routes /api/<service>/* to the bounded services over private
+# Fly networking. It is NOT a business authority.
+app = "oida-gateway"
+primary_region = "sin"
+
+[build]
+  # Built from the OIODA monorepo root; Dockerfile copies the gateway app.
+  dockerfile = "ops/fly/oida-gateway.Dockerfile"
+
+[env]
+  ACCOUNT_AGAIN_URL = "http://oida-account.internal:8011"
+  DOCUMENT_AGAIN_URL = "http://oida-document.internal:8003"
+  CONDUCTOR_AGAIN_URL = "http://oida-conductor.internal:8010"
+  PM_AGAIN_URL = "http://oida-pm.internal:8000"
+  QA_AGAIN_URL = "http://oida-qa.internal:8002"
+  INFRA_AGAIN_URL = "http://oida-infra.internal:18090"
+  AUTH_MODE = "ecosystem"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+[http_service]
+  internal_port = 8080
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "10s"
+    timeout = "2s"
+    grace_period = "5s"
+    method = "GET"
+    path = "/healthz"

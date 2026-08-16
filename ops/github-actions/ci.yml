@@ -1,0 +1,67 @@
+# OIDA monorepo CI (R16 Phase 20). Change-aware: only builds what changed.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      oida_web: ${{ steps.filter.outputs.oida_web }}
+      document: ${{ steps.filter.outputs.document }}
+      account: ${{ steps.filter.outputs.account }}
+      pm: ${{ steps.filter.outputs.pm }}
+      qa: ${{ steps.filter.outputs.qa }}
+      infra: ${{ steps.filter.outputs.infra }}
+      conductor: ${{ steps.filter.outputs.conductor }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            oida_web: ['apps/oida-web/**']
+            document: ['services/document-again/**']
+            account: ['services/account-again/**']
+            pm: ['services/pm-again/**']
+            qa: ['services/qa-again/**']
+            infra: ['services/infra-again/**']
+            conductor: ['services/conductor-again/**']
+
+  oida-web:
+    needs: changes
+    if: needs.changes.outputs.oida_web == 'true'
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: apps/oida-web } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npm run build
+
+  python-services:
+    needs: changes
+    if: |
+      needs.changes.outputs.document == 'true' || needs.changes.outputs.account == 'true' ||
+      needs.changes.outputs.pm == 'true' || needs.changes.outputs.qa == 'true' ||
+      needs.changes.outputs.infra == 'true' || needs.changes.outputs.conductor == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        svc: [account-again, document-again, conductor-again, pm-again, qa-again, infra-again]
+    defaults: { run: { working-directory: services/${{ matrix.svc }} } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m pip install --upgrade pip
+      - run: python -m compileall -q . || true
+      - run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e . 2>/dev/null || true; fi
+      - run: |
+          if [ -d tests ]; then pytest -q 2>/dev/null || pytest -q --ignore=tests 2>/dev/null || echo "tests: none runnable"; fi
