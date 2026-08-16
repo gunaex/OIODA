@@ -7,6 +7,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..account_client import AUTH_MODE, AccountAgainError, client
 from ..db import get_db
+from ..observability import metrics
 from ..tenant import set_current_tenant
 
 # Optional Account Again base URL for resolving display names (e.g. http://localhost:8001)
@@ -84,6 +85,7 @@ async def actor_ctx(
         try:
             info = await run_in_threadpool(client.validate_actor, token, account_id or "", x_tenant_id)
         except AccountAgainError as exc:
+            metrics.inc("auth_denied")
             raise HTTPException(status_code=exc.status_code, detail=str(exc))
         set_current_tenant(info["tenant_id"])
         return ActorContext(id=info["account_id"], name=info["display_name"], tenant_id=info["tenant_id"], source="ACCOUNT_AGAIN")

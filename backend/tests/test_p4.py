@@ -348,3 +348,35 @@ def test_erd_layout_does_not_touch_structured_model(db, project):
     # semantic table/field ids are stable, never derived from layout position
     tbl = db.execute(select(m.DatabaseTable).where(m.DatabaseTable.id == table.id)).scalars().one()
     assert tbl.semantic_id == "tbl_orders"
+
+
+# ---------------------------------------------------------------------------
+# P4-I observability: health / readiness / metrics / correlation
+# ---------------------------------------------------------------------------
+
+
+def test_health_readiness_and_metrics_endpoints(client):
+    h = client.get("/api/health")
+    assert h.status_code == 200 and h.json()["service"] == "document-again"
+    r = client.get("/api/readiness")
+    assert r.status_code == 200 and r.json()["checks"]["database"] == "ok"
+    mresp = client.get("/api/metrics")
+    assert mresp.status_code == 200 and "counters" in mresp.json()
+
+
+def test_request_correlation_id_header(client):
+    r = client.get("/api/health", headers={"X-Request-Id": "req-123"})
+    assert r.headers.get("X-Request-Id") == "req-123"
+
+
+def test_outbox_metrics_count_delivery(db, project):
+    from app.ecosystem_client import EcosystemDeliveryClient
+    from app.observability import metrics
+    svc.emit_event(db, event_type="EXECUTION_REQUESTED", project_id=project.id,
+                   target_services=["pm-again"], correlation_id="corr-m")
+    assert metrics.snapshot().get("outbox_pending", 0) >= 1
+    transport, _c = _delivery_transport()
+    c = EcosystemDeliveryClient("http://aa", client_secret="s", transport=transport)
+    svc.deliver_due_events_http(db, "http://relay/relay/handoffs", client=c)
+    snap = metrics.snapshot()
+    assert snap.get("outbox_delivered", 0) >= 1

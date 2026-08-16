@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from . import models as m
 from .contracts import versioned_payload
 from .models import RevisionStatus
+from .observability import metrics
 from .tenant import current_tenant
 
 
@@ -286,6 +287,7 @@ def confirm_revision(
     except Exception:
         db.rollback()
         raise
+    metrics.inc("confirmation_completed")
     return revision, confirmation
 
 
@@ -2827,6 +2829,7 @@ def emit_event(
     db.flush()
     for ts in (target_services or []):
         db.add(m.OutboxEvent(event_id=event.id, target_service=ts, correlation_id=correlation_id))
+    metrics.inc("outbox_pending", len(target_services or []))
     db.commit()
     return event
 
@@ -2901,6 +2904,8 @@ def deliver_due_events(db: Session, deliver_fn, limit: int = 50) -> dict:
             out.next_attempt_at = m.utcnow() + timedelta(seconds=_backoff_seconds(out.attempt_count))
             failed += 1
     db.commit()
+    metrics.inc("outbox_delivered", delivered)
+    metrics.inc("outbox_failed", failed)
     return {"delivered": delivered, "failed": failed}
 
 
@@ -3118,6 +3123,10 @@ def mark_handoff_status(
         row.delivered_at = m.utcnow()
     db.commit()
     db.refresh(row)
+    if status == "SENT":
+        metrics.inc("handoff_sent")
+    elif status == "ACKNOWLEDGED":
+        metrics.inc("handoff_acknowledged")
     return _execution_handoff_dict(row) if kind == "execution" else _qa_handoff_dict(row)
 
 
@@ -3599,6 +3608,7 @@ def export_revision_v2(db: Session, revision_id: str, format: str) -> tuple[byte
         if not dd:
             dd = _data_dictionary_from_snapshot({"db_schemas": snapshot.get("database", {}) or {}})
         base = f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}"
+        metrics.inc("export_generated")
         if format == "xlsx":
             trace = _traceability_rows(db, revision.artifact.project_id)
             return _render_xlsx(meta, sections, dd, trace), \
