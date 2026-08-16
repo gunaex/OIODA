@@ -164,3 +164,67 @@ def test_actor_dependency_fails_closed_in_account_mode(client, db, monkeypatch):
         headers={"X-Actor": "impostor", "Authorization": "Bearer tok", "X-Account-Id": "acc-1"},
     )
     assert r2.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# P4-B tenant isolation hardening
+# ---------------------------------------------------------------------------
+
+
+def test_cross_tenant_read_blocked(client, db):
+    pa = client.post("/api/projects", json={"key": "TA", "name": "Tenant A"}, headers={"X-Tenant-Id": "t-a"}).json()
+    pb = client.post("/api/projects", json={"key": "TB", "name": "Tenant B"}, headers={"X-Tenant-Id": "t-b"}).json()
+    # Tenant A can read its own project
+    assert client.get(f"/api/projects/{pa['id']}", headers={"X-Tenant-Id": "t-a"}).status_code == 200
+    # Tenant A cannot read Tenant B's project
+    r = client.get(f"/api/projects/{pb['id']}", headers={"X-Tenant-Id": "t-a"})
+    assert r.status_code == 403
+    # list_projects filters by tenant
+    listed = client.get("/api/projects", headers={"X-Tenant-Id": "t-a"}).json()
+    assert [p["id"] for p in listed] == [pa["id"]]
+
+
+def test_cross_tenant_write_blocked(client, db):
+    pb = client.post("/api/projects", json={"key": "TB2", "name": "Tenant B"}, headers={"X-Tenant-Id": "t-b"}).json()
+    r = client.post("/api/artifacts", json={"project_id": pb["id"], "type": "UR", "title": "stolen"},
+                    headers={"X-Tenant-Id": "t-a"})
+    assert r.status_code == 403
+
+
+def test_cross_tenant_export_blocked(client, db):
+    pb = client.post("/api/projects", json={"key": "TB3", "name": "Tenant B"}, headers={"X-Tenant-Id": "t-b"}).json()
+    art = client.post("/api/artifacts", json={"project_id": pb["id"], "type": "UR", "title": "UR"},
+                      headers={"X-Tenant-Id": "t-b"}).json()
+    rev = art["revisions"][0]
+    client.post(f"/api/revisions/{rev['id']}/submit-for-review", headers={"X-Tenant-Id": "t-b"})
+    client.post(f"/api/revisions/{rev['id']}/confirm", json={}, headers={"X-Tenant-Id": "t-b"})
+    base = client.post("/api/baselines", json={"project_id": pb["id"], "name": "B1",
+                                               "artifact_revision_ids": [rev["id"]]},
+                       headers={"X-Tenant-Id": "t-b"}).json()
+    r = client.get(f"/api/baselines/{base['id']}/package", headers={"X-Tenant-Id": "t-a"})
+    assert r.status_code == 403
+
+
+def test_cross_tenant_trace_blocked(client, db):
+    pb = client.post("/api/projects", json={"key": "TB4", "name": "Tenant B"}, headers={"X-Tenant-Id": "t-b"}).json()
+    r = client.post("/api/traces", json={"project_id": pb["id"], "source_semantic_id": "REQ-0001",
+                                         "target_semantic_id": "REQ-0002", "relation_type": "DERIVED_FROM"},
+                    headers={"X-Tenant-Id": "t-a"})
+    assert r.status_code == 403
+
+
+def test_cross_tenant_reference_blocked(client, db):
+    pb = client.post("/api/projects", json={"key": "TB5", "name": "Tenant B"}, headers={"X-Tenant-Id": "t-b"}).json()
+    r = client.post("/api/external-references", json={"project_id": pb["id"], "semantic_id": "REQ-0001",
+                                                      "service": "pm-again", "external_id": "PM-1"},
+                    headers={"X-Tenant-Id": "t-a"})
+    assert r.status_code == 403
+
+
+def test_cross_tenant_handoff_read_blocked(client, db):
+    pb = client.post("/api/projects", json={"key": "TB6", "name": "Tenant B"}, headers={"X-Tenant-Id": "t-b"}).json()
+    client.post("/api/handoffs/execution", json={"project_id": pb["id"]}, headers={"X-Tenant-Id": "t-b"})
+    r = client.get(f"/api/projects/{pb['id']}/handoffs/execution", headers={"X-Tenant-Id": "t-a"})
+    assert r.status_code == 403
+    own = client.get(f"/api/projects/{pb['id']}/handoffs/execution", headers={"X-Tenant-Id": "t-b"})
+    assert own.status_code == 200 and len(own.json()) == 1

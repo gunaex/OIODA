@@ -1,11 +1,12 @@
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .routers.api import router
+from .routers.deps import tenant_scope
 from .services import DomainError
 
-app = FastAPI(title="Document Again", version="0.1.0")
+app = FastAPI(title="Document Again", version="0.1.0", dependencies=[Depends(tenant_scope)])
 
 app.add_middleware(
     CORSMiddleware,

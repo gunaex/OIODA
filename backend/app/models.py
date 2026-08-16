@@ -147,6 +147,7 @@ class Project(Base):
     key: Mapped[str] = mapped_column(String(20), unique=True)  # e.g. "DA"
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_by: Mapped[str] = mapped_column(String(100), default="local-user")
 

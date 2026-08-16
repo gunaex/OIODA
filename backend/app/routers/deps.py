@@ -1,14 +1,30 @@
 import os
 from dataclasses import dataclass
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..account_client import AUTH_MODE, AccountAgainError, client
 from ..db import get_db
+from ..tenant import set_current_tenant
 
 # Optional Account Again base URL for resolving display names (e.g. http://localhost:8001)
 ACCOUNT_AGAIN_URL = os.environ.get("ACCOUNT_AGAIN_URL", "").rstrip("/")
+
+
+async def tenant_scope(request: Request) -> None:
+    """Global dependency: establish the request tenant scope.
+
+    In ``AUTH_MODE=local`` the tenant is taken from the ``X-Tenant-Id`` header
+    (deterministic development tenancy). In ``AUTH_MODE=account_again`` the
+    tenant is set by :func:`actor_ctx` on authenticated routes.
+
+    Must be ``async``: a sync dependency would run in a threadpool context
+    copy whose contextvar writes are invisible to the route handler.
+    """
+    if AUTH_MODE == "local":
+        set_current_tenant(request.headers.get("X-Tenant-Id"))
 
 
 @dataclass
@@ -19,7 +35,7 @@ class ActorContext:
     source: str = "LOCAL"
 
 
-def actor(
+async def actor(
     authorization: str | None = Header(default=None),
     x_actor: str | None = Header(default=None),
     x_account_id: str | None = Header(default=None),
@@ -35,13 +51,14 @@ def actor(
     - ``AUTH_MODE=local``: deterministic development actor.
     """
     if AUTH_MODE == "account_again":
-        return actor_ctx(
+        ctx = await actor_ctx(
             authorization, x_actor, x_account_id, x_subject_id, x_tenant_id, x_actor_name
-        ).name
+        )
+        return ctx.name
     return x_actor or "local-user"
 
 
-def actor_ctx(
+async def actor_ctx(
     authorization: str | None = Header(default=None),
     x_actor: str | None = Header(default=None),
     x_account_id: str | None = Header(default=None),
@@ -65,17 +82,20 @@ def actor_ctx(
             token = token[len("Bearer "):].strip()
         account_id = x_account_id or x_subject_id
         try:
-            info = client.validate_actor(token, account_id or "", x_tenant_id)
+            info = await run_in_threadpool(client.validate_actor, token, account_id or "", x_tenant_id)
         except AccountAgainError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        set_current_tenant(info["tenant_id"])
         return ActorContext(id=info["account_id"], name=info["display_name"], tenant_id=info["tenant_id"], source="ACCOUNT_AGAIN")
 
     # local development mode — deterministic, clearly separated
     account_id = x_account_id or x_subject_id
     if account_id:
         name = x_actor_name or x_actor or account_id
+        set_current_tenant(x_tenant_id)
         return ActorContext(id=account_id, name=name, tenant_id=x_tenant_id, source="LOCAL")
-    return ActorContext(id=f"local:{x_actor or 'local-user'}", name=x_actor or "local-user", source="LOCAL")
+    set_current_tenant(x_tenant_id)
+    return ActorContext(id=f"local:{x_actor or 'local-user'}", name=x_actor or "local-user", tenant_id=x_tenant_id, source="LOCAL")
 
 
 def db_session():

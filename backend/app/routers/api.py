@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from .. import services as svc
+from ..tenant import current_tenant
 from .deps import actor, actor_ctx, db_session
 
 router = APIRouter(prefix="/api")
@@ -87,7 +88,11 @@ class ProjectIn(BaseModel):
 
 @router.get("/projects")
 def list_projects(db: Session = Depends(db_session)):
-    return [project_out(p) for p in db.execute(select(m.Project)).scalars()]
+    q = select(m.Project)
+    tenant = current_tenant()
+    if tenant is not None:
+        q = q.where(m.Project.tenant_id == tenant)
+    return [project_out(p) for p in db.execute(q).scalars()]
 
 
 @router.post("/projects", status_code=201)
@@ -97,7 +102,7 @@ def create_project(body: ProjectIn, db: Session = Depends(db_session), actor=Dep
 
 @router.get("/projects/{project_id}")
 def get_project(project_id: str, db: Session = Depends(db_session)):
-    return project_out(svc.get_or_404(db, m.Project, project_id, "Project"))
+    return project_out(svc.guard_project(db, project_id))
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from . import models as m
 from .models import RevisionStatus
+from .tenant import current_tenant
 
 
 class DomainError(Exception):
@@ -51,13 +52,30 @@ def require_editable(revision: m.ArtifactRevision) -> None:
         )
 
 
+def guard_project(db: Session, project_id: str) -> m.Project:
+    """Block cross-tenant access to a project-scoped resource.
+
+    Tenant enforcement is active only when the request carries an explicit
+    tenant (account_again mode, or local mode with X-Tenant-Id). An unscoped
+    project (tenant_id NULL) remains accessible in local development; a
+    mismatched tenant is rejected with 403 (never leaked as 404).
+    """
+    project = get_or_404(db, m.Project, project_id, "Project")
+    tenant = current_tenant()
+    if tenant is not None and project.tenant_id is not None and project.tenant_id != tenant:
+        raise DomainError("Cross-tenant access denied", status_code=403)
+    return project
+
 # ---------------------------------------------------------------------------
 # Project
 # ---------------------------------------------------------------------------
 
 
-def create_project(db: Session, *, key: str, name: str, description=None, actor="local-user"):
-    project = m.Project(key=key, name=name, description=description, created_by=actor)
+def create_project(db: Session, *, key: str, name: str, description=None, actor="local-user", tenant_id: str | None = None):
+    project = m.Project(
+        key=key, name=name, description=description, created_by=actor,
+        tenant_id=tenant_id if tenant_id is not None else current_tenant(),
+    )
     db.add(project)
     db.commit()
     return project
@@ -77,7 +95,7 @@ def create_artifact(
     snapshot: dict | None = None,
     actor="local-user",
 ) -> m.Artifact:
-    project = get_or_404(db, m.Project, project_id, "Project")
+    project = guard_project(db, project_id)
     artifact = m.Artifact(project_id=project.id, type=type, title=title, created_by=actor)
     db.add(artifact)
     db.flush()
@@ -390,7 +408,7 @@ def create_baseline(
     the whole point. A later v8 of a child artifact does not change a
     baseline that bound v7.
     """
-    get_or_404(db, m.Project, project_id, "Project")
+    guard_project(db, project_id)
     if not artifact_revision_ids:
         raise DomainError("A baseline must bind at least one revision")
 
@@ -502,6 +520,7 @@ def create_trace_link(
     revision_context: str | None = None,
     actor="local-user",
 ) -> m.TraceLink:
+    guard_project(db, project_id)
     for sid in (source_semantic_id, target_semantic_id):
         exists = db.execute(
             select(m.SemanticObject.id).where(
@@ -609,6 +628,7 @@ def create_annotation(
     actor="local-user",
     actor_id: str | None = None,
 ) -> m.Annotation:
+    guard_project(db, project_id)
     anchored = db.execute(
         select(m.SemanticObject.id).where(
             m.SemanticObject.project_id == project_id,
@@ -1234,7 +1254,7 @@ def create_thread(
     title: str | None = None,
     actor: str = "local-user",
 ) -> m.CommentThread:
-    get_or_404(db, m.Project, project_id, "Project")
+    guard_project(db, project_id)
     thread = m.CommentThread(project_id=project_id, title=title)
     db.add(thread)
     db.commit()
@@ -1762,7 +1782,7 @@ def create_change_set(
     actor="local-user",
     actor_id: str | None = None,
 ) -> dict:
-    get_or_404(db, m.Project, project_id, "Project")
+    guard_project(db, project_id)
     cs = m.ChangeSet(
         project_id=project_id, name=name, description=description,
         created_by=actor, actor_id=actor_id,
@@ -2939,6 +2959,7 @@ def create_execution_handoff(
     the authoritative design by id; Document Again never hands out a copy of
     mutable execution state.
     """
+    guard_project(db, project_id)
     if status not in EXECUTION_HANDOFF_STATUSES:
         raise ValueError(f"invalid execution handoff status: {status}")
     baseline_id = baseline_id or _latest_baseline_id(db, project_id)
@@ -2994,6 +3015,7 @@ def create_qa_validation_handoff(
     actor_id: str | None = None,
     status: str = "DRAFT",
 ) -> dict:
+    guard_project(db, project_id)
     if status not in QA_HANDOFF_STATUSES:
         raise ValueError(f"invalid qa handoff status: {status}")
     baseline_id = baseline_id or _latest_baseline_id(db, project_id)
@@ -3060,6 +3082,8 @@ def mark_handoff_status(
 
 
 def list_execution_handoffs(db: Session, project_id: str | None = None) -> list[dict]:
+    if project_id:
+        guard_project(db, project_id)
     q = select(m.ExecutionHandoff).order_by(m.ExecutionHandoff.created_at.desc())
     if project_id:
         q = q.where(m.ExecutionHandoff.project_id == project_id)
@@ -3067,6 +3091,8 @@ def list_execution_handoffs(db: Session, project_id: str | None = None) -> list[
 
 
 def list_qa_handoffs(db: Session, project_id: str | None = None) -> list[dict]:
+    if project_id:
+        guard_project(db, project_id)
     q = select(m.QAValidationHandoff).order_by(m.QAValidationHandoff.created_at.desc())
     if project_id:
         q = q.where(m.QAValidationHandoff.project_id == project_id)
@@ -3130,6 +3156,7 @@ def create_external_reference(
     url: str | None = None,
     metadata: dict | None = None,
 ) -> dict:
+    guard_project(db, project_id)
     if relation_type not in EXTERNAL_RELATION_TYPES:
         raise ValueError(f"invalid external relation type: {relation_type}")
     existing = db.execute(
@@ -3391,6 +3418,7 @@ def _render_erd_svg(snapshot: dict) -> bytes:
 def export_design_package(db: Session, baseline_id: str) -> bytes:
     """ZIP of export artifacts, all generated from the same baseline context."""
     baseline = get_or_404(db, m.Baseline, baseline_id, "Baseline")
+    guard_project(db, baseline.project_id)
     bindings = db.execute(
         select(m.BaselineBinding).where(m.BaselineBinding.baseline_id == baseline_id)
     ).scalars().all()
@@ -3543,6 +3571,7 @@ def export_revision_v2(db: Session, revision_id: str, format: str) -> tuple[byte
 def export_design_package_v2(db: Session, baseline_id: str) -> bytes:
     """ZIP export with a clean directory structure (design package V2)."""
     baseline = get_or_404(db, m.Baseline, baseline_id, "Baseline")
+    guard_project(db, baseline.project_id)
     bindings = db.execute(
         select(m.BaselineBinding).where(m.BaselineBinding.baseline_id == baseline_id)
     ).scalars().all()
