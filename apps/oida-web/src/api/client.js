@@ -5,6 +5,10 @@
 
 export const SERVICES = ["da", "pm", "qa", "conductor", "account"];
 
+// Production API base (gateway). Empty in local dev → relative /api/* (Vite proxy).
+// Set VITE_API_BASE=https://api-oida.kanphong.com for production builds.
+const API_BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
+
 export class ApiError extends Error {
   constructor(message, status, payload) {
     super(message);
@@ -15,7 +19,7 @@ export class ApiError extends Error {
 }
 
 export async function request(service, path, options = {}) {
-  const url = `/api/${service}${path}`;
+  const url = `${API_BASE}/api/${service}${path}`;
   const opts = {
     method: options.method || "GET",
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
