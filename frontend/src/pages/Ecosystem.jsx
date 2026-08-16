@@ -34,6 +34,7 @@ export function Ecosystem() {
   const [pm, setPm] = useState([]);
   const [qa, setQa] = useState([]);
   const [refs, setRefs] = useState([]);
+  const [trace, setTrace] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -44,8 +45,9 @@ export function Ecosystem() {
       api.get(`/projects/${project.id}/handoffs/execution`),
       api.get(`/projects/${project.id}/handoffs/qa`),
       api.get(`/projects/${project.id}/external-references`),
-    ]).then(([ev, ob, p, q, r]) => {
-      setEvents(ev); setOutbox(ob); setPm(p); setQa(q); setRefs(r);
+      api.get(`/projects/${project.id}/ecosystem-trace`).catch(() => null),
+    ]).then(([ev, ob, p, q, r, t]) => {
+      setEvents(ev); setOutbox(ob); setPm(p); setQa(q); setRefs(r); setTrace(t);
     }).catch(setError);
   }, [project?.id]);
 
@@ -71,6 +73,37 @@ export function Ecosystem() {
           <p>PM handoffs: <b className="text-slate-200">{pm.length}</b> · QA handoffs: <b className="text-slate-200">{qa.length}</b></p>
           <p>External references: <b className="text-slate-200">{refs.length}</b></p>
         </div>
+      </Card>
+
+      <Card title="Orchestration chain — baseline → Conductor → PM / QA">
+        {(!trace || trace.baselines?.length === 0) && <Empty>No handoff chain yet. Confirm a baseline, then deliver a handoff.</Empty>}
+        {trace?.baselines?.map((b) => (
+          <div key={b.id} className="mb-3 rounded border border-line bg-surface-2 p-3">
+            <p className="text-[13px] font-semibold text-slate-200">
+              Baseline {b.name} {b.target_release && <span className="ml-2 rounded bg-slate-700/50 px-1.5 py-0.5 text-[10px] text-slate-300">release {b.target_release}</span>}
+              <span className="ml-2 text-[11px] font-normal text-emerald-400">CONFIRMED</span>
+            </p>
+            <div className="mt-2 space-y-1 text-[12px]">
+              <p className="text-slate-500">Conductor Main → handoff (correlation id on each row)</p>
+              {b.pm_handoffs.map((h) => (
+                <div key={h.id} className="flex items-center gap-2">
+                  <span className="rounded bg-brand-600/20 px-1.5 py-0.5 font-bold text-brand-100">PM</span>
+                  <StatusBadge status={h.status} />
+                  {h.external_reference && <span className="font-mono text-slate-300">→ {h.external_reference}</span>}
+                  <span className="truncate font-mono text-[10px] text-slate-500">{h.correlation_id}</span>
+                </div>
+              ))}
+              {b.qa_handoffs.map((h) => (
+                <div key={h.id} className="flex items-center gap-2">
+                  <span className="rounded bg-emerald-600/20 px-1.5 py-0.5 font-bold text-emerald-100">QA</span>
+                  <StatusBadge status={h.status} />
+                  {h.external_reference && <span className="font-mono text-slate-300">→ {h.external_reference}</span>}
+                  <span className="truncate font-mono text-[10px] text-slate-500">{h.correlation_id}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </Card>
 
       <Card title="Handoffs (PM / QA)">

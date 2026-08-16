@@ -408,6 +408,7 @@ def create_baseline(
     name: str,
     description: str | None = None,
     artifact_revision_ids: list[str],
+    target_release: str | None = None,
     actor="local-user",
     actor_id: str | None = None,
 ) -> m.Baseline:
@@ -436,7 +437,8 @@ def create_baseline(
         seen[rev.artifact_id] = rev
 
     baseline = m.Baseline(
-        project_id=project_id, name=name, description=description, created_by=actor, actor_id=actor_id
+        project_id=project_id, name=name, description=description, created_by=actor,
+        actor_id=actor_id, target_release=target_release,
     )
     db.add(baseline)
     db.flush()
@@ -3477,10 +3479,40 @@ def list_external_references(
 ) -> list[dict]:
     q = select(m.ExternalReference).order_by(m.ExternalReference.created_at.desc())
     if project_id:
+        guard_project(db, project_id)
         q = q.where(m.ExternalReference.project_id == project_id)
     if semantic_id:
         q = q.where(m.ExternalReference.semantic_id == semantic_id)
     return [_external_reference_dict(r) for r in db.execute(q).scalars().all()]
+
+
+def ecosystem_trace(db: Session, project_id: str) -> dict:
+    """Traverse the full ecosystem chain for one project:
+
+    baselines -> PM/QA handoffs -> external references -> outbox delivery.
+
+    Internal semantic objects, external service references, and orchestration
+    handoffs are kept distinct in the returned structure.
+    """
+    guard_project(db, project_id)
+    baselines = db.execute(
+        select(m.Baseline).where(m.Baseline.project_id == project_id).order_by(m.Baseline.created_at)
+    ).scalars().all()
+    out = {"project_id": project_id, "baselines": []}
+    for b in baselines:
+        pm = db.execute(
+            select(m.ExecutionHandoff).where(m.ExecutionHandoff.baseline_id == b.id)
+        ).scalars().all()
+        qa = db.execute(
+            select(m.QAValidationHandoff).where(m.QAValidationHandoff.baseline_id == b.id)
+        ).scalars().all()
+        out["baselines"].append({
+            "id": b.id, "name": b.name, "target_release": b.target_release,
+            "pm_handoffs": [_execution_handoff_dict(h) for h in pm],
+            "qa_handoffs": [_qa_handoff_dict(h) for h in qa],
+        })
+    out["external_references"] = list_external_references(db, project_id=project_id)
+    return out
 
 
 def _external_reference_dict(r: m.ExternalReference) -> dict:

@@ -1223,6 +1223,11 @@ def list_external_references(project_id: str, db: Session = Depends(db_session))
     return svc.list_external_references(db, project_id=project_id)
 
 
+@router.get("/projects/{project_id}/ecosystem-trace")
+def ecosystem_trace(project_id: str, db: Session = Depends(db_session)):
+    return svc.ecosystem_trace(db, project_id)
+
+
 @router.get("/db-schemas/{schema_id}/data-dictionary")
 def data_dictionary(schema_id: str, db: Session = Depends(db_session)):
     return svc.data_dictionary(db, schema_id)

@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 
@@ -7,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from .account_client import AUTH_MODE, ACCOUNT_AGAIN_URL
-from .db import engine
+from .db import DATABASE_URL, engine
 from .observability import configure_logging, log, metrics, set_request_id, started_at
 from .routers.api import router
 from .routers.deps import tenant_scope
@@ -92,4 +93,42 @@ def get_metrics():
     return {
         "uptime_seconds": round(time.monotonic() - started_at(), 1),
         "counters": metrics.snapshot(),
+    }
+
+
+@app.get("/api/rc-readiness")
+def rc_readiness():
+    """Release-candidate readiness snapshot (configuration, migration head,
+    dependency reachability, outbox state). Operator evidence, not a full
+    admin console."""
+    from sqlalchemy import text
+    head = None
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
+            head = row[0] if row else None
+    except Exception:  # noqa: BLE001
+        head = "unknown"
+
+    import httpx
+    conductor = "unchecked"
+    try:
+        r = httpx.get(f"{os.environ.get('CONDUCTOR_MAIN_URL', 'http://localhost:8010/api').rstrip('/')}/health", timeout=3.0)
+        conductor = "reachable" if r.status_code == 200 else f"status {r.status_code}"
+    except Exception as exc:  # noqa: BLE001
+        conductor = f"unreachable: {exc}"
+
+    counters = metrics.snapshot()
+    return {
+        "service": "document-again",
+        "version": "0.1.0",
+        "auth_mode": AUTH_MODE,
+        "database": (DATABASE_URL or "sqlite").split("://")[0],
+        "migration_head": head,
+        "account_again": ACCOUNT_AGAIN_URL or "not configured",
+        "conductor_main": conductor,
+        "outbox_pending": max(counters.get("outbox_pending", 0) - counters.get("outbox_delivered", 0) - counters.get("outbox_failed", 0), 0),
+        "outbox_failed": counters.get("outbox_failed", 0),
+        "confirmation_completed": counters.get("confirmation_completed", 0),
+        "auth_denied": counters.get("auth_denied", 0),
     }
