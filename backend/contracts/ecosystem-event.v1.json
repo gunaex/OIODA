@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://again.ecosystem/contracts/ecosystem-event.v1.json",
+  "title": "EcosystemEvent v1",
+  "description": "Durable outbox event payload envelope. payload_version is the contract version; event_type is the semantic type.",
+  "type": "object",
+  "required": ["contract", "eventType", "correlationId"],
+  "properties": {
+    "contract": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"const": "ecosystem-event"},
+        "version": {"type": "integer", "const": 1}
+      }
+    },
+    "eventType": {"type": "string"},
+    "correlationId": {"type": "string"},
+    "sourceService": {"type": "string"},
+    "sourceObjectId": {"type": ["string", "null"]},
+    "sourceRevision": {"type": ["string", "null"]},
+    "occurredAt": {"type": "string"},
+    "actorId": {"type": ["string", "null"]},
+    "payload": {"type": "object"}
+  }
+}

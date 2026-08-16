@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://again.ecosystem/contracts/execution-handoff.v1.json",
+  "title": "ExecutionHandoff v1",
+  "description": "Document Again -> execution authority: a confirmed design baseline handed off for execution. Contract metadata is authoritative; shape changes require a major version bump.",
+  "type": "object",
+  "required": ["contract", "baselineId", "projectId"],
+  "properties": {
+    "contract": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"const": "execution-handoff"},
+        "version": {"type": "integer", "const": 1}
+      }
+    },
+    "baselineId": {"type": "string"},
+    "sourceRevisionId": {"type": ["string", "null"]},
+    "changeRequestId": {"type": ["string", "null"]},
+    "projectId": {"type": "string"},
+    "requirements": {"type": "array", "items": {"type": "string"}}
+  }
+}

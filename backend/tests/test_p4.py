@@ -228,3 +228,101 @@ def test_cross_tenant_handoff_read_blocked(client, db):
     assert r.status_code == 403
     own = client.get(f"/api/projects/{pb['id']}/handoffs/execution", headers={"X-Tenant-Id": "t-b"})
     assert own.status_code == 200 and len(own.json()) == 1
+
+
+# ---------------------------------------------------------------------------
+# P4-E ecosystem contract governance
+# ---------------------------------------------------------------------------
+
+
+def test_handoff_payloads_carry_contract_envelope(db, project):
+    h = svc.create_execution_handoff(db, project_id=project.id)
+    assert h["payload_snapshot"]["contract"] == {"name": "execution-handoff", "version": 1}
+    q = svc.create_qa_validation_handoff(db, project_id=project.id, requirement_ids=["REQ-0001"])
+    assert q["payload_snapshot"]["contract"] == {"name": "qa-validation-handoff", "version": 1}
+
+
+def test_unsupported_major_version_rejected():
+    from app.contracts import ContractVersionError, require_compatible
+    with pytest.raises(ContractVersionError):
+        require_compatible({"contract": {"name": "execution-handoff", "version": 99}}, "execution-handoff")
+
+
+def test_missing_contract_envelope_rejected():
+    from app.contracts import ContractVersionError, require_compatible
+    with pytest.raises(ContractVersionError):
+        require_compatible({"baselineId": "x"}, "execution-handoff")
+
+
+def test_contract_name_mismatch_rejected():
+    from app.contracts import ContractVersionError, require_compatible
+    with pytest.raises(ContractVersionError):
+        require_compatible({"contract": {"name": "qa-validation-handoff", "version": 1}}, "execution-handoff")
+
+
+def test_backward_compatible_minor_accepted():
+    from app.contracts import require_compatible
+    # minor/patch are not encoded in the major-only integer version; a
+    # supported major is accepted regardless of additive fields.
+    out = require_compatible({"contract": {"name": "execution-handoff", "version": 1}, "extra": 1}, "execution-handoff")
+    assert out["contract"]["version"] == 1
+
+
+# ---------------------------------------------------------------------------
+# P4-C/D outbox HTTP delivery (idempotent, versioned, fail-closed)
+# ---------------------------------------------------------------------------
+
+
+def _delivery_transport(respond_status=200, body=None, with_token=True):
+    calls = {"deliver": 0, "token": 0}
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/auth/service-token"):
+            calls["token"] += 1
+            return httpx.Response(200, json={"accessToken": "svc-token", "tokenType": "Bearer", "expiresIn": 3600})
+        if request.url.path == "/relay/handoffs":
+            calls["deliver"] += 1
+            if respond_status >= 400:
+                return httpx.Response(respond_status, json={"detail": "nope"})
+            return httpx.Response(200, json=body or {"externalWorkReferenceId": "pm-ref-7"})
+        return httpx.Response(404, json={"detail": "not found"})
+
+    return httpx.MockTransport(handler), calls
+
+
+def test_http_delivery_is_idempotent_and_persists_reference(db, project):
+    from app.ecosystem_client import EcosystemDeliveryClient
+    svc.emit_event(db, event_type="EXECUTION_REQUESTED", project_id=project.id,
+                   payload={"contract": {"name": "execution-handoff", "version": 1}, "baselineId": "b1"},
+                   target_services=["pm-again"], correlation_id="corr-d")
+    transport, calls = _delivery_transport()
+    client = EcosystemDeliveryClient("http://aa", client_secret="s", transport=transport)
+    r = svc.deliver_due_events_http(db, "http://relay/relay/handoffs", tenant_id="t-1", client=client)
+    assert r == {"delivered": 1, "failed": 0}
+    out = db.execute(select(m.OutboxEvent)).scalars().one()
+    assert out.status == "SENT" and out.external_reference == "pm-ref-7"
+    # second pass: already SENT, not re-delivered
+    r2 = svc.deliver_due_events_http(db, "http://relay/relay/handoffs", tenant_id="t-1", client=client)
+    assert r2 == {"delivered": 0, "failed": 0}
+
+
+def test_http_delivery_fails_closed_on_5xx(db, project):
+    from app.ecosystem_client import EcosystemDeliveryClient
+    svc.emit_event(db, event_type="QA_VALIDATION_REQUESTED", project_id=project.id,
+                   target_services=["qa-again"], correlation_id="corr-e")
+    transport, _calls = _delivery_transport(respond_status=500)
+    client = EcosystemDeliveryClient("http://aa", client_secret="s", transport=transport)
+    r = svc.deliver_due_events_http(db, "http://relay/relay/handoffs", tenant_id="t-1", client=client)
+    assert r["failed"] == 1 and r["delivered"] == 0
+    out = db.execute(select(m.OutboxEvent)).scalars().one()
+    assert out.status == "FAILED" and out.attempt_count == 1
+
+
+def test_delivery_payload_is_versioned(db, project):
+    svc.emit_event(db, event_type="DESIGN_BASELINED", project_id=project.id,
+                   payload={"baseline": "1"}, target_services=["pm-again"], correlation_id="corr-f")
+    out = db.execute(select(m.OutboxEvent)).scalars().one()
+    payload = svc.build_event_delivery_payload(db, out)
+    assert payload["contract"] == {"name": "ecosystem-event", "version": 1}
+    assert payload["eventType"] == "DESIGN_BASELINED"
+    assert payload["correlationId"] == "corr-f"

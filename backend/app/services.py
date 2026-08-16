@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models as m
+from .contracts import versioned_payload
 from .models import RevisionStatus
 from .tenant import current_tenant
 
@@ -2903,6 +2904,43 @@ def deliver_due_events(db: Session, deliver_fn, limit: int = 50) -> dict:
     return {"delivered": delivered, "failed": failed}
 
 
+def build_event_delivery_payload(db: Session, outbox_event: m.OutboxEvent) -> dict:
+    """Versioned ecosystem-event envelope for outbound delivery."""
+    event = db.get(m.EcosystemEvent, outbox_event.event_id)
+    if event is None:
+        raise DomainError(f"Ecosystem event {outbox_event.event_id} missing", status_code=404)
+    return versioned_payload(
+        "ecosystem-event", 1,
+        eventType=event.event_type,
+        correlationId=event.correlation_id,
+        sourceService=event.source_service,
+        sourceObjectId=event.source_object_id,
+        sourceRevision=event.source_revision,
+        occurredAt=event.occurred_at.isoformat(),
+        actorId=event.actor_id,
+        payload=event.payload or {},
+    )
+
+
+def deliver_due_events_http(
+    db: Session,
+    target_url: str,
+    tenant_id: str | None = None,
+    client=None,
+    limit: int = 50,
+) -> dict:
+    """Dispatch due outbox events over HTTP (idempotent, versioned payload)."""
+    from .ecosystem_client import EcosystemDeliveryClient
+
+    c = client or EcosystemDeliveryClient()
+
+    def fn(out: m.OutboxEvent) -> str | None:
+        payload = build_event_delivery_payload(db, out)
+        return c.deliver(target_url, payload, correlation_id=out.correlation_id, tenant_id=tenant_id)
+
+    return deliver_due_events(db, fn, limit=limit)
+
+
 def list_ecosystem_events(db: Session, project_id: str | None = None, limit: int = 200) -> list[dict]:
     q = select(m.EcosystemEvent).order_by(m.EcosystemEvent.occurred_at.desc()).limit(limit)
     if project_id:
@@ -2964,12 +3002,13 @@ def create_execution_handoff(
         raise ValueError(f"invalid execution handoff status: {status}")
     baseline_id = baseline_id or _latest_baseline_id(db, project_id)
     source_revision_id = source_revision_id or _latest_design_revision_id(db, project_id)
-    payload = {
-        "baselineId": baseline_id,
-        "sourceRevisionId": source_revision_id,
-        "changeRequestId": change_request_id,
-        "projectId": project_id,
-    }
+    payload = versioned_payload(
+        "execution-handoff", 1,
+        baselineId=baseline_id,
+        sourceRevisionId=source_revision_id,
+        changeRequestId=change_request_id,
+        projectId=project_id,
+    )
     correlation_id = f"pm:{project_id}:{baseline_id or source_revision_id or 'adhoc'}"
     handoff = m.ExecutionHandoff(
         project_id=project_id,
@@ -3019,14 +3058,15 @@ def create_qa_validation_handoff(
     if status not in QA_HANDOFF_STATUSES:
         raise ValueError(f"invalid qa handoff status: {status}")
     baseline_id = baseline_id or _latest_baseline_id(db, project_id)
-    payload = {
-        "baselineId": baseline_id,
-        "requirementIds": requirement_ids or [],
-        "semanticObjectIds": semantic_object_ids or [],
-        "designRevisionIds": design_revision_ids or [],
-        "targetRelease": target_release,
-        "projectId": project_id,
-    }
+    payload = versioned_payload(
+        "qa-validation-handoff", 1,
+        baselineId=baseline_id,
+        requirementIds=requirement_ids or [],
+        semanticObjectIds=semantic_object_ids or [],
+        designRevisionIds=design_revision_ids or [],
+        targetRelease=target_release,
+        projectId=project_id,
+    )
     correlation_id = f"qa:{project_id}:{baseline_id or 'adhoc'}"
     handoff = m.QAValidationHandoff(
         project_id=project_id,

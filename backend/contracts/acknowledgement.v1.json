@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://again.ecosystem/contracts/acknowledgement.v1.json",
+  "title": "Acknowledgement v1",
+  "description": "Downstream service -> Document Again: receipt of a handoff/event with an external reference. Idempotent by correlationId.",
+  "type": "object",
+  "required": ["contract", "correlationId", "externalReferenceId"],
+  "properties": {
+    "contract": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"const": "acknowledgement"},
+        "version": {"type": "integer", "const": 1}
+      }
+    },
+    "correlationId": {"type": "string"},
+    "externalReferenceId": {"type": "string"},
+    "status": {"type": "string"},
+    "receivedAt": {"type": ["string", "null"]}
+  }
+}
