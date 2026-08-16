@@ -32,25 +32,57 @@ def _now_iso() -> str:
 
 
 def _map_execution(h: dict, handoff_id: str, correlation_id: str, project_id: str | None, baseline_id: str | None) -> dict:
+    title = h.get("title") or f"Design baseline {baseline_id or handoff_id}"
+    refs = h.get("requirement_refs") or []
+    codes = [r.get("code") for r in refs if r.get("code")] or h.get("requirement_ids") or []
+    description = f"{title} — baseline {h.get('baseline_name') or baseline_id or 'n/a'}"
+    if refs:
+        description += " · " + "; ".join(f"{r['code']} {r['title']}" for r in refs)
     return {
         "workPackageId": handoff_id,
         "correlationId": correlation_id,
         "businessIntentId": project_id or "document-again",
-        "title": h.get("title") or f"Design baseline {baseline_id or handoff_id}",
+        "title": title,
+        "description": description,
         "priority": "HIGH",
         "state": "DRAFT",
         "assignments": {},
-        "engineeringContext": {"requirements": h.get("requirement_ids") or []},
+        # Canonical DeliveryWorkPackage.engineeringContext.requirements is a
+        # string (not an array) — join requirement ids so the payload conforms.
+        # The richer structured requirement refs ride in `constraints`
+        # (free-form object) so PM Again can materialize a meaningful execution
+        # model instead of a single flat seed task.
+        "engineeringContext": {
+            "requirements": ", ".join(codes),
+            "constraints": {
+                "requirementRefs": refs,
+                "baselineName": h.get("baseline_name") or baseline_id,
+                "baselineId": baseline_id,
+                "workstreams": h.get("workstreams") or [],
+            },
+        },
         "createdAt": _now_iso(),
     }
 
 
 def _map_qa(h: dict, handoff_id: str, correlation_id: str, project_id: str | None, baseline_id: str | None) -> dict:
+    refs = h.get("requirement_refs") or []
+    business = [f"{r['code']} — {r['title']}" for r in refs if r.get("code")] if refs else []
     return {
         "qaRequestId": handoff_id,
         "correlationId": correlation_id,
         "workPackageId": handoff_id,
         "releaseCandidate": {
+            # Canonical QARequest.releaseCandidate requires repo/branch/commit.
+            # For a Document Again design handoff the "release candidate" is a
+            # design baseline: map project -> repo, baseline -> branch, and the
+            # bound design revision -> commit (honest identifiers, no invented
+            # customer data). Human names ride along as extra metadata.
+            "repo": project_id or "document-again",
+            "branch": baseline_id or "main",
+            "commit": (h.get("artifact_revision_ids") or [baseline_id or handoff_id])[0],
+            "title": h.get("title"),
+            "baselineName": h.get("baseline_name"),
             "baselineId": baseline_id,
             "artifactRevisionIds": h.get("artifact_revision_ids") or [],
             "targetRelease": h.get("target_release"),
@@ -58,6 +90,8 @@ def _map_qa(h: dict, handoff_id: str, correlation_id: str, project_id: str | Non
         },
         "acceptanceCriteria": {
             "requirementIds": h.get("requirement_ids") or [],
+            "business": business,
+            "technical": [],
             "semanticObjectIds": h.get("semantic_object_ids") or [],
             "designRevisionIds": h.get("design_revision_ids") or [],
         },
