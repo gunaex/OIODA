@@ -176,8 +176,30 @@ def get_current_user(request: Request, db: Session = Depends(get_master_db)) -> 
     token = _extract_access_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = decode_access_token(token)
-    user = db.query(models.User).filter(models.User.id == int(payload["sub"])).first()
+
+    # 1) Standalone local session JWT (HS256, issued by this service).
+    try:
+        payload = decode_access_token(token)
+        user = db.query(models.User).filter(models.User.id == int(payload["sub"])).first()
+        if user and user.active:
+            if user.must_change_password and request.url.path not in _PASSWORD_CHANGE_EXEMPT_PATHS:
+                raise HTTPException(status_code=403, detail="password_change_required")
+            return user
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            raise
+        # Not a valid local token — fall through to ecosystem SSO.
+
+    # 2) Ecosystem SSO: a signed Account Again identity token. Authorization
+    # remains service-owned — map the verified human to the local user by
+    # email and apply the LOCAL role.
+    try:
+        from .ecosystem import account_again_client
+        claims = account_again_client.verify_ecosystem_identity_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user = db.query(models.User).filter(models.User.email == claims.get("email")).first()
     if not user or not user.active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
     if user.must_change_password and request.url.path not in _PASSWORD_CHANGE_EXEMPT_PATHS:

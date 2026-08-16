@@ -35,7 +35,19 @@ class TenantMismatch(Exception):
     (CROSS_TENANT_QAREQUEST_BLOCKED)."""
 
 
-def _find_or_create_project(master_db: Session, *, work_package_id: str, tenant_id: Optional[str]) -> models.Project:
+def _human_qa_title(qar: CanonicalQARequest) -> Optional[str]:
+    """Best human title for the validation project, from the design handoff.
+
+    Prefers the project title carried on the release candidate; falls back to
+    the baseline name. Returns None only when neither is present, in which
+    case the caller keeps the technical "Work Package <id>" default."""
+    rc = qar.releaseCandidate or {}
+    return rc.get("title") or rc.get("baselineName") or None
+
+
+def _find_or_create_project(
+    master_db: Session, *, work_package_id: str, tenant_id: Optional[str], title: Optional[str] = None
+) -> models.Project:
     link = (
         master_db.query(models.ExternalQAProjectLink)
         .filter(models.ExternalQAProjectLink.work_package_id == work_package_id)
@@ -49,6 +61,12 @@ def _find_or_create_project(master_db: Session, *, work_package_id: str, tenant_
                     f"workPackageId {work_package_id!r} is owned by tenant {project.tenant_id!r}, "
                     f"not the caller's tenant {tenant_id!r}"
                 )
+            # Human-first naming: the QA project's display name tracks the
+            # authoritative project title from the design handoff. The slug
+            # stays stable (it is the per-project DB identity).
+            if title and project.name != title:
+                project.name = title
+                master_db.commit()
             return project
 
     base_slug = slugify(f"wp-{work_package_id}")
@@ -58,7 +76,9 @@ def _find_or_create_project(master_db: Session, *, work_package_id: str, tenant_
         suffix += 1
         slug = f"{base_slug}-{suffix}"
 
-    project = models.Project(name=f"Work Package {work_package_id}", slug=slug, tenant_id=tenant_id)
+    project = models.Project(
+        name=title or f"Work Package {work_package_id}", slug=slug, tenant_id=tenant_id
+    )
     master_db.add(project)
     master_db.commit()
     master_db.refresh(project)
@@ -153,7 +173,12 @@ def intake_qa_request(
             project = master_db.query(models.Project).filter(models.Project.slug == external_request.qa_project_slug).first()
         return external_request, project, False
 
-    project = _find_or_create_project(master_db, work_package_id=qar.workPackageId, tenant_id=tenant_id)
+    project = _find_or_create_project(
+        master_db,
+        work_package_id=qar.workPackageId,
+        tenant_id=tenant_id,
+        title=_human_qa_title(qar),
+    )
 
     project_db = open_project_session(project.slug)
     try:
