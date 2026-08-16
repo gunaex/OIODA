@@ -63,9 +63,9 @@ def requirement(db, project):
 
 def _aa_transport(decision="ALLOW", eval_status=200, account_status=200):
     def handler(request: httpx.Request):
-        if request.url.path == "/entitlements/evaluate":
+        if request.url.path == "/api/v1/entitlements/evaluate":
             return httpx.Response(eval_status, json={"decision": decision, "accountId": "acc-1", "tenantId": "t-1"})
-        if request.url.path == "/accounts/acc-1":
+        if request.url.path == "/api/v1/accounts/acc-1":
             return httpx.Response(account_status, json={"accountId": "acc-1", "tenantId": "t-1", "displayName": "Alice", "email": "a@x", "status": "ACTIVE"})
         return httpx.Response(404, json={"detail": "not found"})
 

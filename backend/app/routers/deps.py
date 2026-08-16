@@ -19,8 +19,25 @@ class ActorContext:
     source: str = "LOCAL"
 
 
-def actor(x_actor: str | None = Header(default=None)) -> str:
-    """Legacy display-name actor (kept for local-dev ergonomics)."""
+def actor(
+    authorization: str | None = Header(default=None),
+    x_actor: str | None = Header(default=None),
+    x_account_id: str | None = Header(default=None),
+    x_subject_id: str | None = Header(default=None),
+    x_tenant_id: str | None = Header(default=None),
+    x_actor_name: str | None = Header(default=None),
+) -> str:
+    """Actor display name, resolved per auth mode.
+
+    - ``AUTH_MODE=account_again``: delegates to :func:`actor_ctx` so the
+      caller is validated against Account Again. X-Actor is never trusted in
+      production mode; a failed validation rejects the request.
+    - ``AUTH_MODE=local``: deterministic development actor.
+    """
+    if AUTH_MODE == "account_again":
+        return actor_ctx(
+            authorization, x_actor, x_account_id, x_subject_id, x_tenant_id, x_actor_name
+        ).name
     return x_actor or "local-user"
 
 
@@ -39,6 +56,9 @@ def actor_ctx(
       request — local identity is never silently substituted.
     - ``AUTH_MODE=local``: a deterministic development actor is used.
     """
+    if AUTH_MODE not in ("local", "account_again"):
+        raise HTTPException(status_code=503, detail="AUTH_MODE misconfigured")
+
     if AUTH_MODE == "account_again":
         token = (authorization or "").strip()
         if token.startswith("Bearer "):
