@@ -407,3 +407,43 @@ def test_confirm_writes_audit_event(db, project):
     svc.confirm_revision(db, rev.id, actor_id="acc-9")
     events = svc.list_audit_events(db, project_id=project.id, action="REVISION_CONFIRMED")
     assert events and events[0]["object_id"] == rev.id
+
+
+# ---------------------------------------------------------------------------
+# P4-K safe outbox replay / recovery
+# ---------------------------------------------------------------------------
+
+
+def test_outbox_retry_re_enqueues_and_keeps_payload_immutable(db, project):
+    svc.emit_event(db, event_type="EXECUTION_REQUESTED", project_id=project.id,
+                   payload={"baselineId": "b1"}, target_services=["pm-again"], correlation_id="corr-r")
+    out = db.execute(select(m.OutboxEvent)).scalars().one()
+    svc.mark_outbox_failed(db, out.id, "boom")
+    ev_before = db.execute(select(m.EcosystemEvent)).scalars().one()
+
+    result = svc.retry_outbox_event(db, out.id, actor_id="acc-1")
+    assert result["status"] == "PENDING"
+    assert result["attempt_count"] == 1  # retry re-enqueued without incrementing here
+    # original payload unchanged
+    ev_after = db.execute(select(m.EcosystemEvent)).scalars().one()
+    assert ev_after.payload == ev_before.payload == {"baselineId": "b1"}
+    # replay attempt recorded as its own audit event
+    replays = svc.list_audit_events(db, project_id=project.id, action="REPLAY_ATTEMPTED")
+    assert len(replays) == 1
+
+
+def test_outbox_retry_rejects_non_failed(db, project):
+    svc.emit_event(db, event_type="DESIGN_BASELINED", project_id=project.id,
+                   target_services=["pm-again"], correlation_id="corr-s")
+    out = db.execute(select(m.OutboxEvent)).scalars().one()
+    with pytest.raises(Exception):
+        svc.retry_outbox_event(db, out.id)  # PENDING -> cannot retry (only FAILED)
+
+
+def test_outbox_inspect_endpoint(client, db, project):
+    svc.emit_event(db, event_type="DESIGN_BASELINED", project_id=project.id,
+                   payload={"x": 1}, target_services=["pm-again"], correlation_id="corr-t")
+    out = db.execute(select(m.OutboxEvent)).scalars().one()
+    r = client.get(f"/api/outbox/{out.id}")
+    assert r.status_code == 200
+    assert r.json()["event"]["payload"] == {"x": 1}

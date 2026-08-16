@@ -1111,6 +1111,16 @@ def list_outbox(db: Session = Depends(db_session)):
     return svc.list_outbox(db)
 
 
+@router.get("/outbox/{outbox_id}")
+def get_outbox_event(outbox_id: str, db: Session = Depends(db_session)):
+    return svc.get_outbox_event(db, outbox_id)
+
+
+@router.post("/outbox/{outbox_id}/retry")
+def retry_outbox_event(outbox_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    return svc.retry_outbox_event(db, outbox_id, actor_id=actx.id)
+
+
 @router.get("/audit-events")
 def list_audit_events(
     project_id: str | None = None,

@@ -3020,6 +3020,51 @@ def deliver_due_events_http(
     return deliver_due_events(db, fn, limit=limit)
 
 
+def get_outbox_event(db: Session, outbox_id: str) -> dict:
+    """Inspect a single outbox delivery record + its immutable payload."""
+    out = get_or_404(db, m.OutboxEvent, outbox_id, "OutboxEvent")
+    event = db.get(m.EcosystemEvent, out.event_id)
+    return {
+        "id": out.id, "event_id": out.event_id, "target_service": out.target_service,
+        "status": out.status, "attempt_count": out.attempt_count, "last_error": out.last_error,
+        "next_attempt_at": out.next_attempt_at.isoformat() if out.next_attempt_at else None,
+        "delivered_at": out.delivered_at.isoformat() if out.delivered_at else None,
+        "external_reference": out.external_reference, "correlation_id": out.correlation_id,
+        "event": {
+            "event_type": event.event_type, "source_object_id": event.source_object_id,
+            "source_revision": event.source_revision, "occurred_at": event.occurred_at.isoformat(),
+            "actor_id": event.actor_id, "payload": event.payload,
+        } if event else None,
+    }
+
+
+def retry_outbox_event(db: Session, outbox_id: str, actor_id: str | None = None) -> dict:
+    """Safely re-enqueue a failed outbox event.
+
+    The original payload is never mutated (it is only re-read from the
+    immutable EcosystemEvent). The retry is recorded as its own audit event
+    and increments the delivery attempt counter. Returns the re-queued
+    record; actual dispatch happens through the normal due-outbox worker.
+    """
+    out = get_or_404(db, m.OutboxEvent, outbox_id, "OutboxEvent")
+    if out.status != "FAILED":
+        raise DomainError(f"Cannot retry outbox event in status {out.status}", status_code=409)
+    event = db.get(m.EcosystemEvent, out.event_id)
+    payload_before = (event.payload or {}) if event else None
+    out.status = "PENDING"
+    out.next_attempt_at = None
+    out.last_error = None
+    db.commit()
+    record_audit(
+        db, action="REPLAY_ATTEMPTED", project_id=event.project_id if event else None,
+        actor_id=actor_id, object_type="OutboxEvent", object_id=out.id,
+        correlation_id=out.correlation_id,
+        metadata={"event_id": out.event_id, "target": out.target_service,
+                  "payload_unchanged": event is not None and (event.payload or {}) == (payload_before or {})},
+    )
+    return get_outbox_event(db, out.id)
+
+
 def list_ecosystem_events(db: Session, project_id: str | None = None, limit: int = 200) -> list[dict]:
     q = select(m.EcosystemEvent).order_by(m.EcosystemEvent.occurred_at.desc()).limit(limit)
     if project_id:
