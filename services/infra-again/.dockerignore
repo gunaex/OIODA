@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.ai/
+*.tfstate
+.terraform/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+ui/dist/
+ui/node_modules/

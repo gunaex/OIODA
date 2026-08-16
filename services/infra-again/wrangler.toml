@@ -1,0 +1,14 @@
+# INFRA-AGAIN Frontend — Cloudflare Pages
+# Deploy: npx wrangler pages deploy ui/dist --project-name=infra-again
+
+name = "infra-again"
+compatibility_date = "2026-08-10"
+
+# Pages config — build output in ui/dist
+pages_build_output_dir = "ui/dist"
+
+[env.production]
+vars = { API_URL = "https://infra-again.fly.dev" }
+
+[env.preview]
+vars = { API_URL = "http://localhost:8000" }

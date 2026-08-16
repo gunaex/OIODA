@@ -1,0 +1,27 @@
+# INFRA-AGAIN self-hosted draw.io service
+# Usage: docker compose -f docker-compose.drawio.yml up -d
+# Frontend env: VITE_DRAWIO_BASE_URL=http://localhost:8080
+
+version: "3.8"
+
+services:
+  drawio:
+    image: jgraph/drawio:latest
+    container_name: infra-again-drawio
+    ports:
+      - "${DRAWIO_PORT:-8080}:8080"
+    environment:
+      - DRAWIO_BASE_URL=${DRAWIO_BASE_URL:-http://localhost:8080}
+      - DRAWIO_CSP_HEADER=
+      - DRAWIO_VIEWER_URL=
+      - DRAWIO_LIGHTBOX_URL=
+      - DRAWIO_SELF_CONTAINED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "infra-again.component=drawio"
+      - "infra-again.phase=b2-self-host"

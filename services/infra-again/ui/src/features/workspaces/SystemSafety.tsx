@@ -1,0 +1,11 @@
+
+export default function SystemSafety() {
+  const ladder=[{l:'PLAN_ONLY',p:'AUTO',b:false},{l:'SIMULATED',p:'AUTO',b:false},{l:'LOCAL_RUNTIME',p:'AUTO (isolated)',b:false},{l:'LOCAL_PRIVATE_CLOUD',p:'ASK',b:false},{l:'SANDBOX',p:'ASK',b:false},{l:'CONTROLLED_REAL',p:'BLOCK',b:true},{l:'PRODUCTION',p:'BLOCK',b:true}];
+  const belts=[{l:'AdminAuth',d:'Argon2id/PBKDF2 password verification'},{l:'Immutable Approval',d:'SHA256 canonical digest, seal/verify/save/load'},{l:'AIRLOCK',d:'State machine: DISCOVERY \u2192 AIRLOCK_PASSED \u2192 EXECUTING'},{l:'Guarded Mutator',d:'Every S3 mutation asserts airlock first'},{l:'Ownership Enforcement',d:'Exact resource ownership, no prefix delete'}];
+  return (<div className="page">
+    <div className="mb-lg"><div className="page-eyebrow">System Safety</div><h2 className="page-title">Safety Controls</h2><p className="page-subtitle">Real cloud execution has NOT been performed. All safety belts source-level verified.</p></div>
+    <div className="panel mb-md"><div className="panel-title mb-sm">Safety Ladder</div><div className="flex-col" style={{gap:3}}>{ladder.map(s=>(<div key={s.l} className="flex-between" style={{padding:'5px 10px',borderRadius:4,background:s.b?'var(--danger-bg)':'var(--bg-elevated)',fontSize:11}}><span className="text-secondary">{s.l}</span><span className={`badge ${s.b?'badge-danger':s.p.includes('ASK')?'badge-warning':'badge-info'}`}>{s.p}</span></div>))}</div></div>
+    <div className="panel mb-md"><div className="panel-title mb-sm">Safety Belt Components</div><div className="flex-col" style={{gap:3}}>{belts.map(b=>(<div key={b.l} className="flex-between" style={{padding:'7px 10px',borderRadius:4,background:'var(--bg-elevated)',fontSize:11}}><div><div style={{color:'var(--text-primary)',fontWeight:500}}>{b.l}</div><div className="text-muted" style={{fontSize:10,marginTop:2}}>{b.d}</div></div><span className="badge badge-success">IMPLEMENTED</span></div>))}</div></div>
+    <div className="panel flex-between"><div><div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)'}}>Real Cloud Validation</div><div className="text-muted mt-sm" style={{fontSize:10}}>DEFERRED. No AWS credentials. No real S3 operations.</div></div><span className="badge badge-neutral">DEFERRED</span></div>
+  </div>);
+}

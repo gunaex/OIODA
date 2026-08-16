@@ -1,0 +1,310 @@
+/* INFRA PULSE — Professional Visual Design System */
+/* Dark canvas, restrained semantic colors, calm enterprise style */
+
+/* ============================================================================
+   Canvas & Layout
+   ============================================================================ */
+
+.pulse-canvas {
+  --canvas-bg: #1a1d23;
+  --canvas-grid: #2a2d35;
+  --border-subtle: #2d3039;
+  --text-primary: #e2e4e9;
+  --text-secondary: #8b8fa3;
+  --text-muted: #5c6072;
+  --surface: #22252d;
+  --surface-raised: #2a2d36;
+  --radius: 6px;
+}
+
+/* React Flow overrides */
+.react-flow__background { background: var(--canvas-bg) !important; }
+.react-flow__controls button {
+  background: var(--surface-raised) !important;
+  border-color: var(--border-subtle) !important;
+  color: var(--text-secondary) !important;
+}
+.react-flow__minimap {
+  background: var(--surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+}
+
+/* ============================================================================
+   Pulse Node
+   ============================================================================ */
+
+.pulse-node {
+  background: #252830;
+  border: 1.5px solid #3a3d48;
+  border-radius: 8px;
+  padding: 10px 14px;
+  min-width: 130px;
+  max-width: 200px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, opacity 0.3s ease;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  color: #d4d6dc;
+}
+
+.pulse-node:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.45);
+}
+
+.pulse-node--active {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px rgba(59,130,246,0.25), 0 2px 6px rgba(0,0,0,0.3);
+}
+
+.pulse-node--pass { border-color: #22c55e; }
+.pulse-node--completed { border-color: #22c55e; opacity: 0.85; }
+.pulse-node--degraded { border-color: #f97316; box-shadow: 0 0 0 1px rgba(249,115,22,0.2), 0 2px 6px rgba(0,0,0,0.3); }
+.pulse-node--blocked { border-color: #ef4444; box-shadow: 0 0 0 2px rgba(239,68,68,0.25); }
+.pulse-node--failed { border-color: #ef4444; }
+.pulse-node--waiting { border-color: #a855f7; }
+.pulse-node--retrying { border-color: #eab308; }
+.pulse-node--idle { border-color: #3a3d48; opacity: 0.6; }
+.pulse-node--not-reached { border-style: dashed; opacity: 0.25; }
+
+.pulse-node__header {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: #e2e4e9;
+}
+
+.pulse-node__status {
+  display: flex; align-items: center; gap: 4px; margin-top: 6px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pulse-node__status-dot {
+  width: 6px; height: 6px; border-radius: 50%; display: inline-block;
+}
+
+.pulse-node__status-dot--active { animation: pulse-dot 1.2s ease-in-out infinite; }
+.pulse-node__status-dot--degraded { animation: pulse-dot 0.8s ease-in-out infinite; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(1.3); }
+}
+
+.pulse-node__metric {
+  font-size: 10px; color: #8b8fa3; margin-top: 2px;
+}
+
+.pulse-node__provider {
+  font-size: 9px; color: #5c6072; margin-top: 1px;
+}
+
+/* ============================================================================
+   Pulse Edge
+   ============================================================================ */
+
+.pulse-edge__label {
+  font-size: 9px; fill: #5c6072;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* ============================================================================
+   Sidebar / Panels
+   ============================================================================ */
+
+.pulse-sidebar {
+  background: var(--surface);
+  border-left: 1px solid var(--border-subtle);
+  overflow-y: auto; padding: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--text-primary);
+}
+
+.pulse-sidebar h3 {
+  font-size: 13px; font-weight: 700; margin: 0 0 8px 0; color: #e2e4e9;
+}
+
+.pulse-sidebar__section {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* ============================================================================
+   Scenario Buttons
+   ============================================================================ */
+
+.pulse-scenario-btn {
+  display: block; width: 100%; text-align: left;
+  padding: 6px 10px; margin-bottom: 3px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius);
+  background: #252830; color: #b0b4c0;
+  cursor: pointer; font-size: 11px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.pulse-scenario-btn:hover { background: #2d3039; border-color: #4a4d58; }
+.pulse-scenario-btn--active { background: #1d3a5c; border-color: #3b82f6; color: #93c5fd; }
+
+/* ============================================================================
+   Timeline
+   ============================================================================ */
+
+.pulse-timeline__item {
+  padding: 2px 6px; font-size: 10px; cursor: pointer; border-radius: 2px;
+  margin-bottom: 1px; border-left: 3px solid transparent;
+}
+
+.pulse-timeline__item--active { background: rgba(59,130,246,0.12); border-left-color: #3b82f6; }
+.pulse-timeline__item--warning { border-left-color: #f59e0b; }
+.pulse-timeline__item--error { border-left-color: #ef4444; }
+
+/* ============================================================================
+   Bottleneck Panel
+   ============================================================================ */
+
+.pulse-bottleneck {
+  padding: 10px; background: rgba(249,115,22,0.08);
+  border: 1px solid rgba(249,115,22,0.25); border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+
+.pulse-bottleneck__score {
+  font-size: 20px; font-weight: 800; color: #f97316;
+}
+
+/* ============================================================================
+   Design Review
+   ============================================================================ */
+
+.pulse-review-card {
+  padding: 6px 12px; background: #252830; border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+}
+
+.pulse-review-card__label { font-size: 10px; color: #8b8fa3; }
+.pulse-review-card__value { font-size: 13px; font-weight: 600; color: #e2e4e9; font-family: monospace; }
+
+.pulse-badge {
+  padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+  display: inline-block;
+}
+
+.pulse-badge--frozen { background: rgba(34,197,94,0.12); color: #4ade80; }
+.pulse-badge--change { background: rgba(234,179,8,0.12); color: #facc15; }
+.pulse-badge--review { background: rgba(59,130,246,0.12); color: #60a5fa; }
+.pulse-badge--draft { background: rgba(139,143,163,0.12); color: #8b8fa3; }
+
+/* ============================================================================
+   Controls
+   ============================================================================ */
+
+.pulse-btn {
+  padding: 6px 14px; border: none; border-radius: var(--radius);
+  cursor: pointer; font-weight: 600; font-size: 11px;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.pulse-btn:disabled { opacity: 0.4; cursor: default; }
+
+.pulse-btn--primary { background: #3b82f6; color: #fff; }
+.pulse-btn--primary:hover:not(:disabled) { background: #2563eb; }
+
+.pulse-btn--success { background: #22c55e; color: #fff; }
+.pulse-btn--success:hover:not(:disabled) { background: #16a34a; }
+
+.pulse-btn--danger { background: #ef4444; color: #fff; }
+.pulse-btn--warning { background: #f59e0b; color: #fff; }
+.pulse-btn--ghost { background: #2d3039; color: #b0b4c0; }
+.pulse-btn--ghost:hover:not(:disabled) { background: #3a3d48; }
+
+.pulse-btn--sm { padding: 3px 8px; font-size: 10px; }
+
+.pulse-select {
+  background: #252830; color: #b0b4c0; border: 1px solid #3a3d48;
+  border-radius: 4px; padding: 3px 6px; font-size: 11px;
+}
+
+/* ============================================================================
+   Legend
+   ============================================================================ */
+
+.pulse-legend {
+  position: absolute; bottom: 8px; left: 8px;
+  background: rgba(34,37,45,0.92); border: 1px solid #2d3039;
+  border-radius: 6px; padding: 8px 12px; font-size: 10px;
+  color: #8b8fa3; backdrop-filter: blur(8px);
+}
+
+.pulse-legend__item { display: flex; align-items: center; gap: 4px; }
+.pulse-legend__swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+
+/* ============================================================================
+   Header
+   ============================================================================ */
+
+.pulse-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; background: #1a1d23;
+  border-bottom: 1px solid #2d3039;
+}
+
+.pulse-header__title { margin: 0; font-size: 16px; font-weight: 700; color: #e2e4e9; letter-spacing: -0.3px; }
+
+.pulse-sim-banner {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; background: rgba(96,165,250,0.1);
+  border: 1px solid rgba(96,165,250,0.25); border-radius: 4px;
+  font-size: 10px; color: #93c5fd;
+}
+
+/* ============================================================================
+   Confirmation Modal
+   ============================================================================ */
+
+.pulse-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+
+.pulse-modal {
+  background: #22252d; border: 1px solid #2d3039; border-radius: 10px;
+  padding: 24px; max-width: 420px; width: 90%; color: #e2e4e9;
+}
+
+.pulse-modal h3 { margin: 0 0 12px 0; font-size: 15px; }
+
+/* ============================================================================
+   Reduced Motion
+   ============================================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-node__status-dot--active,
+  .pulse-node__status-dot--degraded { animation: none; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* ============================================================================
+   Scrollbar
+   ============================================================================ */
+
+.pulse-sidebar::-webkit-scrollbar { width: 4px; }
+.pulse-sidebar::-webkit-scrollbar-track { background: transparent; }
+.pulse-sidebar::-webkit-scrollbar-thumb { background: #3a3d48; border-radius: 2px; }
+
+/* ============================================================================
+   Trust Boundary Group
+   ============================================================================ */
+
+.pulse-boundary {
+  position: absolute;
+  border: 1px dashed rgba(139,143,163,0.2);
+  border-radius: 10px;
+  background: rgba(42,45,53,0.15);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.pulse-boundary__label {
+  position: absolute; top: -10px; left: 12px;
+  font-size: 9px; color: #5c6072; text-transform: uppercase;
+  letter-spacing: 1px; background: #1a1d23; padding: 0 6px;
+}
