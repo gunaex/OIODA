@@ -3503,8 +3503,15 @@ def export_revision(db: Session, revision_id: str, format: str) -> tuple[bytes, 
     sections = (snapshot.get("sections") or [])
 
     if format == "json":
+        history = [
+            {"revision_number": r.revision_number, "status": r.status.value,
+             "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
+             "id": r.id}
+            for r in sorted(revision.artifact.revisions, key=lambda r: r.revision_number)
+        ]
         payload = {
             "metadata": meta,
+            "revision_history": history,
             "sections": sections,
             "technical_design": snapshot.get("technical_design"),
             "database": snapshot.get("database"),
@@ -3524,15 +3531,21 @@ def export_revision(db: Session, revision_id: str, format: str) -> tuple[bytes, 
         return buf.getvalue().encode(), "text/csv", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}.csv"
 
     if format == "pdf":
-        return _render_pdf(meta, sections), "application/pdf", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}.pdf"
+        return _render_pdf(meta, sections, snapshot), "application/pdf", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}.pdf"
 
     if format == "svg":
         return _render_erd_svg(snapshot), "image/svg+xml", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}.svg"
 
+    if format == "flow-svg":
+        return _render_flow_svg(snapshot), "image/svg+xml", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}-flow.svg"
+
+    if format == "architecture-svg":
+        return _render_arch_svg(snapshot), "image/svg+xml", f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}-arch.svg"
+
     raise DomainError(f"Unknown export format '{format}'", status_code=422)
 
 
-def _render_pdf(meta: dict, sections: list[dict]) -> bytes:
+def _render_pdf(meta: dict, sections: list[dict], snapshot: dict | None = None) -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
@@ -3572,6 +3585,13 @@ def _render_pdf(meta: dict, sections: list[dict]) -> bytes:
                     t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, "#999"), ("FONTSIZE", (0, 0), (-1, -1), 8)]))
                     story.append(t)
         story.append(Spacer(1, 3 * mm))
+    for heading, rows in _design_summary_blocks((snapshot or {}).get("technical_design")):
+        story.append(Paragraph(heading, ParagraphStyle("dh", parent=styles["Heading2"], fontSize=13, spaceBefore=8, spaceAfter=4)))
+        if rows:
+            t = Table([[Paragraph(c, styles["Normal"]) for c in row] for row in rows])
+            t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, "#999"), ("FONTSIZE", (0, 0), (-1, -1), 8)]))
+            story.append(t)
+        story.append(Spacer(1, 3 * mm))
     doc.build(story)
     return buf.getvalue()
 
@@ -3600,6 +3620,68 @@ def _render_erd_svg(snapshot: dict) -> bytes:
             mark = "🔑" if pk else ("🔗" if fk else "")
             parts.append(f'<text x="{x+8}" y="{fy}" font-size="11" fill="#94a3b8">{mark} {fname}: {ftype}</text>')
         y += h + 24
+    parts.append("</svg>")
+    return "".join(parts).encode()
+
+
+def _design_summary_blocks(design: dict) -> list[tuple[str, list[list[str]]]]:
+    """Frozen-snapshot design summaries for embedding in PDF/DOCX exports.
+
+    Everything is derived from the exact revision snapshot — never live state.
+    """
+    blocks: list[tuple[str, list[list[str]]]] = []
+    if not design:
+        return blocks
+    if design.get("api_endpoints"):
+        rows = [["API endpoint", "Method", "Summary"]]
+        for sid, ep in design["api_endpoints"].items():
+            rows.append([sid, ep.get("method"), ep.get("summary") or ""])
+        blocks.append(("API summary", rows))
+    if design.get("flows"):
+        rows = [["Flow", "Step", "Type"]]
+        for fsid, flow in design["flows"].items():
+            for sid, step in (flow.get("steps") or {}).items():
+                rows.append([flow.get("name") or fsid, step.get("name"), step.get("step_type")])
+        blocks.append(("Process flow summary", rows))
+    if design.get("architecture"):
+        rows = [["Diagram", "Node", "Type"]]
+        for aid, arch in design["architecture"].items():
+            for nid, node in (arch.get("nodes") or {}).items():
+                rows.append([arch.get("name") or aid, node.get("name"), node.get("node_type")])
+        blocks.append(("Architecture summary", rows))
+    return blocks
+
+
+def _render_flow_svg(snapshot: dict) -> bytes:
+    design = snapshot.get("technical_design") or {}
+    flows = design.get("flows") or {}
+    parts = ['<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">']
+    y = 30
+    for fsid, flow in flows.items():
+        parts.append(f'<text x="20" y="{y}" font-size="14" font-weight="bold" fill="#e2e8f0">{flow.get("name") or fsid}</text>')
+        y += 20
+        for sid, step in (flow.get("steps") or {}).items():
+            parts.append(f'<rect x="20" y="{y-12}" width="180" height="22" rx="4" fill="#161a23" stroke="#8b5cf6"/>')
+            parts.append(f'<text x="28" y="{y+3}" font-size="11" fill="#c4b5fd">{step.get("name")} [{step.get("step_type")}]</text>')
+            y += 30
+        y += 14
+    parts.append("</svg>")
+    return "".join(parts).encode()
+
+
+def _render_arch_svg(snapshot: dict) -> bytes:
+    design = snapshot.get("technical_design") or {}
+    arch = design.get("architecture") or {}
+    parts = ['<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">']
+    y = 30
+    for aid, d in arch.items():
+        parts.append(f'<text x="20" y="{y}" font-size="14" font-weight="bold" fill="#e2e8f0">{d.get("name") or aid}</text>')
+        y += 20
+        for nid, node in (d.get("nodes") or {}).items():
+            parts.append(f'<circle cx="28" cy="{y-4}" r="5" fill="#14b8a6"/>')
+            parts.append(f'<text x="42" y="{y}" font-size="11" fill="#94a3b8">{node.get("name")} [{node.get("node_type")}]</text>')
+            y += 22
+        y += 12
     parts.append("</svg>")
     return "".join(parts).encode()
 
@@ -3705,7 +3787,7 @@ def _render_xlsx(meta: dict, sections: list[dict], dd_rows: list[dict], trace_ro
     return buf.getvalue()
 
 
-def _render_docx(meta: dict, sections: list[dict]) -> bytes:
+def _render_docx(meta: dict, sections: list[dict], snapshot: dict | None = None) -> bytes:
     from docx import Document
 
     doc = Document()
@@ -3732,6 +3814,13 @@ def _render_docx(meta: dict, sections: list[dict]) -> bytes:
                 for i, row in enumerate(blk["rows"]):
                     for j, cell in enumerate(row):
                         table.cell(i, j).text = cell
+    for heading, rows in _design_summary_blocks((snapshot or {}).get("technical_design")):
+        doc.add_heading(heading, level=1)
+        if rows:
+            table = doc.add_table(rows=len(rows), cols=len(rows[0]))
+            for i, row in enumerate(rows):
+                for j, cell in enumerate(row):
+                    table.cell(i, j).text = str(cell)
     buf = _io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -3758,7 +3847,7 @@ def export_revision_v2(db: Session, revision_id: str, format: str) -> tuple[byte
             trace = _traceability_rows(db, revision.artifact.project_id)
             return _render_xlsx(meta, sections, dd, trace), \
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", f"{base}.xlsx"
-        return _render_docx(meta, sections), \
+        return _render_docx(meta, sections, snapshot), \
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document", f"{base}.docx"
     return export_revision(db, revision_id, format)
 

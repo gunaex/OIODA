@@ -1,6 +1,7 @@
 """P4 tests — production hardening: live identity, tenant isolation, etc."""
 from __future__ import annotations
 
+import json as _json
 import os
 import tempfile
 from datetime import timedelta
@@ -508,3 +509,43 @@ def test_openapi_no_remote_ref_fetch(db, project):
     eps = svc.openapi_to_endpoints(svc._parse_openapi(doc))
     # $ref becomes a schema name, no fetch occurred (nothing raises/network)
     assert eps[0]["method"] == "GET"
+
+
+# ---------------------------------------------------------------------------
+# P4-H export fidelity V3 — design visuals + historical reproducibility
+# ---------------------------------------------------------------------------
+
+
+def test_historical_export_remains_v1_after_v2(db, project):
+    flow = svc.create_flow(db, project_id=project.id, name="Approval", semantic_id="flow_approval")
+    svc.add_flow_step(db, flow_id=flow.id, name="Submit", semantic_id="flow_step_submit", step_type="START")
+    svc.add_flow_step(db, flow_id=flow.id, name="Approve", semantic_id="flow_step_approve", step_type="APPROVAL")
+
+    dr = svc.create_artifact(db, project_id=project.id, type=m.ArtifactType.DR, title="DR")
+    rev1 = db.execute(select(m.ArtifactRevision).where(
+        m.ArtifactRevision.artifact_id == dr.id)).scalars().one()
+    svc.submit_for_review(db, rev1.id)
+    svc.confirm_revision(db, rev1.id)
+    baseline = svc.create_baseline(db, project_id=project.id, name="v1", artifact_revision_ids=[rev1.id])
+
+    # v2: add a third approval step, confirm a new revision
+    svc.add_flow_step(db, flow_id=flow.id, name="Director", semantic_id="flow_step_director", step_type="APPROVAL")
+    rev2 = svc.create_revision(db, artifact_id=dr.id)
+    svc.submit_for_review(db, rev2.id)
+    svc.confirm_revision(db, rev2.id)
+
+    v1_json = _json.loads(svc.export_revision(db, rev1.id, "json")[0])
+    v2_json = _json.loads(svc.export_revision(db, rev2.id, "json")[0])
+    v1_steps = set(v1_json["technical_design"]["flows"]["flow_approval"]["steps"].keys())
+    v2_steps = set(v2_json["technical_design"]["flows"]["flow_approval"]["steps"].keys())
+    assert "flow_step_director" not in v1_steps
+    assert "flow_step_director" in v2_steps
+    assert v1_steps == {"flow_step_submit", "flow_step_approve"}
+
+    # flow/arch SVG render from the exact snapshot
+    assert b"<svg" in svc.export_revision(db, rev1.id, "flow-svg")[0]
+    assert b"<svg" in svc.export_revision(db, rev2.id, "architecture-svg")[0]
+
+    # DOCX embeds design summary tables (API/flow/architecture)
+    docx_bytes = svc.export_revision_v2(db, rev2.id, "docx")[0]
+    assert docx_bytes[:2] == b"PK"
