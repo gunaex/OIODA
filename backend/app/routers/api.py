@@ -1111,6 +1111,21 @@ def list_outbox(db: Session = Depends(db_session)):
     return svc.list_outbox(db)
 
 
+@router.get("/audit-events")
+def list_audit_events(
+    project_id: str | None = None,
+    actor_id: str | None = None,
+    action: str | None = None,
+    object_id: str | None = None,
+    baseline_id: str | None = None,
+    db: Session = Depends(db_session),
+):
+    return svc.list_audit_events(
+        db, project_id=project_id, actor_id=actor_id, action=action,
+        object_id=object_id, baseline_id=baseline_id,
+    )
+
+
 # ---------------------------------------------------------------------------
 # PM / QA handoff contracts and external references
 # ---------------------------------------------------------------------------

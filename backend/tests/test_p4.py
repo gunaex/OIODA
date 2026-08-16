@@ -380,3 +380,30 @@ def test_outbox_metrics_count_delivery(db, project):
     svc.deliver_due_events_http(db, "http://relay/relay/handoffs", client=c)
     snap = metrics.snapshot()
     assert snap.get("outbox_delivered", 0) >= 1
+
+
+# ---------------------------------------------------------------------------
+# P4-J immutable audit events
+# ---------------------------------------------------------------------------
+
+
+def test_audit_events_recorded_and_searchable(db, project):
+    svc.record_audit(db, action="REVISION_CONFIRMED", project_id=project.id,
+                     actor_id="acc-1", object_type="ArtifactRevision", object_id="rev-1",
+                     revision_context="rev-1")
+    svc.record_audit(db, action="BASELINE_CREATED", project_id=project.id,
+                     actor_id="acc-1", object_type="Baseline", object_id="bsl-1", baseline_id="bsl-1")
+    by_action = svc.list_audit_events(db, project_id=project.id, action="BASELINE_CREATED")
+    assert len(by_action) == 1 and by_action[0]["baseline_id"] == "bsl-1"
+    by_actor = svc.list_audit_events(db, project_id=project.id, actor_id="acc-1")
+    assert len(by_actor) == 2
+
+
+def test_confirm_writes_audit_event(db, project):
+    art = svc.create_artifact(db, project_id=project.id, type=m.ArtifactType.UR, title="UR")
+    rev = db.execute(select(m.ArtifactRevision).where(
+        m.ArtifactRevision.artifact_id == art.id)).scalars().one()
+    svc.submit_for_review(db, rev.id)
+    svc.confirm_revision(db, rev.id, actor_id="acc-9")
+    events = svc.list_audit_events(db, project_id=project.id, action="REVISION_CONFIRMED")
+    assert events and events[0]["object_id"] == rev.id

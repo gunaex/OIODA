@@ -288,6 +288,11 @@ def confirm_revision(
         db.rollback()
         raise
     metrics.inc("confirmation_completed")
+    record_audit(
+        db, action="REVISION_CONFIRMED", project_id=revision.artifact.project_id,
+        actor_id=revision.actor_id, object_type="ArtifactRevision", object_id=revision.id,
+        revision_context=revision.id, metadata={"artifact_id": revision.artifact_id},
+    )
     return revision, confirmation
 
 
@@ -453,6 +458,11 @@ def create_baseline(
             )
         )
     db.commit()
+    record_audit(
+        db, action="BASELINE_CREATED", project_id=project_id, actor_id=actor_id,
+        object_type="Baseline", object_id=baseline.id, baseline_id=baseline.id,
+        metadata={"name": name, "bindings": len(seen)},
+    )
     return baseline
 
 
@@ -2785,6 +2795,70 @@ def record_actor(db: Session, actor_id: str, display_name: str, tenant_id: str |
     db.commit()
 
 
+def record_audit(
+    db: Session,
+    *,
+    action: str,
+    project_id: str | None = None,
+    tenant_id: str | None = None,
+    actor_id: str | None = None,
+    object_type: str | None = None,
+    object_id: str | None = None,
+    revision_context: str | None = None,
+    baseline_id: str | None = None,
+    correlation_id: str | None = None,
+    metadata: dict | None = None,
+) -> m.AuditEvent:
+    """Write an immutable audit event. Independent of editable comments."""
+    ev = m.AuditEvent(
+        tenant_id=tenant_id if tenant_id is not None else current_tenant(),
+        project_id=project_id, actor_id=actor_id, action=action,
+        object_type=object_type, object_id=object_id,
+        revision_context=revision_context, baseline_id=baseline_id,
+        correlation_id=correlation_id, metadata_json=metadata,
+    )
+    db.add(ev)
+    db.commit()
+    return ev
+
+
+def list_audit_events(
+    db: Session,
+    *,
+    project_id: str | None = None,
+    actor_id: str | None = None,
+    action: str | None = None,
+    object_id: str | None = None,
+    baseline_id: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    tenant = current_tenant()
+    q = select(m.AuditEvent).order_by(m.AuditEvent.created_at.desc()).limit(limit)
+    if project_id:
+        guard_project(db, project_id)
+        q = q.where(m.AuditEvent.project_id == project_id)
+    elif tenant is not None:
+        q = q.where(m.AuditEvent.tenant_id == tenant)
+    if actor_id:
+        q = q.where(m.AuditEvent.actor_id == actor_id)
+    if action:
+        q = q.where(m.AuditEvent.action == action)
+    if object_id:
+        q = q.where(m.AuditEvent.object_id == object_id)
+    if baseline_id:
+        q = q.where(m.AuditEvent.baseline_id == baseline_id)
+    return [
+        {
+            "id": e.id, "tenant_id": e.tenant_id, "project_id": e.project_id,
+            "actor_id": e.actor_id, "action": e.action, "object_type": e.object_type,
+            "object_id": e.object_id, "revision_context": e.revision_context,
+            "baseline_id": e.baseline_id, "correlation_id": e.correlation_id,
+            "metadata": e.metadata_json, "created_at": e.created_at.isoformat(),
+        }
+        for e in db.execute(q).scalars().all()
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Ecosystem event + outbox (durable, idempotent delivery)
 # ---------------------------------------------------------------------------
@@ -3043,6 +3117,11 @@ def create_execution_handoff(
     )
     db.commit()
     db.refresh(handoff)
+    record_audit(
+        db, action="HANDOFF_CREATED", project_id=project_id, actor_id=actor_id,
+        object_type="ExecutionHandoff", object_id=handoff.id,
+        correlation_id=correlation_id, metadata={"target": target_service},
+    )
     return _execution_handoff_dict(handoff)
 
 
@@ -3103,6 +3182,11 @@ def create_qa_validation_handoff(
     )
     db.commit()
     db.refresh(handoff)
+    record_audit(
+        db, action="HANDOFF_CREATED", project_id=project_id, actor_id=actor_id,
+        object_type="QAValidationHandoff", object_id=handoff.id,
+        correlation_id=correlation_id, metadata={"target": target_service},
+    )
     return _qa_handoff_dict(handoff)
 
 
@@ -3609,6 +3693,11 @@ def export_revision_v2(db: Session, revision_id: str, format: str) -> tuple[byte
             dd = _data_dictionary_from_snapshot({"db_schemas": snapshot.get("database", {}) or {}})
         base = f"{_safe_filename(meta['artifact_title'])}-r{revision.revision_number}"
         metrics.inc("export_generated")
+        record_audit(
+            db, action="EXPORT_GENERATED", project_id=revision.artifact.project_id,
+            object_type="ArtifactRevision", object_id=revision.id,
+            revision_context=revision.id, metadata={"format": format},
+        )
         if format == "xlsx":
             trace = _traceability_rows(db, revision.artifact.project_id)
             return _render_xlsx(meta, sections, dd, trace), \

@@ -900,3 +900,24 @@ class ChangeItem(Base):
     change_type: Mapped[str] = mapped_column(String(20), default="MODIFIED")  # MODIFIED|ADDED|REMOVED|RENAMED
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuditEvent(Base):
+    """Immutable audit event for important actions. Never editable; not the
+    same thing as user-facing comments/annotations (those remain editable
+    workspace objects)."""
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("aud"))
+    tenant_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(60), index=True)
+    object_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    object_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    revision_context: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    baseline_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
