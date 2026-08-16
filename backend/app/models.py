@@ -685,6 +685,30 @@ class IntegrationService(MasterBase):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+class DocumentHandoff(MasterBase):
+    """Idempotent record of a Document Again design handoff accepted by
+    Conductor and dispatched to PM/QA. Conductor remains the orchestration
+    authority; Document Again's handoff_id is unique so repeated delivery is
+    idempotent (same logical acknowledgement, no duplicate dispatch)."""
+    __tablename__ = "document_handoffs"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    handoff_id = Column(String(255), unique=True, nullable=False, index=True)
+    handoff_type = Column(String(30), nullable=False)  # EXECUTION | QA_VALIDATION
+    tenant_id = Column(String(255), nullable=True)
+    project_id = Column(String(255), nullable=True)
+    baseline_id = Column(String(255), nullable=True)
+    correlation_id = Column(String(255), nullable=True, index=True)
+    status = Column(String(30), default="QUEUED")
+    # QUEUED -> DISPATCHED -> ACKNOWLEDGED | FAILED
+    external_reference = Column(String(500), default="")
+    payload_snapshot = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=_utcnow)
+    dispatched_at = Column(DateTime, nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, default="")
+
+
 # ═══════════════════════════════════════════════════════════
 # Per-Project DB Models
 # ═══════════════════════════════════════════════════════════

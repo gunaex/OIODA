@@ -71,7 +71,7 @@ def health_check():
 
 
 # Register routers
-from app.routers import auth, projects, ai_resources, skills, deliberation, intake, golden_flow, integration, multi_ai, orchestration
+from app.routers import auth, projects, ai_resources, skills, deliberation, intake, golden_flow, integration, multi_ai, orchestration, document_handoff
 
 app.include_router(auth.router)
 app.include_router(projects.router)
@@ -83,3 +83,4 @@ app.include_router(golden_flow.router)
 app.include_router(integration.router)
 app.include_router(multi_ai.router)
 app.include_router(orchestration.router)
+app.include_router(document_handoff.router)
