@@ -326,3 +326,25 @@ def test_delivery_payload_is_versioned(db, project):
     assert payload["contract"] == {"name": "ecosystem-event", "version": 1}
     assert payload["eventType"] == "DESIGN_BASELINED"
     assert payload["correlationId"] == "corr-f"
+
+
+# ---------------------------------------------------------------------------
+# P4-F.1 ERD regression — layout is presentation-only, semantic ids stable
+# ---------------------------------------------------------------------------
+
+
+def test_erd_layout_does_not_touch_structured_model(db, project):
+    schema = svc.create_schema(db, project_id=project.id, name="core", semantic_id="sch_core")
+    table = svc.create_table(db, schema_id=schema.id, name="orders", semantic_id="tbl_orders")
+    svc.create_field(db, table_id=table.id, name="id", data_type="UUID", primary_key=True)
+    before = svc.db_design_snapshot(db, schema.id)
+
+    # move a node: layout keyed by semantic id only
+    svc.save_erd_layout(db, schema.id, {"tbl_orders": {"x": 999, "y": 123}})
+    after = svc.db_design_snapshot(db, schema.id)
+
+    assert svc.get_erd_layout(db, schema.id) == {"tbl_orders": {"x": 999, "y": 123}}
+    assert before == after  # structured model unchanged
+    # semantic table/field ids are stable, never derived from layout position
+    tbl = db.execute(select(m.DatabaseTable).where(m.DatabaseTable.id == table.id)).scalars().one()
+    assert tbl.semantic_id == "tbl_orders"
