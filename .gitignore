@@ -1,0 +1,20 @@
+# Runtime artifacts / secrets — never in Git
+**/node_modules/
+**/dist/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+*.db
+*.sqlite
+*.sqlite3
+**/data/*.db
+**/data/projects/*.db
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+**/.ai/
+**/.claude/
