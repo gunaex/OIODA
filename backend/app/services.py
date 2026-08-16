@@ -443,10 +443,14 @@ def create_baseline(
     db.add(baseline)
     db.flush()
     for artifact_id, rev in seen.items():
+        # The artifact's own semantic identity (if any). Document sections are
+        # registered with entity_ref=artifact.id, so exclude DOCUMENT_SECTION to
+        # avoid a multiple-row match when a UR/DR has many sections.
         semantic_object = db.execute(
             select(m.SemanticObject).where(
                 m.SemanticObject.project_id == project_id,
                 m.SemanticObject.entity_ref == artifact_id,
+                m.SemanticObject.object_type != m.SemanticObjectType.DOCUMENT_SECTION,
             )
         ).scalar_one_or_none()
         db.add(
@@ -2713,7 +2717,7 @@ def create_assumption(db: Session, *, project_id: str, content: str, related_sem
 
 def create_clarification(db: Session, *, project_id: str, question: str, answer=None, related_semantic_ids=None, actor="local-user") -> m.Clarification:
     code = _next_code(db, project_id, "CLR", m.Clarification)
-    c = m.Clarification(project_id=project_id, question=question, answer=answer, asked_by=actor, resolved=answer is not None)
+    c = m.Clarification(project_id=project_id, semantic_id=code, question=question, answer=answer, asked_by=actor, resolved=answer is not None)
     db.add(c)
     db.flush()
     ensure_semantic_object(db, project_id=project_id, semantic_id=code, object_type=m.SemanticObjectType.CLARIFICATION, display_name=code, entity_ref=c.id)
@@ -3813,6 +3817,21 @@ def _render_flow_svg(snapshot: dict) -> bytes:
     return "".join(parts).encode()
 
 
+def _render_one_arch_svg(name: str, nodes: dict, edges: dict) -> bytes:
+    parts = ['<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">']
+    parts.append(f'<text x="20" y="30" font-size="14" font-weight="bold" fill="#e2e8f0">{name}</text>')
+    y = 50
+    for nid, node in nodes.items():
+        parts.append(f'<circle cx="28" cy="{y-4}" r="5" fill="#14b8a6"/>')
+        parts.append(f'<text x="42" y="{y}" font-size="11" fill="#94a3b8">{node.get("name")} [{node.get("node_type")}]</text>')
+        y += 22
+    for eid, edge in edges.items():
+        parts.append(f'<text x="20" y="{y}" font-size="10" fill="#6366f1">{edge.get("from")} -> {edge.get("to")}{(": " + edge.get("label")) if edge.get("label") else ""}</text>')
+        y += 14
+    parts.append("</svg>")
+    return "".join(parts).encode()
+
+
 def _render_arch_svg(snapshot: dict) -> bytes:
     design = snapshot.get("technical_design") or {}
     arch = design.get("architecture") or {}
@@ -3828,6 +3847,21 @@ def _render_arch_svg(snapshot: dict) -> bytes:
         y += 12
     parts.append("</svg>")
     return "".join(parts).encode()
+
+
+def render_architecture_diagram_svg(db: Session, diagram_id: str) -> bytes:
+    d = get_or_404(db, m.ArchitectureDiagram, diagram_id, "ArchitectureDiagram")
+    nodes = db.execute(select(m.ArchitectureNode).where(m.ArchitectureNode.diagram_id == d.id)).scalars().all()
+    edges = db.execute(select(m.ArchitectureEdge).where(m.ArchitectureEdge.diagram_id == d.id)).scalars().all()
+    return _render_one_arch_svg(
+        d.name,
+        {n.semantic_id: {"name": n.name, "node_type": n.node_type} for n in nodes},
+        {e.semantic_id: {"from": e.from_node_semantic_id, "to": e.to_node_semantic_id, "label": e.label} for e in edges},
+    )
+
+
+def render_architecture_diagram_png(db: Session, diagram_id: str) -> bytes:
+    return _svg_to_png(render_architecture_diagram_svg(db, diagram_id))
 
 
 def _svg_to_png(svg_bytes: bytes) -> bytes:

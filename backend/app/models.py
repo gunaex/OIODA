@@ -726,6 +726,7 @@ class Clarification(Base):
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("clr"))
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    semantic_id: Mapped[str | None] = mapped_column(String(200), unique=True, nullable=True)
     question: Mapped[str] = mapped_column(Text)
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     asked_by: Mapped[str] = mapped_column(String(100), default="local-user")

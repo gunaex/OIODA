@@ -71,7 +71,7 @@ def requirement_out(r: m.Requirement) -> dict:
         "description": r.description, "source_type": r.source_type,
         "source_reference": r.source_reference, "status": r.status.value,
         "priority": r.priority, "created_at": r.created_at.isoformat(),
-        "created_by": r.created_by,
+        "created_by": r.created_by, "metadata": r.metadata_json,
     }
 
 
@@ -970,6 +970,22 @@ class ArchLayoutIn(BaseModel):
 @router.get("/projects/{project_id}/architecture")
 def list_architecture(project_id: str, db: Session = Depends(db_session)):
     return svc.list_architecture_diagrams(db, project_id)
+
+
+@router.get("/architecture-diagrams/{diagram_id}/svg")
+def architecture_diagram_svg(diagram_id: str, db: Session = Depends(db_session)):
+    return Response(
+        content=svc.render_architecture_diagram_svg(db, diagram_id), media_type="image/svg+xml",
+        headers={"Content-Disposition": f'attachment; filename="diagram-{diagram_id}.svg"'},
+    )
+
+
+@router.get("/architecture-diagrams/{diagram_id}/png")
+def architecture_diagram_png(diagram_id: str, db: Session = Depends(db_session)):
+    return Response(
+        content=svc.render_architecture_diagram_png(db, diagram_id), media_type="image/png",
+        headers={"Content-Disposition": f'attachment; filename="diagram-{diagram_id}.png"'},
+    )
 
 
 @router.post("/architecture-diagrams", status_code=201)
