@@ -197,6 +197,23 @@ export default function Deliverables() {
             <StatCard label="Stale" value={data.summary.stale} tone="rose" />
           </div>
 
+          {/* critical gates */}
+          {data.gates?.length > 0 && (
+            <Card>
+              <CardHeader title="Critical Sign-off Gates" subtitle="Explicit human acceptance at responsibility boundaries." />
+              <div className="flex flex-wrap gap-2 p-4">
+                {data.gates.map((g) => (
+                  <span key={g.gate} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs">
+                    <span className="font-medium">{g.name}</span>
+                    <Badge tone={g.status === "SIGNED" ? "emerald" : g.status === "NOT_APPLICABLE" ? "gray" : "amber"}>
+                      {g.status === "NOT_APPLICABLE" ? "N/A" : g.status}
+                    </Badge>
+                  </span>
+                ))}
+              </div>
+            </Card>
+          )}
+
           <div className="flex flex-wrap gap-1">
             {FILTERS.map((f) => (
               <button key={f} onClick={() => setFilter(f)}

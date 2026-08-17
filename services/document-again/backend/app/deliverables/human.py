@@ -481,6 +481,7 @@ def list_human_deliverables(db: Session, project: m.Project, actx) -> dict:
         "my_actions": my_actions,
         "summary": summary,
         "documents": rows,
+        "gates": gate_status(db, project),
         "supporting_registers": cat.SUPPORTING_REGISTERS,
         "internal_module_count": len(BY_NAME),
     }
@@ -780,6 +781,82 @@ def signoff_register(db: Session, project: m.Project) -> list[dict]:
         .order_by(DeliverableSignoff.signed_at.desc())
     ).scalars().all()
     return [s.to_dict() for s in rows]
+
+
+def accept_change_request(db: Session, project: m.Project, cr_code: str, actx,
+                          body: dict) -> dict:
+    """Gate 3 — Change Acceptance. Records explicit human acceptance of an
+    important change request as version-specific sign-off evidence, reusing the
+    existing Change Request governance."""
+    cr = db.execute(
+        select(m.ChangeRequest).where(
+            m.ChangeRequest.project_id == project.id,
+            m.ChangeRequest.code == cr_code,
+        )
+    ).scalars().first()
+    if not cr:
+        raise DomainError(f"Change request not found: {cr_code}", status_code=404)
+
+    decision = (body.get("decision") or "ACCEPT").upper()
+    if decision not in cat.SIGNOFF_DECISIONS:
+        raise DomainError(f"Unknown sign-off decision: {decision}", status_code=422)
+
+    actor = _identity(actx)
+    sig = DeliverableSignoff(
+        id=_new_id("sgn"),
+        project_id=project.id,
+        human_code=f"CR-{cr.code}",
+        instance_id=cr.id,
+        document_id=f"{project.key}-{cr.code}",
+        document_version="1.0",
+        baseline_id=None,
+        document_hash=None,
+        snapshot_hash=None,
+        signoff_type="ACCEPT" if decision in ("ACCEPT", "APPROVE") else decision,
+        decision=decision,
+        signer_user_id=actor["user_id"],
+        signer_name=actor["email"],
+        signer_role=body.get("signer_role"),
+        signer_organization=actor["organization"],
+        signed_at=_now(),
+        comment=body.get("comment") or f"Change acceptance for {cr_code}",
+        known_exceptions=body.get("known_exceptions") or [],
+        source_snapshot_id=cr.id,
+        auth_context={"source": actor["source"], "organization": actor["organization"]},
+    )
+    db.add(sig)
+    db.flush()
+    _audit(db, project.id, "SIGNOFF", sig.id, "SIGNED", actor,
+           before=None,
+           after={"decision": decision, "object": cr_code},
+           reason=f"change acceptance {decision} on {cr_code}")
+    db.commit()
+    return sig.to_dict()
+
+
+def gate_status(db: Session, project: m.Project) -> list[dict]:
+    """Status of the 7 critical gates: which are signed (or not applicable)."""
+    sigs = signoff_register(db, project)
+    out = []
+    for gate in cat.SIGN_OFF_GATES:
+        code = gate["code"]
+        if code == "CHANGE_ACCEPTANCE":
+            cr_sigs = [s for s in sigs if s["human_code"].startswith("CR-")]
+            out.append({"gate": code, "name": gate["name"], "phase": gate["phase"],
+                        "status": "SIGNED" if cr_sigs else "OPEN", "signoffs": len(cr_sigs)})
+            continue
+        docs = [c for c in compose_for_project(db, project) if c["required_by"] == code]
+        if not docs:
+            out.append({"gate": code, "name": gate["name"], "phase": gate["phase"],
+                        "status": "NOT_APPLICABLE", "signoffs": 0})
+            continue
+        signed = any(
+            s["human_code"] == d["code"] for d in docs for s in sigs
+        )
+        out.append({"gate": code, "name": gate["name"], "phase": gate["phase"],
+                    "status": "SIGNED" if signed else "OPEN",
+                    "signoffs": sum(1 for d in docs for s in sigs if s["human_code"] == d["code"])})
+    return out
 
 
 def my_signoffs(db: Session, project: m.Project, actx) -> list[dict]:

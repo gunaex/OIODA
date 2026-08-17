@@ -262,6 +262,9 @@ export const humanApi = {
   refreshFreshness: (projectId, code) =>
     post("da", `/projects/${projectId}/human-deliverables/${code}/refresh`, {}),
   signoffRegister: (projectId) => get("da", `/projects/${projectId}/signoff-register`),
+  signoffGates: (projectId) => get("da", `/projects/${projectId}/signoff-gates`),
+  acceptChangeRequest: (projectId, crCode, body) =>
+    post("da", `/projects/${projectId}/change-requests/${crCode}/accept`, body),
   mySignoffs: (projectId) => get("da", `/projects/${projectId}/my-signoffs`),
   auditTrail: (projectId) => get("da", `/projects/${projectId}/deliverable-audit-trail`),
   exportUrl: (projectId, kind, code) => {

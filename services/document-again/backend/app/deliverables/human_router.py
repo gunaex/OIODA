@@ -138,6 +138,25 @@ def signoff_register(project_id: str, db: Session = Depends(db_session)):
     return hsvc.signoff_register(db, _project(db, project_id))
 
 
+@router.get("/projects/{project_id}/signoff-gates")
+def signoff_gates(project_id: str, db: Session = Depends(db_session)):
+    return hsvc.gate_status(db, _project(db, project_id))
+
+
+class CrAcceptIn(BaseModel):
+    decision: str = "ACCEPT"
+    signer_role: str | None = None
+    comment: str | None = None
+    known_exceptions: list | None = None
+
+
+@router.post("/projects/{project_id}/change-requests/{cr_code}/accept")
+def accept_change_request(project_id: str, cr_code: str, body: CrAcceptIn,
+                          db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    return hsvc.accept_change_request(db, _project(db, project_id), cr_code, actx,
+                                      body.model_dump())
+
+
 @router.get("/projects/{project_id}/my-signoffs")
 def my_signoffs(project_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
     return hsvc.my_signoffs(db, _project(db, project_id), actx)
