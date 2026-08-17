@@ -14,7 +14,9 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -97,4 +99,210 @@ class DeliverableInstance(Base):
             "stale": self.stale,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# R17.1 — Human Deliverables (the user-facing layer over internal standards)
+# ────────────────────────────────────────────────────────────────────────────
+class HumanDeliverableInstance(Base):
+    """A generated instance of a Human Deliverable (HD-*).
+
+    Generation is ON DEMAND only: a row exists only after a human confirms
+    "Generate". No instances are created at project creation. A document may
+    have multiple rows across versions; the head row (highest created_at) is
+    the current one. Historical rows are immutable.
+    """
+
+    __tablename__ = "human_deliverable_instances"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("hd"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    human_code: Mapped[str] = mapped_column(String(40), index=True)  # HD-01 … HD-OPS-01
+    name: Mapped[str] = mapped_column(String(200))
+    level: Mapped[int] = mapped_column(default=1)  # 1 controlled / 2 working / 3 register
+    level_name: Mapped[str] = mapped_column(String(20), default="CONTROLLED")
+
+    applicability: Mapped[str] = mapped_column(String(20), default="CONDITIONAL")
+    applicability_reason: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    document_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    version: Mapped[str | None] = mapped_column(String(20), nullable=True)  # 0.1 … 1.0
+
+    # lifecycle (NOT_GENERATED is implied by absence of a row; rows exist only
+    # once generated, so lifecycle starts at DRAFT)
+    lifecycle_status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    # readiness computed at precheck time (READY / READY_WITH_GAPS / NOT_READY / BLOCKED / NOT_DUE)
+    readiness: Mapped[str] = mapped_column(String(20), default="NOT_READY")
+    required_by: Mapped[str | None] = mapped_column(String(40), nullable=True)  # gate code
+
+    # role model
+    owner_role: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    reviewer_roles: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    approver_roles: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    signatory_roles: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    fyi_roles: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    signoff_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # generation provenance (mandatory)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    generated_by: Mapped[str | None] = mapped_column(String(200), nullable=True)  # email
+    generated_by_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    precheck_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    readiness_at_generation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # content fingerprint + source snapshot (immutable once approved/baselined)
+    source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    snapshot_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mapping_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    template_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # freshness + material change
+    freshness: Mapped[str] = mapped_column(String(20), default="UNKNOWN")  # CURRENT/STALE/UNKNOWN
+    material_change: Mapped[str] = mapped_column(String(24), default="UNKNOWN")
+    stale: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # revision chain
+    baseline_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    revision_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    supersedes_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "human_code": self.human_code,
+            "name": self.name,
+            "level": self.level,
+            "level_name": self.level_name,
+            "applicability": self.applicability,
+            "applicability_reason": self.applicability_reason or [],
+            "document_id": self.document_id,
+            "version": self.version,
+            "lifecycle_status": self.lifecycle_status,
+            "readiness": self.readiness,
+            "required_by": self.required_by,
+            "owner_role": self.owner_role,
+            "reviewer_roles": self.reviewer_roles or [],
+            "approver_roles": self.approver_roles or [],
+            "signatory_roles": self.signatory_roles or [],
+            "fyi_roles": self.fyi_roles or [],
+            "signoff_policy": self.signoff_policy or {},
+            "generated_at": self.generated_at.isoformat() if self.generated_at else None,
+            "generated_by": self.generated_by,
+            "generated_by_id": self.generated_by_id,
+            "precheck_id": self.precheck_id,
+            "readiness_at_generation": self.readiness_at_generation or {},
+            "snapshot_hash": self.snapshot_hash,
+            "mapping_version": self.mapping_version,
+            "template_version": self.template_version,
+            "freshness": self.freshness,
+            "material_change": self.material_change,
+            "stale": self.stale,
+            "baseline_id": self.baseline_id,
+            "revision_id": self.revision_id,
+            "supersedes_id": self.supersedes_id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class DeliverableSignoff(Base):
+    """Version-specific sign-off. Applies ONLY to the exact version/content
+    identified by document_id + document_version + snapshot_hash. Content
+    changes never inherit a previous signature."""
+
+    __tablename__ = "deliverable_signoffs"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("sgn"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    human_code: Mapped[str] = mapped_column(String(40), index=True)
+    instance_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+
+    document_id: Mapped[str] = mapped_column(String(120), index=True)
+    document_version: Mapped[str] = mapped_column(String(20))
+    baseline_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    document_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    snapshot_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    signoff_type: Mapped[str] = mapped_column(String(24))  # APPROVE/ACCEPT/ACKNOWLEDGE/REJECT
+    decision: Mapped[str] = mapped_column(String(28))  # incl. ACCEPTED_WITH_EXCEPTIONS
+
+    signer_user_id: Mapped[str] = mapped_column(String(120))
+    signer_name: Mapped[str] = mapped_column(String(200))
+    signer_role: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    signer_organization: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    signed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    known_exceptions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    source_snapshot_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    auth_context: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    audit_event_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    def to_dict(self) -> dict:
+        return {
+            "signoff_id": self.id,
+            "project_id": self.project_id,
+            "human_code": self.human_code,
+            "instance_id": self.instance_id,
+            "document_id": self.document_id,
+            "document_version": self.document_version,
+            "baseline_id": self.baseline_id,
+            "document_hash": self.document_hash,
+            "snapshot_hash": self.snapshot_hash,
+            "signoff_type": self.signoff_type,
+            "decision": self.decision,
+            "signer_user_id": self.signer_user_id,
+            "signer_name": self.signer_name,
+            "signer_role": self.signer_role,
+            "signer_organization": self.signer_organization,
+            "signed_at": self.signed_at.isoformat() if self.signed_at else None,
+            "comment": self.comment,
+            "known_exceptions": self.known_exceptions or [],
+            "source_snapshot_id": self.source_snapshot_id,
+            "auth_context": self.auth_context or {},
+            "audit_event_id": self.audit_event_id,
+        }
+
+
+class DeliverableAuditEvent(Base):
+    """Deterministic audit trail for every critical deliverable action."""
+
+    __tablename__ = "deliverable_audit_events"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("aud"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    object_type: Mapped[str] = mapped_column(String(40))  # HUMAN_DELIVERABLE / SIGNOFF / GATE
+    object_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(40), index=True)
+    actor_user_id: Mapped[str] = mapped_column(String(120))
+    actor_name: Mapped[str] = mapped_column(String(200))
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    before_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    after_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "object_type": self.object_type,
+            "object_id": self.object_id,
+            "action": self.action,
+            "actor_user_id": self.actor_user_id,
+            "actor_name": self.actor_name,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "before_state": self.before_state or {},
+            "after_state": self.after_state or {},
+            "reason": self.reason,
+            "request_id": self.request_id,
         }

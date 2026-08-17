@@ -87,7 +87,7 @@ export default function Layout({ project, projectId }) {
             {projectId && (
               <>
                 <NavItem to={base} icon={LayoutDashboard} label="Overview" />
-                <NavItem to={`${base}/deliverables`} icon={ClipboardList} label="Deliverables" />
+                <NavItem to={`${base}/deliverables`} icon={ClipboardList} label="Documents" />
               </>
             )}
           </NavGroup>

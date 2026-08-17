@@ -245,3 +245,30 @@ export const deliverableApi = {
     post("da", `/projects/${projectId}/deliverables/${code}/applicability`, { applicability }),
   exportWorkbookUrl: (projectId, mode) => `/api/da/projects/${projectId}/exports/${mode}`,
 };
+
+// ───────────────────────── R17.1 Human Deliverables ─────────────────────────
+export const humanApi = {
+  catalog: () => get("da", "/human-deliverable-catalog"),
+  list: (projectId) => get("da", `/projects/${projectId}/human-deliverables`),
+  detail: (projectId, code) => get("da", `/projects/${projectId}/human-deliverables/${code}`),
+  precheck: (projectId, code) => post("da", `/projects/${projectId}/human-deliverables/${code}/precheck`, {}),
+  generate: (projectId, code, body) =>
+    post("da", `/projects/${projectId}/human-deliverables/${code}/generate`, body || {}),
+  transition: (projectId, code, body) =>
+    post("da", `/projects/${projectId}/human-deliverables/${code}/transition`, body),
+  signoff: (projectId, code, body) =>
+    post("da", `/projects/${projectId}/human-deliverables/${code}/signoff`, body),
+  versions: (projectId, code) => get("da", `/projects/${projectId}/human-deliverables/${code}/versions`),
+  refreshFreshness: (projectId, code) =>
+    post("da", `/projects/${projectId}/human-deliverables/${code}/refresh`, {}),
+  signoffRegister: (projectId) => get("da", `/projects/${projectId}/signoff-register`),
+  mySignoffs: (projectId) => get("da", `/projects/${projectId}/my-signoffs`),
+  auditTrail: (projectId) => get("da", `/projects/${projectId}/deliverable-audit-trail`),
+  exportUrl: (projectId, kind, code) => {
+    if (kind === "human") return `/api/da/projects/${projectId}/exports/human/${code}`;
+    if (kind === "snapshot") return `/api/da/projects/${projectId}/exports/snapshot/${code}`;
+    if (kind === "signoff-evidence") return `/api/da/projects/${projectId}/signoff-evidence`;
+    if (kind === "acceptance-package") return `/api/da/projects/${projectId}/acceptance-package`;
+    return null;
+  },
+};

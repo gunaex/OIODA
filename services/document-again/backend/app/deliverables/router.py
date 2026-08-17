@@ -72,6 +72,8 @@ class ProfileIn(BaseModel):
     workstreams: list[str] | None = None
     attributes: dict | None = None
     ai_recommendation: dict | None = None
+    current_phase: str | None = None
+    role_assignments: dict | None = None
     confirmed: bool = False
 
 
@@ -90,6 +92,8 @@ def put_profile(project_id: str, body: ProfileIn, db: Session = Depends(db_sessi
             "workstreams": body.workstreams or [],
             "attributes": body.attributes or {},
             "ai_recommendation": body.ai_recommendation,
+            "current_phase": body.current_phase,
+            "role_assignments": body.role_assignments,
         },
         actor=actx.name, confirmed=body.confirmed,
     )

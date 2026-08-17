@@ -81,6 +81,9 @@ def set_profile(db: Session, project: m.Project, profile: dict, *, actor: str = 
         "ai_recommendation": profile.get("ai_recommendation") or current.get("ai_recommendation"),
         "confirmed_at": _now_iso() if confirmed else current.get("confirmed_at"),
         "confirmed_by": actor if confirmed else current.get("confirmed_by"),
+        # R17.1 — delivery phase + role→person assignments for the "My Documents" UX
+        "current_phase": profile.get("current_phase") or current.get("current_phase"),
+        "role_assignments": profile.get("role_assignments") or current.get("role_assignments") or {},
     }
     meta[PROFILE_KEY] = next_profile
     project.project_meta = meta

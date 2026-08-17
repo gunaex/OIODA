@@ -167,8 +167,12 @@ export function Table({ head, children }) {
   );
 }
 
-export function Tr({ children }) {
-  return <tr className="hover:bg-gray-50">{children}</tr>;
+export function Tr({ children, onClick, className = "" }) {
+  return (
+    <tr onClick={onClick} className={`hover:bg-gray-50 ${className}`}>
+      {children}
+    </tr>
+  );
 }
 
 export function Td({ children, className = "" }) {

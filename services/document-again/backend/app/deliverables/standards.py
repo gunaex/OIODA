@@ -325,6 +325,9 @@ def _build() -> dict[str, dict]:
 
 STANDARDS = _build()
 
+# reverse lookup: exact human name -> code (used by R17.1 module composition)
+BY_NAME = {s["name"]: code for code, s in STANDARDS.items()}
+
 
 def all_standards() -> list[dict]:
     return list(STANDARDS.values())
@@ -332,6 +335,11 @@ def all_standards() -> list[dict]:
 
 def get_standard(code: str) -> dict | None:
     return STANDARDS.get(code)
+
+
+def standard_by_name(name: str) -> dict | None:
+    code = BY_NAME.get(name)
+    return STANDARDS[code] if code else None
 
 
 def standards_by_domain() -> dict[str, list[dict]]:

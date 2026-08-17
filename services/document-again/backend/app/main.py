@@ -14,6 +14,7 @@ from .deliverables import models as deliverable_models  # noqa: F401 — R17 tab
 from .observability import configure_logging, log, metrics, set_request_id, started_at
 from .routers.api import router
 from .deliverables.router import router as deliverables_router
+from .deliverables.human_router import router as human_deliverables_router
 from .routers.deps import tenant_scope
 from .services import DomainError
 
@@ -95,6 +96,7 @@ async def domain_error_handler(_: Request, exc: DomainError):
 
 app.include_router(router)
 app.include_router(deliverables_router)
+app.include_router(human_deliverables_router)
 
 
 @app.get("/api/health")
