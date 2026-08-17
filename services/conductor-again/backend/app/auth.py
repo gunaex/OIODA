@@ -106,15 +106,30 @@ def get_current_user(
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    payload = decode_access_token(token)
-    if payload.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Invalid token type")
+    # 1) Standalone local session JWT (HS256, issued by this service).
+    try:
+        payload = decode_access_token(token)
+        if payload.get("type") == "access":
+            user = db.query(User).filter(User.id == payload["sub"]).first()
+            if user and user.active:
+                return user
+    except HTTPException:
+        pass  # Not a valid local token — fall through to ecosystem SSO.
 
-    user = db.query(User).filter(User.id == payload["sub"]).first()
-    if not user or not user.active:
-        raise HTTPException(status_code=401, detail="User not found or inactive")
+    # 2) Ecosystem SSO: a signed Account Again human identity token.
+    # Authorization remains service-owned — map the verified human to the
+    # local user by email and apply the LOCAL role.
+    try:
+        from app.integration.account_again_client import verify_ecosystem_identity_token
 
-    return user
+        claims = verify_ecosystem_identity_token(token)
+        user = db.query(User).filter(User.email == claims.get("email")).first()
+        if user and user.active:
+            return user
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=401, detail="Invalid token")
 
 
 def require_roles(*roles: str):

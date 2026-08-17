@@ -5,7 +5,7 @@ primary_region = "sin"
   dockerfile = "Dockerfile"
 
 [env]
-  AUTH_MODE = "ecosystem"
+  AUTH_MODE = "local"
   ACCOUNT_AGAIN_URL = "http://oida-account.internal:8001"
   DATABASE_URL = "sqlite:////data/document-again.db"
 

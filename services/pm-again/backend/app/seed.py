@@ -94,16 +94,18 @@ def seed_document_templates(db: Session):
 
 
 def seed_bootstrap_admin(db: Session):
-    """Idempotent: only runs if the users table is completely empty, so
-    there's always at least one account able to log in and create others.
-    Set ADMIN_EMAIL/ADMIN_PASSWORD to control the bootstrap credentials
-    (required for a real deploy); without them, a random password is
-    generated and logged once — change it immediately after first login."""
-    if db.query(models.User).first() is not None:
-        return
-
+    """Idempotent: ensures at least one account able to log in and create
+    others. Set ADMIN_EMAIL/ADMIN_PASSWORD to control the bootstrap
+    credentials (required for a real deploy); without them, a random password
+    is generated and logged once — change it immediately after first login.
+    The configured ADMIN_EMAIL account is created if missing so ecosystem SSO
+    can map the Account Again human identity to it by email."""
     email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
     password = os.environ.get("ADMIN_PASSWORD")
+
+    if db.query(models.User).filter(models.User.email == email).first() is not None:
+        return
+
     generated = password is None
     if generated:
         password = secrets.token_urlsafe(12)
@@ -113,7 +115,7 @@ def seed_bootstrap_admin(db: Session):
         password_hash=hash_password(password),
         role="pmo_admin",
         active=True,
-        must_change_password=True,
+        must_change_password=generated,
     )
     db.add(user)
     db.commit()

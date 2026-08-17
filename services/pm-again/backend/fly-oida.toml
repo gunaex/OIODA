@@ -9,6 +9,9 @@ primary_region = 'sin'
 [build]
 [env]
   DATA_DIR = '/app/data'
+  ACCOUNT_AGAIN_URL = 'http://oida-account.internal:8001/api/v1'
+  ACCOUNT_AGAIN_ISSUER = 'https://api-oida.kanphong.com'
+  ADMIN_EMAIL = 'owner@oida.local'
 
 [[mounts]]
   source = 'pm_data'

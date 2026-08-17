@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
+import jwt
 
 from app.integration.service_health import check_service_identity
 
@@ -29,6 +30,14 @@ CLIENT_SECRET = os.getenv("ACCOUNT_AGAIN_CLIENT_SECRET", "")
 # bounded 15s timeout so a cold trust call fails closed rather than timing out.
 TIMEOUT_SECONDS = 15.0
 EXPECTED_SERVICE = "account-again"
+
+# Human SSO identity tokens issued by Account Again (audience + issuer must
+# both match; the issuer is the canonical online issuer in production).
+ECOSYSTEM_IDENTITY_AUDIENCE = "again-ecosystem-identity"
+ACCOUNT_AGAIN_ISSUER = os.getenv("ACCOUNT_AGAIN_ISSUER", "account-again-local")
+_JWKS_CACHE_TTL_SECONDS = 300.0
+_jwks_cache: dict[str, Any] = {"keys": None, "fetched_at": 0.0}
+_jwks_lock = threading.Lock()
 
 
 class AccountAgainUnavailableError(Exception):
@@ -78,6 +87,55 @@ class _TokenCache:
 
 
 _token_cache = _TokenCache()
+
+
+def verify_ecosystem_identity_token(token: str) -> dict:
+    """Verifies an RS256 human identity JWT issued by Account Again (SSO) and
+    returns its claims. Raises AccountAgainUnavailableError on any failure —
+    expired, bad signature, wrong issuer/audience, or the JWKS endpoint being
+    unreachable. The claims carry accountId/sub/email/tenantId; the password
+    is never present. Callers still resolve service-local authorization."""
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.InvalidTokenError as exc:
+        raise AccountAgainUnavailableError(f"Malformed identity token: {exc}") from exc
+
+    now = time.monotonic()
+    with _jwks_lock:
+        if _jwks_cache["keys"] is None or (now - _jwks_cache["fetched_at"]) > _JWKS_CACHE_TTL_SECONDS:
+            try:
+                resp = httpx.get(
+                    f"{ACCOUNT_AGAIN_URL}/.well-known/jwks.json", timeout=5.0
+                )
+                resp.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise AccountAgainUnavailableError(
+                    f"Account Again JWKS endpoint unreachable: {exc}"
+                ) from exc
+            _jwks_cache["keys"] = resp.json()
+            _jwks_cache["fetched_at"] = now
+
+    public_key = None
+    for key in _jwks_cache["keys"].get("keys", []):
+        if header.get("kid") is None or key.get("kid") == header.get("kid"):
+            public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
+            break
+    if public_key is None:
+        raise AccountAgainUnavailableError(f"No matching JWKS key for kid={header.get('kid')!r}")
+
+    try:
+        claims = jwt.decode(
+            token,
+            key=public_key,
+            algorithms=["RS256"],
+            audience=ECOSYSTEM_IDENTITY_AUDIENCE,
+            issuer=ACCOUNT_AGAIN_ISSUER,
+        )
+    except jwt.InvalidTokenError as exc:
+        raise AccountAgainUnavailableError(f"Identity token failed verification: {exc}") from exc
+    if "email" not in claims:
+        raise AccountAgainUnavailableError("Identity token missing email claim")
+    return claims
 
 
 def _now_iso() -> str:
