@@ -7,6 +7,7 @@ import { Loading, OidaError } from "./components/ui";
 import Login from "./pages/Login";
 import ChangePassword from "./pages/ChangePassword";
 import Projects from "./pages/Projects";
+import Deliverables from "./pages/Deliverables";
 import ProjectHome from "./pages/ProjectHome";
 import Requirements from "./pages/Requirements";
 import RequirementDetail from "./pages/RequirementDetail";
@@ -94,6 +95,7 @@ export default function App() {
       <Route path="/admin/ai-providers" element={<Navigate to="/projects" replace />} />
       <Route element={<RequireAuth><ProjectLayout /></RequireAuth>}>
         <Route path="/projects/:projectId" element={<ProjectHome />} />
+        <Route path="/projects/:projectId/deliverables" element={<Deliverables />} />
         <Route path="/projects/:projectId/requirements" element={<Requirements />} />
         <Route path="/projects/:projectId/requirements/:code" element={<RequirementDetail />} />
         <Route path="/projects/:projectId/documents/ur" element={<UrPage />} />

@@ -227,3 +227,21 @@ export const infraApi = {
   uat: () => get("infra", "/uat"),
   productionReadiness: () => get("infra", "/production-readiness"),
 };
+
+// ───────────────────────── R17 Deliverable Standard Framework ─────────────────────────
+export const deliverableApi = {
+  taxonomy: () => get("da", "/deliverable-taxonomy"),
+  standards: (domain) => get("da", `/deliverable-standards${domain ? `?domain=${domain}` : ""}`),
+  layouts: () => get("da", "/deliverable-layouts"),
+  profile: (projectId) => get("da", `/projects/${projectId}/deliverable-profile`),
+  putProfile: (projectId, body) => put("da", `/projects/${projectId}/deliverable-profile`, body),
+  matrix: (projectId) => get("da", `/projects/${projectId}/deliverable-matrix`),
+  generateMatrix: (projectId) => post("da", `/projects/${projectId}/deliverable-matrix/generate`, {}),
+  gaps: (projectId) => get("da", `/projects/${projectId}/deliverable-gaps`),
+  instance: (projectId, code) => get("da", `/projects/${projectId}/deliverables/${code}`),
+  transition: (projectId, code, body) =>
+    post("da", `/projects/${projectId}/deliverables/${code}/transition`, body),
+  overrideApplicability: (projectId, code, applicability) =>
+    post("da", `/projects/${projectId}/deliverables/${code}/applicability`, { applicability }),
+  exportWorkbookUrl: (projectId, mode) => `/api/da/projects/${projectId}/exports/${mode}`,
+};

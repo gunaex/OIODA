@@ -10,8 +10,10 @@ from sqlalchemy import text
 from .account_client import AUTH_MODE, ACCOUNT_AGAIN_URL
 from .db import Base, DATABASE_URL, engine
 from . import models  # noqa: F401 — register ORM tables with Base.metadata
+from .deliverables import models as deliverable_models  # noqa: F401 — R17 tables
 from .observability import configure_logging, log, metrics, set_request_id, started_at
 from .routers.api import router
+from .deliverables.router import router as deliverables_router
 from .routers.deps import tenant_scope
 from .services import DomainError
 
@@ -92,6 +94,7 @@ async def domain_error_handler(_: Request, exc: DomainError):
 
 
 app.include_router(router)
+app.include_router(deliverables_router)
 
 
 @app.get("/api/health")
