@@ -23,7 +23,7 @@ from account_again.api.schemas import (
     EntitlementEvaluateRequest,
     QuotaPolicyCreate, UsageRecordCreate,
     ServiceTokenRequest, ServiceSecretRotateRequest,
-    ReauthRequest, VerifyConfirmationRequest,
+    ReauthRequest, VerifyConfirmationRequest, ChangePasswordRequest,
 )
 from account_again.services import (
     EntitlementRequest, evaluate_entitlement,
@@ -225,6 +225,7 @@ def create_identity(body: SubjectIdentityCreate, db: Session = Depends(get_db)):
         auth_method=body.authMethod,
         password_hash=password_hash,
         provider_subject=body.providerSubject,
+        must_change_password=bool(body.mustChangePassword),
     )
     db.add(ident)
     db.commit()
@@ -719,12 +720,14 @@ def issue_ecosystem_token(body: ReauthRequest, db: Session = Depends(get_db)):
         if role:
             roles.append(role.name)
 
+    must_change = bool(subject.must_change_password)
     result = service_auth.issue_ecosystem_identity_token(
         account_id=account.account_id,
         subject_id=subject.subject_id,
         tenant_id=account.tenant_id,
         email=account.email,
         ecosystem_roles=roles,
+        must_change_password=must_change,
     )
     write_audit(db, actor_type="HUMAN", actor_id=account.account_id, action="SSO_SUCCESS",
                 target_type="Account", target_id=account.account_id, result="SUCCESS")
@@ -737,7 +740,40 @@ def issue_ecosystem_token(body: ReauthRequest, db: Session = Depends(get_db)):
         "tenantId": account.tenant_id,
         "email": account.email,
         "ecosystemRoles": roles,
+        "mustChangePassword": must_change,
     }
+
+
+@router.post("/auth/change-password")
+def change_password(body: ChangePasswordRequest, authorization: str = Header(default=""), db: Session = Depends(get_db)):
+    """Self-service password change for a signed-in human. Requires a valid
+    ecosystem identity token; verifies the current password, then stores the
+    new hash and clears the force-change flag."""
+    token = authorization[len("Bearer "):].strip() if authorization.startswith("Bearer ") else ""
+    if not token:
+        raise HTTPException(401, "Not authenticated")
+    try:
+        claims = service_auth.verify_ecosystem_identity_token(token)
+    except Exception:
+        raise HTTPException(401, "Invalid token")
+    account_id = claims.get("accountId")
+    identity = db.query(SubjectIdentity).filter(
+        SubjectIdentity.account_id == account_id,
+        SubjectIdentity.auth_method == "PASSWORD",
+        SubjectIdentity.status == "ACTIVE",
+    ).first()
+    if not identity or not identity.password_hash or not _verify_password(body.currentPassword, identity.password_hash):
+        write_audit(db, actor_type="HUMAN", actor_id=account_id or "", action="PASSWORD_CHANGE_DENIED",
+                    target_type="Account", target_id=account_id or "", result="DENY_BAD_PASSWORD")
+        db.commit()
+        raise HTTPException(401, "Current password is incorrect")
+    identity.password_hash = _hash_password(body.newPassword)
+    identity.must_change_password = False
+    identity.updated_at = _now()
+    write_audit(db, actor_type="HUMAN", actor_id=account_id or "", action="PASSWORD_CHANGED",
+                target_type="Account", target_id=account_id or "", result="SUCCESS")
+    db.commit()
+    return {"message": "Password changed"}
 
 
 @router.get("/.well-known/jwks.json")

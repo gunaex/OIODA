@@ -184,7 +184,7 @@ def verify_confirmation_token(token: str) -> dict:
     return claims
 
 
-def issue_ecosystem_identity_token(*, account_id: str, subject_id: str, tenant_id: Optional[str], email: str, ecosystem_roles: list[str]) -> dict:
+def issue_ecosystem_identity_token(*, account_id: str, subject_id: str, tenant_id: Optional[str], email: str, ecosystem_roles: list[str], must_change_password: bool = False) -> dict:
     """Issue the short-lived ecosystem human identity token (SSO). The password
     is checked once by the caller before this function is invoked; it is never
     embedded here. Claims carry a stable subject (account_id) and email only as
@@ -202,6 +202,7 @@ def issue_ecosystem_identity_token(*, account_id: str, subject_id: str, tenant_i
         "tenantId": tenant_id,
         "email": email,
         "ecosystemRoles": ecosystem_roles,
+        "mustChangePassword": bool(must_change_password),
     }
     token = jwt.encode(claims, _PRIVATE_PEM, algorithm=ALGORITHM, headers={"kid": _KEY_ID})
     return {

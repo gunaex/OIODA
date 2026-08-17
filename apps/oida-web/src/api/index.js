@@ -200,6 +200,8 @@ export const accountApi = {
   reauth: (email, password) => post("account", "/auth/reauth", { email, password }),
   // R-identity: single sign-on — one human credential → signed ecosystem identity token
   ecosystemToken: (email, password) => post("account", "/auth/ecosystem-token", { email, password }),
+  changePassword: (currentPassword, newPassword) =>
+    post("account", "/auth/change-password", { currentPassword, newPassword }),
 };
 
 // ───────────────────────── Conductor (read-only status) ─────────────────────────

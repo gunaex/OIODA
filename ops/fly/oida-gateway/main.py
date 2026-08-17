@@ -138,6 +138,7 @@ def auth_me(request: Request):
         "subject_id": claims.get("subjectId"),
         "tenant_id": claims.get("tenantId"),
         "roles": claims.get("ecosystemRoles") or [],
+        "must_change_password": bool(claims.get("mustChangePassword")),
     }
 
 

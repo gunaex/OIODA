@@ -5,6 +5,7 @@ import { useProject, ProjectContext } from "./hooks/useProject";
 import { Loading, OidaError } from "./components/ui";
 
 import Login from "./pages/Login";
+import ChangePassword from "./pages/ChangePassword";
 import Projects from "./pages/Projects";
 import ProjectHome from "./pages/ProjectHome";
 import Requirements from "./pages/Requirements";
@@ -56,13 +57,21 @@ function ProjectLayout() {
 }
 
 function RequireAuth({ children }) {
-  const { loading, authenticated } = useAuth();
+  const { loading, authenticated, mustChangePassword } = useAuth();
   const location = useLocation();
   // Never render protected content while auth state is unresolved.
   if (loading) return <Loading />;
   if (!authenticated) {
-    const returnTo = encodeURIComponent(location.pathname + location.search);
+    // After a password change the user is signed out from /change-password;
+    // send them back to /projects, never back to the change-password form.
+    const target = location.pathname === "/change-password"
+      ? "/projects"
+      : location.pathname + location.search;
+    const returnTo = encodeURIComponent(target);
     return <Navigate to={`/login?returnTo=${returnTo}`} replace />;
+  }
+  if (mustChangePassword && location.pathname !== "/change-password") {
+    return <Navigate to="/change-password" replace />;
   }
   return children;
 }
@@ -71,6 +80,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/change-password" element={<RequireAuth><ChangePassword /></RequireAuth>} />
       <Route path="/" element={<Navigate to="/projects" replace />} />
       <Route
         path="/projects"

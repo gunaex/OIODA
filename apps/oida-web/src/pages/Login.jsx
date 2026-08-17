@@ -37,6 +37,8 @@ export default function Login() {
       const results = await login(email, password);
       if (results.account && results.account.ok === false) {
         setError("Sign-in did not succeed. Check your credentials.");
+      } else if (results.mustChangePassword) {
+        navigate("/change-password", { replace: true });
       } else {
         navigate(returnTo, { replace: true });
       }

@@ -1,6 +1,6 @@
 """Account Again — SubjectIdentity model (auth identity separate from domain profile)."""
 
-from sqlalchemy import Column, String
+from sqlalchemy import Boolean, Column, String
 from account_again.database import Base
 from account_again.models.tenant import _new_id, _now
 
@@ -16,6 +16,7 @@ class SubjectIdentity(Base):
     auth_method = Column(String, nullable=False, default="PASSWORD")
     password_hash = Column(String, nullable=True)  # only for LOCAL/PASSWORD
     status = Column(String, nullable=False, default="ACTIVE")
+    must_change_password = Column(Boolean, nullable=False, default=False)
     created_at = Column(String, nullable=False, default=_now)
     updated_at = Column(String, nullable=False, default=_now)
 
@@ -28,6 +29,7 @@ class SubjectIdentity(Base):
             "providerSubject": self.provider_subject,
             "authMethod": self.auth_method,
             "status": self.status,
+            "mustChangePassword": self.must_change_password,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
         }

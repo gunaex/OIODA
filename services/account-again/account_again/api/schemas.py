@@ -31,6 +31,12 @@ class SubjectIdentityCreate(BaseModel):
     authMethod: str = "PASSWORD"
     password: Optional[str] = None  # Only for LOCAL/PASSWORD
     providerSubject: Optional[str] = None
+    mustChangePassword: Optional[bool] = None  # force change on first login
+
+
+class ChangePasswordRequest(BaseModel):
+    currentPassword: str
+    newPassword: str
 
 # ── Role / Permission ──
 class RoleCreate(BaseModel):

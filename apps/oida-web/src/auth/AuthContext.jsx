@@ -15,6 +15,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
   const [identity, setIdentity] = useState(null);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const [session, setSession] = useState({ da: { available: true, actor: getActor() } });
   const [lastLogin, setLastLogin] = useState(null);
   const [ecosystem, setEcosystem] = useState(() => {
@@ -30,6 +31,7 @@ export function AuthProvider({ children }) {
     if (!token) {
       setAuthenticated(false);
       setIdentity(null);
+      setMustChangePassword(false);
       setLoading(false);
       return;
     }
@@ -37,12 +39,14 @@ export function AuthProvider({ children }) {
       const me = await request("auth", "/me");
       setAuthenticated(true);
       setIdentity(me);
+      setMustChangePassword(Boolean(me.must_change_password));
       setEcosystem({ accessToken: token });
     } catch {
       localStorage.removeItem(ECO_TOKEN_KEY);
       setEcosystem(null);
       setAuthenticated(false);
       setIdentity(null);
+      setMustChangePassword(false);
     }
     setLoading(false);
   }, []);
@@ -74,11 +78,14 @@ export function AuthProvider({ children }) {
     // Single sign-on: authenticate ONCE against Account Again, store the
     // signed ecosystem identity token, and verify the bounded services accept
     // it. No per-service passwords are ever sent.
+    let mustChange = false;
     try {
       const eco = await accountApi.ecosystemToken(email, password);
       localStorage.setItem(ECO_TOKEN_KEY, eco.accessToken);
       setEcosystem(eco);
       setAuthenticated(true);
+      mustChange = Boolean(eco.mustChangePassword);
+      setMustChangePassword(mustChange);
     } catch (err) {
       setLastLogin({ account: { ok: false, error: err.message || String(err) } });
       return { account: { ok: false, error: err.message || String(err) } };
@@ -87,6 +94,8 @@ export function AuthProvider({ children }) {
     try {
       const me = await request("auth", "/me");
       setIdentity(me);
+      mustChange = Boolean(me.must_change_password);
+      setMustChangePassword(mustChange);
     } catch {
       setIdentity(null);
     }
@@ -109,7 +118,7 @@ export function AuthProvider({ children }) {
     }
     setSession(next);
     setLastLogin(results);
-    return results;
+    return { ...results, mustChangePassword: mustChange };
   }, []);
 
   const logout = useCallback(async () => {
@@ -124,7 +133,19 @@ export function AuthProvider({ children }) {
     setEcosystem(null);
     setAuthenticated(false);
     setIdentity(null);
+    setMustChangePassword(false);
     setSession({ da: { available: true, actor: getActor() } });
+  }, []);
+
+  const changePassword = useCallback(async (currentPassword, newPassword) => {
+    // Change the Account Again (SSO) password. The gateway forwards the
+    // current token; Account Again verifies the current password and clears
+    // the force-change flag.
+    await request("account", "/auth/change-password", {
+      method: "POST",
+      body: { currentPassword, newPassword },
+    });
+    setMustChangePassword(false);
   }, []);
 
   const setActor = useCallback((actor) => {
@@ -140,10 +161,12 @@ export function AuthProvider({ children }) {
         loading,
         authenticated,
         identity,
+        mustChangePassword,
         session,
         loggedIn,
         login,
         logout,
+        changePassword,
         setActor,
         lastLogin,
         ecosystem,
