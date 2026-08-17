@@ -1,0 +1,36 @@
+# Account Again — Fly.io deployment (R2A).
+# Trust authority: fail-closed auth, persistent volume for SQLite, secure signing key
+# via Fly secrets (ACCOUNT_AGAIN_SIGNING_KEY_B64). Never commit secrets here.
+app = "oida-account"
+primary_region = "sin"
+
+[build]
+
+[env]
+  ACCOUNT_AGAIN_DATABASE_URL = "sqlite:////data/account_again.db"
+  ACCOUNT_AGAIN_ISSUER = "https://api-oida.kanphong.com"
+  ACCOUNT_AGAIN_AUDIENCE = "again-ecosystem-services"
+
+[mounts]
+  source = "account_again_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8001
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/v1/health"
+
+[vm]
+  size = "shared-cpu-1x"
+  memory = "256mb"

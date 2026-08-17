@@ -20,10 +20,10 @@ app = FastAPI(title="OIDA Gateway", version="0.1.0")
 ROUTES = {
     "da": (os.environ.get("DOCUMENT_AGAIN_URL", "http://oida-document.internal:8003"), "/api"),
     "pm": (os.environ.get("PM_AGAIN_URL", "http://oida-pm.internal:8000"), "/api"),
-    "qa": (os.environ.get("QA_AGAIN_URL", "http://oida-qa.internal:8002"), "/api"),
-    "conductor": (os.environ.get("CONDUCTOR_AGAIN_URL", "http://oida-conductor.internal:8010"), "/api"),
-    "account": (os.environ.get("ACCOUNT_AGAIN_URL", "http://oida-account.internal:8011"), "/api/v1"),
-    "infra": (os.environ.get("INFRA_AGAIN_URL", "http://oida-infra.internal:18090"), "/api/v1"),
+    "qa": (os.environ.get("QA_AGAIN_URL", "http://oida-qa.internal:8000"), "/api"),
+    "conductor": (os.environ.get("CONDUCTOR_AGAIN_URL", "http://oida-conductor.internal:8000"), "/api"),
+    "account": (os.environ.get("ACCOUNT_AGAIN_URL", "http://oida-account.internal:8001"), "/api/v1"),
+    "infra": (os.environ.get("INFRA_AGAIN_URL", "http://oida-infra.internal:8080"), "/api/v1"),
 }
 
 CORS_ORIGIN = os.environ.get("OIDA_WEB_ORIGIN", "https://oida.kanphong.com")

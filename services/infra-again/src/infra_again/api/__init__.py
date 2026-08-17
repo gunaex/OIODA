@@ -43,6 +43,11 @@ async def health():
     return {"status": "ok", "version": "3.0.0", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+@app.get("/api/v1/health")
+async def health_v1():
+    return {"status": "ok", "version": "3.0.0", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
 # ---------------------------------------------------------------------------
 # Capabilities
 # ---------------------------------------------------------------------------

@@ -1,19 +1,30 @@
-# Document Again — Fly.io deployment (bounded document + lifecycle authority).
-# Private service: reachable via oida-gateway over Fly .internal networking.
 app = "oida-document"
 primary_region = "sin"
 
 [build]
-  dockerfile = "services/document-again/Dockerfile"
+  dockerfile = "Dockerfile"
 
 [env]
   AUTH_MODE = "ecosystem"
-  ACCOUNT_AGAIN_URL = "http://oida-account.internal:8011"
-  DATABASE_URL = "postgresql://postgres:REPLACE_ME@oida-db.internal:5432/document_db"
+  ACCOUNT_AGAIN_URL = "http://oida-account.internal:8001"
+  DATABASE_URL = "sqlite:////data/document-again.db"
 
-[[services]]
+[mounts]
+  source = "document_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
   internal_port = 8003
-  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
 
-[[vm]]
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/api/health"
+
+[vm]
   size = "shared-cpu-1x"

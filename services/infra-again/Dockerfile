@@ -23,6 +23,11 @@ RUN pip install --no-cache-dir -e ".[dev]" || pip install --no-cache-dir fastapi
 # Create data directory
 RUN mkdir -p /data
 
+COPY dualstack_start.py ./dualstack_start.py
+
 EXPOSE 8080
 
-CMD ["uvicorn", "infra_again.api:app", "--host", "0.0.0.0", "--port", "8080"]
+ENV APP_MODULE=infra_again.api:app
+ENV PORT=8080
+
+CMD ["python", "dualstack_start.py"]

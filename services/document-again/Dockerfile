@@ -1,14 +1,13 @@
-# Document Again — production image (built from OIODA monorepo root).
 FROM python:3.12-slim
-
 WORKDIR /app
-
-COPY services/document-again/backend/requirements.txt requirements.txt 2>/dev/null || true
-RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || pip install --no-cache-dir fastapi uvicorn sqlalchemy httpx python-dotenv
-
-COPY services/document-again/backend /app
-
-ENV AUTH_MODE=ecosystem
+COPY backend/requirements.txt requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+COPY backend /app
+COPY dualstack_start.py ./dualstack_start.py
 EXPOSE 8003
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8003"]
+ENV AUTH_MODE=ecosystem
+ENV DATABASE_URL=sqlite:////data/document-again.db
+ENV APP_MODULE=app.main:app
+ENV PORT=8003
+VOLUME ["/data"]
+CMD ["python", "dualstack_start.py"]

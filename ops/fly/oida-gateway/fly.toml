@@ -1,0 +1,26 @@
+app = "oida-gateway"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ACCOUNT_AGAIN_URL = "http://oida-account.internal:8001"
+  DOCUMENT_AGAIN_URL = "http://oida-document.internal:8003"
+  CONDUCTOR_AGAIN_URL = "http://oida-conductor.internal:8000"
+  PM_AGAIN_URL = "http://oida-pm.internal:8000"
+  QA_AGAIN_URL = "http://oida-qa.internal:8000"
+  INFRA_AGAIN_URL = "http://oida-infra.internal:8080"
+  OIDA_WEB_ORIGIN = "https://oida.kanphong.com"
+
+[http_service]
+  internal_port = 8080
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "10s"
+    timeout = "2s"
+    method = "GET"
+    path = "/healthz"
