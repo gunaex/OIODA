@@ -18,6 +18,7 @@ import threading
 import time
 
 import httpx
+import jwt
 
 AUTH_MODE = os.environ.get("AUTH_MODE", "local")
 ACCOUNT_AGAIN_URL = os.environ.get("ACCOUNT_AGAIN_URL", "").rstrip("/")
@@ -36,6 +37,63 @@ CAPABILITY = "document-again:design:write"
 # separated system-id vocabulary (VALID_SYSTEM_IDS). Document Again must
 # present the same identifier so AA can verify its service token.
 SERVICE_SYSTEM_ID = "DOCUMENT_AGAIN"
+
+# Human SSO identity tokens issued by Account Again (audience + issuer must
+# both match; the issuer is the canonical online issuer in production).
+ECOSYSTEM_IDENTITY_AUDIENCE = "again-ecosystem-identity"
+ACCOUNT_AGAIN_ISSUER = os.environ.get("ACCOUNT_AGAIN_ISSUER", "account-again-local")
+_JWKS_CACHE_TTL = 300.0
+_jwks_state: dict = {"keys": None, "ts": 0.0}
+_jwks_lock = threading.Lock()
+
+
+def verify_ecosystem_identity_token(token: str) -> dict:
+    """Verify an RS256 Account Again human identity JWT (SSO) and return its
+    claims. Raises AccountAgainError on any failure — expired, bad signature,
+    wrong issuer/audience, or the JWKS endpoint being unreachable. The claims
+    carry accountId/subjectId/tenantId/email; the password is never present."""
+    if not ACCOUNT_AGAIN_URL:
+        raise AccountAgainError("ACCOUNT_AGAIN_URL is not configured", 503)
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.InvalidTokenError as exc:
+        raise AccountAgainError(f"Malformed identity token: {exc}", 401) from exc
+
+    now = time.monotonic()
+    with _jwks_lock:
+        if _jwks_state["keys"] is None or (now - _jwks_state["ts"]) > _JWKS_CACHE_TTL:
+            try:
+                resp = httpx.get(
+                    f"{ACCOUNT_AGAIN_URL}{ACCOUNT_AGAIN_PREFIX}/.well-known/jwks.json",
+                    timeout=5.0,
+                )
+                resp.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise AccountAgainError(f"Account Again JWKS unreachable: {exc}", 503) from exc
+            _jwks_state["keys"] = resp.json()
+            _jwks_state["ts"] = now
+
+    public_key = None
+    for key in _jwks_state["keys"].get("keys", []):
+        if key.get("kid") == header.get("kid"):
+            public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
+            break
+    if public_key is None:
+        raise AccountAgainError(f"No matching JWKS key for kid={header.get('kid')!r}", 401)
+
+    try:
+        claims = jwt.decode(
+            token,
+            key=public_key,
+            algorithms=["RS256"],
+            audience=ECOSYSTEM_IDENTITY_AUDIENCE,
+            issuer=ACCOUNT_AGAIN_ISSUER,
+        )
+    except jwt.InvalidTokenError as exc:
+        raise AccountAgainError(f"Identity token failed verification: {exc}", 401) from exc
+    if "email" not in claims:
+        raise AccountAgainError("Identity token missing email claim", 401)
+    return claims
 
 
 class AccountAgainError(Exception):

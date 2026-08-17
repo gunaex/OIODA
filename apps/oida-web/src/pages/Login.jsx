@@ -1,12 +1,29 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { Boxes } from "lucide-react";
 import { Badge } from "../components/ui";
 
+function sanitizeReturnTo(raw) {
+  if (!raw) return "/projects";
+  let decoded;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return "/projects";
+  }
+  // Only allow same-origin absolute paths — never "//evil.com" or "https://".
+  if (!decoded.startsWith("/") || decoded.startsWith("//") || decoded.includes("://")) {
+    return "/projects";
+  }
+  return decoded;
+}
+
 export default function Login() {
-  const { login, lastLogin, loggedIn } = useAuth();
+  const { login, lastLogin } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnTo = sanitizeReturnTo(new URLSearchParams(location.search).get("returnTo"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -18,9 +35,11 @@ export default function Login() {
     setError(null);
     try {
       const results = await login(email, password);
-      const anyOk = Object.values(results).some((r) => r.ok);
-      if (anyOk) navigate("/projects");
-      else setError("Sign-in did not succeed for any service. Check your credentials.");
+      if (results.account && results.account.ok === false) {
+        setError("Sign-in did not succeed. Check your credentials.");
+      } else {
+        navigate(returnTo, { replace: true });
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -93,12 +112,6 @@ export default function Login() {
             </div>
           )}
         </form>
-
-        <div className="mt-4 flex justify-center">
-          <button onClick={() => navigate("/projects")} className="text-sm text-gray-500 hover:text-gray-800">
-            Continue without sign-in →
-          </button>
-        </div>
       </div>
     </div>
   );

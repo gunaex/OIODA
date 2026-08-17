@@ -5,7 +5,12 @@ from fastapi import Header, HTTPException, Request
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from ..account_client import AUTH_MODE, AccountAgainError, client
+from ..account_client import (
+    AUTH_MODE,
+    AccountAgainError,
+    client,
+    verify_ecosystem_identity_token,
+)
 from ..db import get_db
 from ..observability import metrics
 from ..tenant import set_current_tenant
@@ -32,15 +37,20 @@ async def tenant_scope(request: Request) -> None:
         set_current_tenant(request.headers.get("X-Tenant-Id"))
         return
 
-    # account_again: production read auth (P5-E)
+    # production read auth (P5-E): account_again (service token) or
+    # ecosystem (human SSO identity token, verified against Account Again).
     path = request.url.path
     if path in _PUBLIC_PATHS or path.startswith("/docs") or path.startswith("/openapi") or path.startswith("/redoc"):
         return
     token = (request.headers.get("Authorization") or "").strip()
     if token.startswith("Bearer "):
         token = token[len("Bearer "):].strip()
-    account_id = request.headers.get("X-Account-Id") or request.headers.get("X-Subject-Id")
     try:
+        if AUTH_MODE == "ecosystem":
+            claims = await run_in_threadpool(verify_ecosystem_identity_token, token or "")
+            set_current_tenant(claims.get("tenantId"))
+            return
+        account_id = request.headers.get("X-Account-Id") or request.headers.get("X-Subject-Id")
         info = await run_in_threadpool(client.validate_actor, token, account_id or "", request.headers.get("X-Tenant-Id"))
     except AccountAgainError as exc:
         metrics.inc("auth_denied")
@@ -69,12 +79,13 @@ async def actor(
 ) -> str:
     """Actor display name, resolved per auth mode.
 
-    - ``AUTH_MODE=account_again``: delegates to :func:`actor_ctx` so the
-      caller is validated against Account Again. X-Actor is never trusted in
-      production mode; a failed validation rejects the request.
+    - ``AUTH_MODE=account_again`` / ``AUTH_MODE=ecosystem``: delegates to
+      :func:`actor_ctx` so the caller is validated against Account Again.
+      X-Actor is never trusted in production mode; a failed validation
+      rejects the request.
     - ``AUTH_MODE=local``: deterministic development actor.
     """
-    if AUTH_MODE == "account_again":
+    if AUTH_MODE in ("account_again", "ecosystem"):
         ctx = await actor_ctx(
             authorization, x_actor, x_account_id, x_subject_id, x_tenant_id, x_actor_name
         )
@@ -92,13 +103,31 @@ async def actor_ctx(
 ) -> ActorContext:
     """Resolve the actor identity according to the configured auth mode.
 
-    - ``AUTH_MODE=account_again``: a Bearer token + account/subject id are
-      required and validated against Account Again. Any failure rejects the
-      request — local identity is never silently substituted.
+    - ``AUTH_MODE=account_again``: a Bearer service token + account/subject id
+      are required and validated against Account Again.
+    - ``AUTH_MODE=ecosystem``: a Bearer human identity token is verified
+      against Account Again; X-Actor is ignored and never trusted.
     - ``AUTH_MODE=local``: a deterministic development actor is used.
     """
-    if AUTH_MODE not in ("local", "account_again"):
+    if AUTH_MODE not in ("local", "account_again", "ecosystem"):
         raise HTTPException(status_code=503, detail="AUTH_MODE misconfigured")
+
+    if AUTH_MODE == "ecosystem":
+        token = (authorization or "").strip()
+        if token.startswith("Bearer "):
+            token = token[len("Bearer "):].strip()
+        try:
+            claims = await run_in_threadpool(verify_ecosystem_identity_token, token or "")
+        except AccountAgainError as exc:
+            metrics.inc("auth_denied")
+            raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        set_current_tenant(claims.get("tenantId"))
+        return ActorContext(
+            id=claims.get("accountId") or claims.get("sub") or claims.get("email"),
+            name=claims.get("email") or claims.get("accountId") or "authenticated-user",
+            tenant_id=claims.get("tenantId"),
+            source="ACCOUNT_AGAIN",
+        )
 
     if AUTH_MODE == "account_again":
         token = (authorization or "").strip()

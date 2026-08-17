@@ -13,12 +13,43 @@ const ECO_TOKEN_KEY = "oida_ecosystem_token";
 
 export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [identity, setIdentity] = useState(null);
   const [session, setSession] = useState({ da: { available: true, actor: getActor() } });
   const [lastLogin, setLastLogin] = useState(null);
   const [ecosystem, setEcosystem] = useState(() => {
     const t = localStorage.getItem(ECO_TOKEN_KEY);
     return t ? { accessToken: t } : null;
   });
+
+  // Bootstrap: a stored token is only valid if the gateway accepts it. Never
+  // trust localStorage alone — validate the token against /api/auth/me before
+  // declaring the user AUTHENTICATED.
+  const bootstrap = useCallback(async () => {
+    const token = localStorage.getItem(ECO_TOKEN_KEY);
+    if (!token) {
+      setAuthenticated(false);
+      setIdentity(null);
+      setLoading(false);
+      return;
+    }
+    try {
+      const me = await request("auth", "/me");
+      setAuthenticated(true);
+      setIdentity(me);
+      setEcosystem({ accessToken: token });
+    } catch {
+      localStorage.removeItem(ECO_TOKEN_KEY);
+      setEcosystem(null);
+      setAuthenticated(false);
+      setIdentity(null);
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    bootstrap();
+  }, [bootstrap]);
 
   const probe = useCallback(async () => {
     const next = { da: { available: true, actor: getActor() } };
@@ -33,12 +64,11 @@ export function AuthProvider({ children }) {
       })
     );
     setSession(next);
-    setLoading(false);
   }, []);
 
   useEffect(() => {
-    probe();
-  }, [probe]);
+    if (authenticated) probe();
+  }, [authenticated, probe]);
 
   const login = useCallback(async (email, password) => {
     // Single sign-on: authenticate ONCE against Account Again, store the
@@ -48,9 +78,17 @@ export function AuthProvider({ children }) {
       const eco = await accountApi.ecosystemToken(email, password);
       localStorage.setItem(ECO_TOKEN_KEY, eco.accessToken);
       setEcosystem(eco);
+      setAuthenticated(true);
     } catch (err) {
       setLastLogin({ account: { ok: false, error: err.message || String(err) } });
       return { account: { ok: false, error: err.message || String(err) } };
+    }
+
+    try {
+      const me = await request("auth", "/me");
+      setIdentity(me);
+    } catch {
+      setIdentity(null);
     }
 
     const results = {};
@@ -84,6 +122,8 @@ export function AuthProvider({ children }) {
     );
     localStorage.removeItem(ECO_TOKEN_KEY);
     setEcosystem(null);
+    setAuthenticated(false);
+    setIdentity(null);
     setSession({ da: { available: true, actor: getActor() } });
   }, []);
 
@@ -96,7 +136,18 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ loading, session, loggedIn, login, logout, setActor, lastLogin, ecosystem }}
+      value={{
+        loading,
+        authenticated,
+        identity,
+        session,
+        loggedIn,
+        login,
+        logout,
+        setActor,
+        lastLogin,
+        ecosystem,
+      }}
     >
       {children}
     </AuthContext.Provider>

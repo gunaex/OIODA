@@ -56,12 +56,14 @@ function ProjectLayout() {
 }
 
 function RequireAuth({ children }) {
-  const { loading } = useAuth();
+  const { loading, authenticated } = useAuth();
   const location = useLocation();
+  // Never render protected content while auth state is unresolved.
   if (loading) return <Loading />;
-  // Document Again runs in local mode; the shell is usable once the auth
-  // probe has settled. A login screen is offered, but not hard-gated, so the
-  // owner can still browse design data even before PM/QA sign-in.
+  if (!authenticated) {
+    const returnTo = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={`/login?returnTo=${returnTo}`} replace />;
+  }
   return children;
 }
 

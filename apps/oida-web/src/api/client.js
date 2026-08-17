@@ -30,11 +30,11 @@ export async function request(service, path, options = {}) {
     opts.body = JSON.stringify(opts.body);
   }
 
-  // Ecosystem SSO: attach the single Account Again identity token to the
-  // bounded human services. The Vite proxy forwards it as Authorization:
-  // Bearer upstream. No password is ever sent downstream.
+  // Ecosystem SSO: attach the single Account Again identity token to every
+  // service call. The gateway requires it on all protected routes and derives
+  // a trusted actor context from it. No password is ever sent downstream.
   const ecoToken = localStorage.getItem("oida_ecosystem_token");
-  if (ecoToken && ["pm", "qa", "conductor", "infra"].includes(service)) {
+  if (ecoToken) {
     opts.headers = { ...(opts.headers || {}) };
     if (!opts.headers.Authorization && !opts.headers.authorization) {
       opts.headers.Authorization = `Bearer ${ecoToken}`;
