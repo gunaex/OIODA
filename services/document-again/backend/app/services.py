@@ -391,6 +391,63 @@ def import_project(db: Session, package: dict, *, actor="local-user", actor_id: 
         row = m.Decision(project_id=project.id, semantic_id=f"{d.get('semantic_id')}-{key}",
                          title=d.get("title"), content=d.get("content"), decided_by=actor)
         db.add(row)
+
+    def _enum(cls, value, default):
+        try:
+            return cls(value)
+        except (ValueError, TypeError):
+            return default
+
+    # Rebuild change requests / suggestions / consultations (these are exported
+    # but were previously not restored on import).
+    for cr in doc.get("change_requests", []):
+        row = m.ChangeRequest(
+            project_id=project.id, code=cr.get("code"), title=cr.get("title"),
+            requested_change=cr.get("requested_change") or "",
+            status=_enum(m.ChangeRequestStatus, cr.get("status"), m.ChangeRequestStatus.DRAFT),
+            requested_by=actor, created_by=actor,
+        )
+        db.add(row)
+    for s in doc.get("suggestions", []):
+        row = m.Suggestion(
+            project_id=project.id, title=s.get("title") or "Imported suggestion",
+            type=s.get("type"), severity=s.get("severity"),
+            status=_enum(m.SuggestionStatus, s.get("status"), m.SuggestionStatus.OPEN),
+            created_by=actor,
+        )
+        db.add(row)
+    for c in doc.get("consultations", []):
+        agg = {"aggregation_mode": c.get("aggregation_mode")} if c.get("aggregation_mode") else None
+        row = m.Consultation(
+            project_id=project.id, task_type=c.get("task_type") or "GENERAL_REVIEW",
+            question=c.get("question") or "", aggregation=agg,
+        )
+        db.add(row)
+
+    # Trace links: re-key assumption/decision semantic ids that were remapped.
+    semantic_map = {}
+    for a in doc.get("assumptions", []):
+        if a.get("semantic_id"):
+            semantic_map[a["semantic_id"]] = f"{a['semantic_id']}-{key}"
+    for d in doc.get("decisions", []):
+        if d.get("semantic_id"):
+            semantic_map[d["semantic_id"]] = f"{d['semantic_id']}-{key}"
+
+    db.commit()
+
+    for t in doc.get("trace_links", []):
+        src = semantic_map.get(t.get("source"), t.get("source"))
+        tgt = semantic_map.get(t.get("target"), t.get("target"))
+        if not src or not tgt:
+            continue
+        row = m.TraceLink(
+            project_id=project.id,
+            source_semantic_id=src,
+            target_semantic_id=tgt,
+            relation_type=_enum(m.TraceRelationType, t.get("relation"), m.TraceRelationType.REFERENCES),
+            created_by=actor,
+        )
+        db.add(row)
     db.commit()
 
     # Rebuild bindings as pointers (never import PM/QA/Infra data).

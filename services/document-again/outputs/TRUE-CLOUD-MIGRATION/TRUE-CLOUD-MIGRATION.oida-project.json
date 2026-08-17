@@ -1,0 +1,529 @@
+{
+  "package_version": "1.0",
+  "exported_at": "2026-08-17T01:58:27.386037+00:00",
+  "source_environment": "LOCAL",
+  "project": {
+    "id": "prj_02884ef10cdc459889f1",
+    "key": "TCM",
+    "name": "True Cloud Migration",
+    "description": "Cloud Migration / Infrastructure Transformation — customer SOW trial",
+    "lifecycle_state": "ACTIVE",
+    "demo_reference": true
+  },
+  "authorities": [
+    "DOCUMENT_AGAIN",
+    "PM_AGAIN",
+    "QA_AGAIN",
+    "INFRA_AGAIN"
+  ],
+  "bindings": {
+    "project_id": "prj_02884ef10cdc459889f1",
+    "pm_project_slug": "design-baseline-bsl-1d8584f6c27f46738c9b",
+    "qa_project_slugs": {
+      "qah_12805381c9a9475db5d6": "wp-qah-12805381c9a9475db5d6",
+      "qah_34a5c4f0cdc140a5977d": "wp-qah-34a5c4f0cdc140a5977d",
+      "qah_878171fa5b9948119e54": "wp-qah-878171fa5b9948119e54",
+      "qah_844fcb2bde6d4eac9648": "wp-qah-844fcb2bde6d4eac9648"
+    },
+    "infra_design_id": "DESIGN-EBAE25"
+  },
+  "document": {
+    "requirements": [
+      {
+        "code": "REQ-T1-001",
+        "title": "AWS Legacy Zone HLD/LLD",
+        "description": "AWS Legacy Zone high-level and detailed design documents covering account structure, network segmentation, security boundaries, routing, logging, monitoring, governance controls",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T1",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T1-002",
+        "title": "AWS Landing Zone / Legacy Zone As-Built",
+        "description": "As-built configuration for AWS Landing Zone, Legacy Zone, Thailand Region",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T1",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T1-003",
+        "title": "Core Infrastructure Services Design / As-Built",
+        "description": "Design and as-built documentation for core infrastructure services: Active Directory, DNS, firewall/security controls, Jump Host, CyberArk target model",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T1",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T1-004",
+        "title": "Jump Host Migration",
+        "description": "Jump Host and CyberArk servers migrated to AWS Cloud",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T1",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T1-005",
+        "title": "CyberArk Migration",
+        "description": "Jump Host and CyberArk servers migrated to AWS Cloud",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T1",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T1-006",
+        "title": "Hybrid / Multi-cloud Connectivity Assessment",
+        "description": "Connectivity review and assessment covering AWS <-> on-premises, AWS Direct Connect, AWS <-> Azure, AWS <-> GCP, hybrid/multi-cloud considerations",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T1",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T2-001",
+        "title": "Migration Factory Design",
+        "description": "Mass Migration Factory design document covering staging subnet, routing, VPC endpoint architecture",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T2",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T2-002",
+        "title": "Migration Network Foundation As-Built",
+        "description": "As-built architecture for migration network foundation: subnets, route tables, Direct Connect paths, PrivateLink endpoints, security groups",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T2",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T2-003",
+        "title": "AWS MGN Agent Enablement / Configuration",
+        "description": "AWS MGN replication agent enablement/configuration summary covering DNS resolution, endpoint usage, agent installation approach",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T2",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T2-004",
+        "title": "Pilot Migration Test / Verification",
+        "description": "Pilot Migration Test / Verification — DOGFOOD TEST CHANGE: acceptance wording clarified to require explicit health-status evidence.",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T2",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-T2-005",
+        "title": "Migration Runbook / Operational Handover",
+        "description": "Migration runbooks and operational handover material for migration waves and migration factory execution",
+        "source_type": "SOW",
+        "source_reference": "TRUE-CLOUD-MIGRATION SOW Track T2",
+        "status": "CONFIRMED",
+        "priority": null
+      },
+      {
+        "code": "REQ-0012",
+        "title": "R13 sign-in/requirement guide verification",
+        "description": null,
+        "source_type": "CUSTOMER",
+        "source_reference": null,
+        "status": "DRAFT",
+        "priority": null
+      }
+    ],
+    "clarifications": [
+      {
+        "semantic_id": "CLR-0001",
+        "question": "What is the target AWS account / OU structure?",
+        "answer": null,
+        "resolved": false
+      },
+      {
+        "semantic_id": "CLR-0002",
+        "question": "What are the approved CIDR ranges for each VPC?",
+        "answer": null,
+        "resolved": false
+      },
+      {
+        "semantic_id": "CLR-0003",
+        "question": "What Direct Connect bandwidth / redundancy model is required?",
+        "answer": "10 Gbps",
+        "resolved": true
+      },
+      {
+        "semantic_id": "CLR-0004",
+        "question": "What are the pilot acceptance criteria?",
+        "answer": null,
+        "resolved": false
+      },
+      {
+        "semantic_id": "CLR-0005",
+        "question": "What is the firewall vendor / model for the security controls?",
+        "answer": null,
+        "resolved": false
+      },
+      {
+        "semantic_id": "CLR-0006",
+        "question": "What is the expected migration workload count (servers) and wave plan?",
+        "answer": null,
+        "resolved": false
+      },
+      {
+        "semantic_id": "CLR-0007",
+        "question": "What RTO/RPO targets apply to each workload class?",
+        "answer": null,
+        "resolved": false
+      },
+      {
+        "semantic_id": "CLR-0008",
+        "question": "DR decision wording states 'documentation deliverables (design, not deployment implementation)' but the SOW also requires actual migration of Jump Host and CyberArk. Scope of implementation vs documentation is ambiguous — CLARIFICATION_REQUIRED.",
+        "answer": null,
+        "resolved": false
+      },
+      {
+        "semantic_id": "CLR-0009",
+        "question": "UR acceptance wording 'structured, traceable, reviewable, reproducible design package accepted by engineering' is not verbatim from the customer SOW and must not be presented as customer acceptance criteria — CLARIFICATION_REQUIRED.",
+        "answer": null,
+        "resolved": false
+      }
+    ],
+    "assumptions": [
+      {
+        "semantic_id": "ASM-0001",
+        "content": "Migration traffic is intended to remain on private network paths (private-path replication), not public internet.",
+        "status": "OPEN"
+      },
+      {
+        "semantic_id": "ASM-0002",
+        "content": "Thailand Region is the primary AWS target region for landing zone and legacy zone.",
+        "status": "OPEN"
+      },
+      {
+        "semantic_id": "ASM-0003",
+        "content": "Direct Connect bandwidth / redundancy model is required 10 Gbps.",
+        "status": "OPEN"
+      }
+    ],
+    "decisions": [
+      {
+        "semantic_id": "DEC-0001",
+        "title": "Design decision: document deliverables are design/as-built documentation, not a deployment implementation.",
+        "content": "Design decision: document deliverables are design/as-built documentation, not a deployment implementation."
+      }
+    ],
+    "change_requests": [
+      {
+        "code": "CR-0001",
+        "title": null,
+        "requested_change": "TRIAL_CHANGE: migration traffic must use private connectivity only; public internet replication not permitted",
+        "status": "OPEN"
+      },
+      {
+        "code": "CR-0002",
+        "title": null,
+        "requested_change": "Add Disaster Recovery Environment & Failover Validation (DOGFOOD TEST CR)",
+        "status": "ACCEPTED"
+      },
+      {
+        "code": "CR-0003",
+        "title": "Add DR Environment (DOGFOOD UI TEST)",
+        "requested_change": "Add Disaster Recovery Environment & Failover Validation",
+        "status": "IMPACT_ANALYZED"
+      },
+      {
+        "code": "CR-0004",
+        "title": "Pilot Migration tweak (DOGFOOD)",
+        "requested_change": "Change pilot migration verification criteria",
+        "status": "INTERNAL_REVIEW_COMPLETE"
+      },
+      {
+        "code": "CR-0005",
+        "title": "Add DR Environment (UI DOGFOOD)",
+        "requested_change": "Add Disaster Recovery Environment & Failover Validation",
+        "status": "INTERNAL_REVIEW_COMPLETE"
+      },
+      {
+        "code": "CR-0006",
+        "title": "Upgrade Direct Connect to 10 Gbps with redundant connectivity",
+        "requested_change": "Customer confirms 10 Gbps connectivity and requests redundancy for production connectivity.",
+        "status": "IMPLEMENTATION_PLANNED"
+      },
+      {
+        "code": "CR-0007",
+        "title": "R13 lifecycle terminal-state dogfood (no affected objects)",
+        "requested_change": "Isolated status-machine exercise only; no project truth is touched.",
+        "status": "CLOSED"
+      }
+    ],
+    "suggestions": [
+      {
+        "title": "Is the target AWS account / OU structure",
+        "type": "CLARIFICATION_REQUIRED",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "Are the approved CIDR ranges for each VPC",
+        "type": "CLARIFICATION_REQUIRED",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "Direct Connect bandwidth / redundancy model is required",
+        "type": "CLARIFICATION_REQUIRED",
+        "severity": "MEDIUM",
+        "status": "ACCEPTED"
+      },
+      {
+        "title": "Are the pilot acceptance criteria",
+        "type": "CLARIFICATION_REQUIRED",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "Is the firewall vendor / model for the security controls",
+        "type": "CLARIFICATION_REQUIRED",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "Is the expected migration workload count (servers) and wave plan",
+        "type": "CLARIFICATION_REQUIRED",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "RTO/RPO targets apply to each workload class",
+        "type": "CLARIFICATION_REQUIRED",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "DR decision wording states 'documentation deliverables (design, not deployment implementation)' but the SOW also requires actual migration of Jump Host and CyberArk. Scope of implementation vs documentation is ambiguous — CLARIFICATION_REQUIRED.",
+        "type": "CLARIFICATION_REQUIRED",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "UR acceptance wording 'structured, traceable, reviewable, reproducible design package accepted by engineering' is not verbatim from the customer SOW and must not be presented as customer acceptance criteria — CLARIFICATION_REQUIRED.",
+        "type": "CLARIFICATION_REQUIRED",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "Infrastructure implementation",
+        "type": "MISSING_INFORMATION",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "Vendor / external operational dependencies",
+        "type": "MISSING_INFORMATION",
+        "severity": "MEDIUM",
+        "status": "OPEN"
+      },
+      {
+        "title": "Okay, here’s an analysis of CR-0006 based on the provided context, adhering to the specifi",
+        "type": "UNKNOWN",
+        "severity": "LOW",
+        "status": "OPEN"
+      }
+    ],
+    "consultations": [
+      {
+        "task_type": "CR_RISK_REVIEW",
+        "question": "Review this change request: Upgrade Direct Connect to 10 Gbps with redundant connectivity. Identify risks, assumptions, missing evidence, and areas where the current impact estimate may be optimistic.",
+        "aggregation_mode": "NONE"
+      },
+      {
+        "task_type": "CR_RISK_REVIEW",
+        "question": "Review this change request: Upgrade Direct Connect to 10 Gbps with redundant connectivity. Identify risks, assumptions, missing evidence, and areas where the current impact estimate may be optimistic.",
+        "aggregation_mode": "MULTI_PROVIDER"
+      },
+      {
+        "task_type": "CR_RISK_REVIEW",
+        "question": "Review CR-0006: Upgrade Direct Connect to 10 Gbps with redundant connectivity. Identify risks, assumptions, missing evidence, and where the impact estimate may be optimistic.",
+        "aggregation_mode": "MULTI_PROVIDER"
+      }
+    ],
+    "trace_links": [
+      {
+        "source": "ASM-0001",
+        "target": "REQ-T2-003",
+        "relation": "REFERENCES"
+      },
+      {
+        "source": "ASM-0001",
+        "target": "REQ-T2-004",
+        "relation": "REFERENCES"
+      },
+      {
+        "source": "ASM-0002",
+        "target": "REQ-T1-002",
+        "relation": "REFERENCES"
+      },
+      {
+        "source": "REQ-T1-001",
+        "target": "ur_track1",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-001",
+        "target": "dr_legacy",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-001",
+        "target": "arch_landingzone",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-003",
+        "target": "dr_ad",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-003",
+        "target": "dr_dns",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-003",
+        "target": "dr_firewall",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-003",
+        "target": "dr_jumphost",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-003",
+        "target": "dr_cyberark",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-003",
+        "target": "arch_ad",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-006",
+        "target": "dr_hybrid",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-006",
+        "target": "arch_dx",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-006",
+        "target": "arch_azure",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-006",
+        "target": "arch_gcp",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-006",
+        "target": "arch_onprem",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-001",
+        "target": "dr_factory",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-003",
+        "target": "dr_mgn",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-003",
+        "target": "f1_install",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-003",
+        "target": "f1_replicate",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-004",
+        "target": "dr_pilot",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-004",
+        "target": "f1_pilot",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-005",
+        "target": "dr_waves",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-005",
+        "target": "f2_closure",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-005",
+        "target": "dr_handover",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-002",
+        "target": "dr_accounts",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-004",
+        "target": "dr_jumphost",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T1-005",
+        "target": "dr_cyberark",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-002",
+        "target": "dr_endpoints",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-002",
+        "target": "dr_staging",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "REQ-T2-002",
+        "target": "dr_sg",
+        "relation": "DERIVED_FROM"
+      },
+      {
+        "source": "ASM-0003",
+        "target": "CLR-0003",
+        "relation": "REFERENCES"
+      }
+    ]
+  },
+  "secret_scan": {
+    "scanned_at": "2026-08-17T01:58:27.401541+00:00",
+    "findings": [],
+    "clean": true
+  }
+}
