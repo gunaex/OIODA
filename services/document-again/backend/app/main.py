@@ -50,6 +50,10 @@ def _ensure_dev_columns() -> None:
             "cloned_by": "VARCHAR(100)",
             "clone_policy_version": "VARCHAR(20)",
         },
+        "deliverable_signoffs": {
+            "evidence_class": "VARCHAR(20)",
+            "purpose": "VARCHAR(24)",
+        },
     }
     with engine.begin() as conn:
         for table, cols in additions.items():
@@ -62,6 +66,22 @@ def _ensure_dev_columns() -> None:
         # Backfill: SQLite ADD COLUMN leaves NULL on pre-existing rows; the
         # ORM default only applies to new inserts.
         conn.execute(text("UPDATE projects SET lifecycle_state = 'ACTIVE' WHERE lifecycle_state IS NULL"))
+        # R17.1.1 — classify pre-existing sign-offs by intent. Anything
+        # explicitly marked TEST / INTERNAL in the comment is test/internal
+        # evidence and must never qualify as customer acceptance. Preserve the
+        # records; only classify them correctly.
+        conn.execute(text(
+            "UPDATE deliverable_signoffs SET evidence_class='TEST', purpose='ACCEPTANCE' "
+            "WHERE evidence_class IS NULL AND upper(comment) LIKE '%TEST%'"
+        ))
+        conn.execute(text(
+            "UPDATE deliverable_signoffs SET evidence_class='INTERNAL', purpose='APPROVAL' "
+            "WHERE evidence_class IS NULL AND upper(comment) LIKE '%INTERNAL%'"
+        ))
+        conn.execute(text(
+            "UPDATE deliverable_signoffs SET evidence_class='INTERNAL', purpose='APPROVAL' "
+            "WHERE evidence_class IS NULL"
+        ))
 
 
 _ensure_dev_columns()

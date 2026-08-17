@@ -232,6 +232,11 @@ class DeliverableSignoff(Base):
     signoff_type: Mapped[str] = mapped_column(String(24))  # APPROVE/ACCEPT/ACKNOWLEDGE/REJECT
     decision: Mapped[str] = mapped_column(String(28))  # incl. ACCEPTED_WITH_EXCEPTIONS
 
+    # R17.1.1 — evidence class + purpose. TEST evidence never qualifies a
+    # production gate; INTERNAL must never impersonate customer acceptance.
+    evidence_class: Mapped[str | None] = mapped_column(String(20), nullable=True)  # TEST/INTERNAL/CUSTOMER/FORMAL_EXTERNAL
+    purpose: Mapped[str | None] = mapped_column(String(24), nullable=True)  # REVIEW/APPROVAL/ACKNOWLEDGEMENT/ACCEPTANCE/SIGN_OFF
+
     signer_user_id: Mapped[str] = mapped_column(String(120))
     signer_name: Mapped[str] = mapped_column(String(200))
     signer_role: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -260,6 +265,8 @@ class DeliverableSignoff(Base):
             "snapshot_hash": self.snapshot_hash,
             "signoff_type": self.signoff_type,
             "decision": self.decision,
+            "evidence_class": self.evidence_class,
+            "purpose": self.purpose,
             "signer_user_id": self.signer_user_id,
             "signer_name": self.signer_name,
             "signer_role": self.signer_role,
@@ -270,6 +277,57 @@ class DeliverableSignoff(Base):
             "source_snapshot_id": self.source_snapshot_id,
             "auth_context": self.auth_context or {},
             "audit_event_id": self.audit_event_id,
+        }
+
+
+class GateResolution(Base):
+    """A human decision about a governance gate that is NOT acceptance:
+
+    - PROCEED_WITH_RISK  → the project knowingly proceeds without the gate's
+      qualifying evidence (recorded so the risk is not silently lost)
+    - WAIVED             → a company-policy exception/waiver
+    - NOT_APPLICABLE     → the gate does not apply to this project
+
+    None of these is sign-off/acceptance; they preserve the human decision and
+    its reason as evidence.
+    """
+
+    __tablename__ = "gate_resolutions"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("rsk"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    gate_id: Mapped[str] = mapped_column(String(40), index=True)
+    document_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    human_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    resolution_type: Mapped[str] = mapped_column(String(24))  # PROCEED_WITH_RISK / WAIVED / NOT_APPLICABLE
+    severity: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    reason: Mapped[str] = mapped_column(Text)
+    scope: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    actor_user_id: Mapped[str] = mapped_column(String(120))
+    actor_name: Mapped[str] = mapped_column(String(200))
+    actor_role: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "risk_override_id": self.id,
+            "id": self.id,
+            "project_id": self.project_id,
+            "gate_id": self.gate_id,
+            "document_id": self.document_id,
+            "human_code": self.human_code,
+            "resolution_type": self.resolution_type,
+            "severity": self.severity,
+            "reason": self.reason,
+            "scope": self.scope,
+            "actor_user_id": self.actor_user_id,
+            "actor_name": self.actor_name,
+            "actor_role": self.actor_role,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "comment": self.comment,
         }
 
 

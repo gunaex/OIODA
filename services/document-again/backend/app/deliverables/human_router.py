@@ -111,6 +111,8 @@ def transition(project_id: str, human_code: str, body: TransitionIn,
 class SignoffIn(BaseModel):
     decision: str = "ACCEPT"
     signoff_type: str | None = None
+    evidence_class: str | None = None
+    purpose: str | None = None
     comment: str | None = None
     signer_role: str | None = None
     known_exceptions: list | None = None
@@ -143,8 +145,55 @@ def signoff_gates(project_id: str, db: Session = Depends(db_session)):
     return hsvc.gate_status(db, _project(db, project_id))
 
 
+@router.get("/projects/{project_id}/governance-flags")
+def governance_flags(project_id: str, db: Session = Depends(db_session)):
+    return hsvc.governance_flags(db, _project(db, project_id))
+
+
+@router.get("/projects/{project_id}/governance-policy")
+def get_governance_policy(project_id: str, db: Session = Depends(db_session)):
+    return hsvc.get_governance_policy(db, _project(db, project_id))
+
+
+class GovernancePolicyIn(BaseModel):
+    mode: str = "FLEXIBLE"
+    gate_policy: dict | None = None
+
+
+@router.put("/projects/{project_id}/governance-policy")
+def put_governance_policy(project_id: str, body: GovernancePolicyIn,
+                          db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    return hsvc.set_governance_policy(db, _project(db, project_id), body.model_dump(),
+                                      actor=actx.name)
+
+
+class GateResolveIn(BaseModel):
+    resolution_type: str
+    reason: str
+    document_id: str | None = None
+    human_code: str | None = None
+    actor_role: str | None = None
+    scope: str | None = None
+    comment: str | None = None
+
+
+@router.post("/projects/{project_id}/gates/{gate_id}/resolve")
+def resolve_gate(project_id: str, gate_id: str, body: GateResolveIn,
+                 db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    return hsvc.resolve_gate(db, _project(db, project_id), gate_id,
+                             body.resolution_type, actx, body.model_dump())
+
+
+@router.get("/projects/{project_id}/human-deliverables/{human_code}/brief")
+def responsibility_brief(project_id: str, human_code: str, role: str | None = None,
+                         db: Session = Depends(db_session)):
+    return hsvc.responsibility_brief(db, _project(db, project_id), human_code, role)
+
+
 class CrAcceptIn(BaseModel):
     decision: str = "ACCEPT"
+    evidence_class: str | None = None
+    purpose: str | None = None
     signer_role: str | None = None
     comment: str | None = None
     known_exceptions: list | None = None
@@ -202,3 +251,20 @@ def export_acceptance_package(project_id: str, db: Session = Depends(db_session)
     content = hsvc.acceptance_package(db, project)
     return Response(content=content, media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{project.key}-acceptance-package.zip"'})
+
+
+@router.get("/projects/{project_id}/governance-flag-register")
+def export_governance_flag_register(project_id: str, db: Session = Depends(db_session)):
+    project = _project(db, project_id)
+    content = hsvc._governance_flag_register_xlsx(db, project)
+    return Response(content=content,
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{project.key}-governance-flag-register.xlsx"'})
+
+
+@router.get("/projects/{project_id}/risk-overrides")
+def export_risk_overrides(project_id: str, db: Session = Depends(db_session)):
+    project = _project(db, project_id)
+    content = hsvc.resolutions_export(db, project)
+    return Response(content=content, media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{project.key}-risk-overrides.json"'})

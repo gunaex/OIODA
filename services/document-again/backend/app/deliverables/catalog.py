@@ -60,6 +60,163 @@ MATERIALITY_STATES = ["NON_MATERIAL_CHANGE", "MATERIAL_CHANGE", "UNKNOWN"]
 FRESHNESS_STATES = ["CURRENT", "STALE", "UNKNOWN"]
 READINESS_STATES = ["READY", "READY_WITH_GAPS", "NOT_READY", "BLOCKED", "NOT_DUE"]
 
+# ── R17.1.1 — Governance severity + evidence classes ────────────────────────
+# Severity levels (warn strongly — never universally hard-lock).
+SEVERITY_LEVELS = [
+    "INFO",
+    "RECOMMENDED",
+    "STRONGLY_RECOMMENDED",
+    "LEGAL_STRONGLY_REQUIRED",
+    "CRITICAL_RISK",
+]
+
+# Evidence class: who/what produced the sign-off. TEST evidence can never
+# qualify a production gate; INTERNAL can satisfy internal governance but must
+# never impersonate customer acceptance.
+EVIDENCE_CLASSES = ["TEST", "INTERNAL", "CUSTOMER", "FORMAL_EXTERNAL"]
+
+# Sign-off purpose is distinct from evidence class.
+SIGNOFF_PURPOSES = ["REVIEW", "APPROVAL", "ACKNOWLEDGEMENT", "ACCEPTANCE", "SIGN_OFF"]
+
+# Classes that count as genuine customer acceptance for a gate.
+CUSTOMER_ACCEPTANCE_CLASSES = ("CUSTOMER", "FORMAL_EXTERNAL")
+# Purposes that count as acceptance/sign-off (vs. mere review/acknowledgement).
+ACCEPTANCE_PURPOSES = ("ACCEPTANCE", "SIGN_OFF")
+APPROVAL_PURPOSES = ("APPROVAL", "ACCEPTANCE", "SIGN_OFF")
+
+# Gate status vocabulary (derived — never "signed" alone).
+GATE_STATUSES = [
+    "ACCEPTED",
+    "ACCEPTED_WITH_EXCEPTIONS",
+    "AWAITING_CUSTOMER_ACCEPTANCE",
+    "INTERNAL_COMPLETE",
+    "TEST_EVIDENCE_PRESENT",
+    "OPEN",
+    "WAIVED",
+    "NOT_APPLICABLE",
+    "NOT_DUE",
+]
+
+# Governance policy modes. R17.1.1 ships FLEXIBLE as the only enforced mode;
+# GUIDED / STRICT are future capabilities (never hard-lock now).
+POLICY_MODES = ["FLEXIBLE", "GUIDED", "STRICT"]
+
+
+def _evidence(class_name, *purposes):
+    return {"evidence_class": class_name, "purposes": list(purposes)}
+
+
+# ── Gate policy: severity + qualifying evidence + responsibility brief ──────
+# Each gate declares what evidence QUALIFIES as acceptance, the severity of a
+# missing acceptance, and a deterministic responsibility brief (confirms /
+# excludes). Policy drives flag severity — not hardcoded blocking.
+GATE_POLICY = {
+    "SCOPE_ACCEPTANCE": {
+        "severity_if_missing": "LEGAL_STRONGLY_REQUIRED",
+        "why": "Confirm what is being delivered, major exclusions, and customer understanding. Scope or exclusion disputes are hard to resolve later without this.",
+        "confirms": ["project scope", "major exclusions", "customer understanding of the requirement"],
+        "excludes": ["technical design detail", "commercial pricing", "final project acceptance"],
+        "qualifying_evidence": [
+            _evidence("CUSTOMER", "ACCEPTANCE", "SIGN_OFF"),
+            _evidence("FORMAL_EXTERNAL", "ACCEPTANCE", "SIGN_OFF"),
+        ],
+    },
+    "DESIGN_ACCEPTANCE": {
+        "severity_if_missing": "LEGAL_STRONGLY_REQUIRED",
+        "why": "This approval confirms the agreed production design. Without explicit acceptance, later disputes about design responsibility or scope may lack strong project evidence.",
+        "confirms": ["target architecture", "connectivity model", "technical assumptions", "known technical risks"],
+        "excludes": ["commercial pricing", "business UAT", "final project acceptance"],
+        "qualifying_evidence": [
+            _evidence("CUSTOMER", "ACCEPTANCE", "SIGN_OFF"),
+            _evidence("FORMAL_EXTERNAL", "ACCEPTANCE", "SIGN_OFF"),
+        ],
+    },
+    "CHANGE_ACCEPTANCE": {
+        "severity_if_missing": "LEGAL_STRONGLY_REQUIRED",
+        "why": "Change requests that affect scope, cost, timeline, architecture, security or contractual obligation require explicit acceptance to preserve responsibility clarity.",
+        "confirms": ["the change and its impact on scope / cost / timeline / architecture / security"],
+        "excludes": ["unrelated technical implementation detail"],
+        "qualifying_evidence": [
+            _evidence("CUSTOMER", "ACCEPTANCE", "SIGN_OFF"),
+            _evidence("FORMAL_EXTERNAL", "ACCEPTANCE", "SIGN_OFF"),
+            _evidence("INTERNAL", "APPROVAL", "ACCEPTANCE"),
+        ],
+    },
+    "TEST_UAT_ACCEPTANCE": {
+        "severity_if_missing": "LEGAL_STRONGLY_REQUIRED",
+        "why": "For customer-facing systems, confirm the agreed acceptance criteria were met or known exceptions were accepted.",
+        "confirms": ["agreed acceptance criteria were met", "known exceptions were accepted"],
+        "excludes": ["final commercial settlement", "ongoing operations responsibilities"],
+        "qualifying_evidence": [
+            _evidence("CUSTOMER", "ACCEPTANCE", "SIGN_OFF"),
+            _evidence("FORMAL_EXTERNAL", "ACCEPTANCE", "SIGN_OFF"),
+        ],
+    },
+    "GOLIVE_CUTOVER": {
+        "severity_if_missing": "CRITICAL_RISK",
+        "why": "Explicit human authorization is expected before a production-impacting change. Proceeding without it creates serious operational risk.",
+        "confirms": ["authorization to execute the production-impacting cutover", "risk acknowledgement"],
+        "excludes": ["technical step-by-step execution detail"],
+        "qualifying_evidence": [
+            _evidence("CUSTOMER", "ACCEPTANCE", "SIGN_OFF"),
+            _evidence("FORMAL_EXTERNAL", "ACCEPTANCE", "SIGN_OFF"),
+            _evidence("INTERNAL", "APPROVAL", "ACCEPTANCE"),
+        ],
+    },
+    "HANDOVER_ACCEPTANCE": {
+        "severity_if_missing": "STRONGLY_RECOMMENDED",
+        "why": "Customer/Operations should acknowledge that system, documentation and knowledge transfer is complete.",
+        "confirms": ["system handover", "documentation handover", "knowledge transfer"],
+        "excludes": ["final commercial acceptance"],
+        "qualifying_evidence": [
+            _evidence("CUSTOMER", "ACCEPTANCE", "ACKNOWLEDGEMENT", "SIGN_OFF"),
+            _evidence("FORMAL_EXTERNAL", "ACCEPTANCE", "ACKNOWLEDGEMENT", "SIGN_OFF"),
+            _evidence("INTERNAL", "APPROVAL", "ACKNOWLEDGEMENT"),
+        ],
+    },
+    "FINAL_ACCEPTANCE": {
+        "severity_if_missing": "LEGAL_STRONGLY_REQUIRED",
+        "why": "Confirm project completion or accepted outstanding items — the strongest single piece of evidence for contract closure and dispute defense.",
+        "confirms": ["project completion", "accepted outstanding items"],
+        "excludes": ["nothing — this is the final acceptance boundary"],
+        "qualifying_evidence": [
+            _evidence("CUSTOMER", "ACCEPTANCE", "SIGN_OFF"),
+            _evidence("FORMAL_EXTERNAL", "ACCEPTANCE", "SIGN_OFF"),
+        ],
+    },
+}
+
+
+# ── Default governance policy (new projects) ────────────────────────────────
+def default_governance_policy() -> dict:
+    return {
+        "mode": "FLEXIBLE",
+        "gate_policy": {
+            code: {
+                "required": True,
+                "severity": GATE_POLICY[code]["severity_if_missing"],
+                "qualifying_role": [],
+                "qualifying_evidence": GATE_POLICY[code]["qualifying_evidence"],
+            }
+            for code in GATE_BY_CODE
+        },
+    }
+
+
+def effective_gate_policy(gate_code: str, policy: dict | None) -> dict:
+    """Merge project/company override over the default gate policy."""
+    base = GATE_POLICY.get(gate_code, {})
+    override = ((policy or {}).get("gate_policy") or {}).get(gate_code, {})
+    return {
+        "required": override.get("required", True),
+        "severity": override.get("severity", base.get("severity_if_missing", "INFO")),
+        "qualifying_role": override.get("qualifying_role", []),
+        "qualifying_evidence": override.get("qualifying_evidence", base.get("qualifying_evidence", [])),
+        "why": base.get("why", ""),
+        "confirms": base.get("confirms", []),
+        "excludes": base.get("excludes", []),
+    }
+
 # ── Section → internal standard mapping (name → authority + readiness key) ──
 #   authority: which bounded service owns the authoritative truth
 #   key:       deterministic source indicator computed from Document Again's

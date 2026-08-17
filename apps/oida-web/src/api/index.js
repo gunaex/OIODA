@@ -263,6 +263,13 @@ export const humanApi = {
     post("da", `/projects/${projectId}/human-deliverables/${code}/refresh`, {}),
   signoffRegister: (projectId) => get("da", `/projects/${projectId}/signoff-register`),
   signoffGates: (projectId) => get("da", `/projects/${projectId}/signoff-gates`),
+  governanceFlags: (projectId) => get("da", `/projects/${projectId}/governance-flags`),
+  governancePolicy: (projectId) => get("da", `/projects/${projectId}/governance-policy`),
+  putGovernancePolicy: (projectId, body) => put("da", `/projects/${projectId}/governance-policy`, body),
+  resolveGate: (projectId, gateId, body) =>
+    post("da", `/projects/${projectId}/gates/${gateId}/resolve`, body),
+  brief: (projectId, code, role) =>
+    get("da", `/projects/${projectId}/human-deliverables/${code}/brief${role ? `?role=${encodeURIComponent(role)}` : ""}`),
   acceptChangeRequest: (projectId, crCode, body) =>
     post("da", `/projects/${projectId}/change-requests/${crCode}/accept`, body),
   mySignoffs: (projectId) => get("da", `/projects/${projectId}/my-signoffs`),
@@ -272,6 +279,8 @@ export const humanApi = {
     if (kind === "snapshot") return `/api/da/projects/${projectId}/exports/snapshot/${code}`;
     if (kind === "signoff-evidence") return `/api/da/projects/${projectId}/signoff-evidence`;
     if (kind === "acceptance-package") return `/api/da/projects/${projectId}/acceptance-package`;
+    if (kind === "governance-flag-register") return `/api/da/projects/${projectId}/governance-flag-register`;
+    if (kind === "risk-overrides") return `/api/da/projects/${projectId}/risk-overrides`;
     return null;
   },
 };

@@ -19,6 +19,16 @@ const READY_TONE = {
 const FRESH_TONE = { CURRENT: "emerald", STALE: "rose", UNKNOWN: "gray", NOT_APPLICABLE: "gray" };
 const ROLE_TONE = { OWNER: "violet", REVIEWER: "blue", APPROVER: "amber", SIGNATORY: "rose", FYI: "gray" };
 const LEVEL_TONE = { CONTROLLED: "rose", WORKING: "amber", REGISTER: "gray" };
+const SEV_TONE = {
+  INFO: "gray", RECOMMENDED: "blue", STRONGLY_RECOMMENDED: "amber",
+  LEGAL_STRONGLY_REQUIRED: "rose", CRITICAL_RISK: "rose",
+};
+const GATE_TONE = {
+  ACCEPTED: "emerald", ACCEPTED_WITH_EXCEPTIONS: "amber", AWAITING_CUSTOMER_ACCEPTANCE: "amber",
+  INTERNAL_COMPLETE: "blue", TEST_EVIDENCE_PRESENT: "gray", OPEN: "rose",
+  WAIVED: "gray", NOT_APPLICABLE: "gray", NOT_DUE: "gray",
+};
+const EVIDENCE_TONE = { TEST: "gray", INTERNAL: "blue", CUSTOMER: "emerald", FORMAL_EXTERNAL: "violet" };
 
 const FILTERS = ["All", "My Actions", "Ready", "Needs Information", "Generated", "Mandatory", "Not Due"];
 
@@ -46,7 +56,9 @@ export default function Deliverables() {
   const [tab, setTab] = useState("Documents");
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
-  const [signoffForm, setSignoffForm] = useState({ decision: "ACCEPT", comment: "", signer_role: "", exceptions: "" });
+  const [signoffForm, setSignoffForm] = useState({ decision: "ACCEPT", comment: "", signer_role: "", exceptions: "", evidence_class: "CUSTOMER", purpose: "ACCEPTANCE" });
+  const [brief, setBrief] = useState(null);
+  const [resolveForm, setResolveForm] = useState({ gate: null, reason: "" });
 
   const base = `/projects/${project?.id}`;
 
@@ -116,12 +128,37 @@ export default function Deliverables() {
         : [];
       await humanApi.signoff(project.id, selected, {
         decision: signoffForm.decision,
+        evidence_class: signoffForm.evidence_class,
+        purpose: signoffForm.purpose,
         comment: signoffForm.comment || null,
         signer_role: signoffForm.signer_role || null,
         known_exceptions: exceptions,
       });
-      setSignoffForm({ decision: "ACCEPT", comment: "", signer_role: "", exceptions: "" });
+      setSignoffForm({ decision: "ACCEPT", comment: "", signer_role: "", exceptions: "", evidence_class: "CUSTOMER", purpose: "ACCEPTANCE" });
       await refreshDetail(); await load();
+    } catch (e) { setError(e.message || String(e)); }
+    finally { setBusy(false); }
+  }
+
+  async function fetchBrief() {
+    try {
+      const b = await humanApi.brief(project.id, selected, signoffForm.signer_role || undefined);
+      setBrief(b);
+    } catch (e) { setBrief(null); }
+  }
+
+  async function doResolve() {
+    if (!resolveForm.gate || !resolveForm.reason.trim()) return;
+    setBusy(true);
+    try {
+      await humanApi.resolveGate(project.id, resolveForm.gate, {
+        resolution_type: resolveForm.type,
+        reason: resolveForm.reason,
+        actor_role: resolveForm.actor_role || null,
+        scope: resolveForm.scope || null,
+      });
+      setResolveForm({ gate: null, reason: "" });
+      await load();
     } catch (e) { setError(e.message || String(e)); }
     finally { setBusy(false); }
   }
@@ -184,10 +221,11 @@ export default function Deliverables() {
 
       {tab === "Documents" && data && (
         <>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <StatCard label="Need My Review" value={data.my_actions.review} tone="blue" />
             <StatCard label="Need My Approval" value={data.my_actions.approval} tone="amber" />
             <StatCard label="Need My Sign-off" value={data.my_actions.signoff} tone="rose" />
+            <StatCard label="Governance Flags" value={data.my_actions.governance_flags ?? 0} tone="rose" />
           </div>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
             <StatCard label="Ready to Generate" value={data.summary.ready_to_generate} tone="emerald" />
@@ -197,21 +235,83 @@ export default function Deliverables() {
             <StatCard label="Stale" value={data.summary.stale} tone="rose" />
           </div>
 
+          {/* Governance & Legal Flags */}
+          {data.governance_flags?.length > 0 && (
+            <Card>
+              <CardHeader title="Governance & Legal Flags" subtitle="Warn strongly — never hard-lock. Humans decide and the decision is recorded." />
+              <div className="space-y-2 p-4">
+                {data.governance_flags.map((f) => (
+                  <div key={f.flag_id} className={`rounded-lg border p-3 ${f.severity === "LEGAL_STRONGLY_REQUIRED" || f.severity === "CRITICAL_RISK" ? "border-rose-300 bg-rose-50" : "border-amber-200 bg-amber-50"}`}>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="font-bold text-rose-600">⚠ {f.severity.replace(/_/g, " ")}</span>
+                      <Badge tone={f.status === "ACKNOWLEDGED" ? "amber" : "rose"}>{f.status}</Badge>
+                    </div>
+                    <div className="mt-1 text-sm font-medium">{f.reason}</div>
+                    {f.why && <div className="mt-1 text-xs text-gray-600">Why this matters: {f.why}</div>}
+                    {!f.subdued && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        <button onClick={() => setResolveForm({ gate: f.gate, reason: "", type: "PROCEED_WITH_RISK" })}
+                          className="rounded border border-rose-300 bg-white px-2 py-1 text-xs text-rose-700 hover:bg-rose-100">Proceed With Risk</button>
+                        <button onClick={() => setResolveForm({ gate: f.gate, reason: "", type: "WAIVED" })}
+                          className="rounded border border-gray-300 bg-white px-2 py-1 text-xs hover:bg-gray-50">Use Company Policy Exception</button>
+                        <button onClick={() => setResolveForm({ gate: f.gate, reason: "", type: "NOT_APPLICABLE" })}
+                          className="rounded border border-gray-300 bg-white px-2 py-1 text-xs hover:bg-gray-50">Not Applicable</button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
           {/* critical gates */}
           {data.gates?.length > 0 && (
             <Card>
-              <CardHeader title="Critical Sign-off Gates" subtitle="Explicit human acceptance at responsibility boundaries." />
+              <CardHeader title="Critical Sign-off Gates" subtitle="Recalculated from evidence class — TEST evidence never qualifies customer acceptance." />
               <div className="flex flex-wrap gap-2 p-4">
                 {data.gates.map((g) => (
-                  <span key={g.gate} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs">
-                    <span className="font-medium">{g.name}</span>
-                    <Badge tone={g.status === "SIGNED" ? "emerald" : g.status === "NOT_APPLICABLE" ? "gray" : "amber"}>
-                      {g.status === "NOT_APPLICABLE" ? "N/A" : g.status}
-                    </Badge>
+                  <span key={g.gate} className={`inline-flex flex-col gap-1 rounded-lg border px-2.5 py-1.5 text-xs ${g.flag?.raised && !g.subdued ? "border-rose-300 bg-rose-50" : "border-gray-200 bg-gray-50"}`}>
+                    <span className="flex items-center gap-1.5">
+                      <span className="font-medium">{g.name}</span>
+                      {g.flag?.raised && !g.subdued && <span className="font-bold text-rose-600">⚠</span>}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <Badge tone={GATE_TONE[g.status] || "gray"}>{g.status.replace(/_/g, " ")}</Badge>
+                      <Badge tone={SEV_TONE[g.severity] || "gray"}>{g.severity.replace(/_/g, " ")}</Badge>
+                    </span>
                   </span>
                 ))}
               </div>
             </Card>
+          )}
+
+          {/* resolve modal */}
+          {resolveForm.gate && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={() => setResolveForm({ gate: null, reason: "" })}>
+              <div className="w-full max-w-md rounded-xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
+                <h3 className="mb-2 text-sm font-bold">
+                  {resolveForm.type === "PROCEED_WITH_RISK" ? "Proceed With Risk" : resolveForm.type === "WAIVED" ? "Company Policy Exception" : "Mark Not Applicable"}
+                </h3>
+                <div className="mb-2 text-xs text-gray-500">
+                  {resolveForm.type === "PROCEED_WITH_RISK"
+                    ? "Proceeding is allowed, but this governance risk will remain recorded. This is NOT acceptance."
+                    : resolveForm.type === "WAIVED"
+                    ? "Record a company-policy waiver. This is NOT acceptance."
+                    : "Record that this gate does not apply to this project."}
+                </div>
+                <label className="mb-1 block text-xs font-medium text-gray-600">Reason (required)</label>
+                <textarea value={resolveForm.reason} onChange={(e) => setResolveForm({ ...resolveForm, reason: e.target.value })}
+                  rows={3} className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm" placeholder="Why is this decision being made?" />
+                <label className="mb-1 mt-2 block text-xs font-medium text-gray-600">Decision Owner Role</label>
+                <input value={resolveForm.actor_role || ""} onChange={(e) => setResolveForm({ ...resolveForm, actor_role: e.target.value })}
+                  className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm" placeholder="e.g. PROJECT_MANAGER" />
+                <div className="mt-3 flex justify-end gap-2">
+                  <button onClick={() => setResolveForm({ gate: null, reason: "" })} className="rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50">Cancel</button>
+                  <button onClick={doResolve} disabled={busy || !resolveForm.reason.trim()}
+                    className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white hover:bg-gray-700 disabled:opacity-50">Record Decision</button>
+                </div>
+              </div>
+            </div>
           )}
 
           <div className="flex flex-wrap gap-1">
@@ -231,6 +331,16 @@ export default function Deliverables() {
                   <Td>
                     <div className="font-medium">{d.name}</div>
                     <div className="text-xs text-gray-400">{d.code}{d.generated_at ? ` · generated ${formatDateTime(d.generated_at)} by ${d.generated_by}` : ""}</div>
+                    {d.governance_flag && (
+                      <div className="mt-1 inline-flex items-center gap-1 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-700">
+                        ⚠ {d.governance_flag.severity} — {d.governance_flag.reason}
+                      </div>
+                    )}
+                    {d.material_change_flag && (
+                      <div className="mt-1 inline-flex items-center gap-1 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-700">
+                        ⚠ Material change — re-acceptance recommended
+                      </div>
+                    )}
                     {d.needs_review && <Badge tone="blue">Needs my review</Badge>}
                     {d.needs_approval && <Badge tone="amber">Needs my approval</Badge>}
                     {d.needs_signoff && <Badge tone="rose">Needs my sign-off</Badge>}
@@ -251,6 +361,8 @@ export default function Deliverables() {
             <CardHeader title="Exports" subtitle="Generated documents, evidence and the acceptance package." />
             <div className="flex flex-wrap gap-2 p-4">
               <button onClick={() => download("signoff-evidence")} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs hover:bg-gray-50"><Download size={13} /> Sign-off Evidence (JSON)</button>
+              <button onClick={() => download("governance-flag-register")} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs hover:bg-gray-50"><Download size={13} /> Governance Flag Register (.xlsx)</button>
+              <button onClick={() => download("risk-overrides")} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs hover:bg-gray-50"><Download size={13} /> Risk Overrides / Waivers (JSON)</button>
               <button onClick={() => download("acceptance-package")} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs hover:bg-gray-50"><Download size={13} /> Project Acceptance Package (ZIP)</button>
             </div>
           </Card>
@@ -367,8 +479,26 @@ export default function Deliverables() {
                       <div className="mb-4 rounded-lg border border-gray-200 p-3">
                         <div className="mb-2 text-sm font-semibold">Sign-off — applies only to this exact version (v{inst.version})</div>
                         {detail.signoffs?.length > 0 && (
-                          <div className="mb-2 text-xs text-gray-500">Already signed: {detail.signoffs.map((s) => `${s.decision} by ${s.signer_name} (v${s.document_version})`).join("; ")}</div>
+                          <div className="mb-2 text-xs text-gray-500">Already signed: {detail.signoffs.map((s) => `${s.decision} (${s.evidence_class || "?"}/${s.purpose || "?"}) by ${s.signer_name} v${s.document_version}`).join("; ")}</div>
                         )}
+
+                        {/* responsibility brief */}
+                        <div className="mb-3 rounded-lg bg-blue-50 p-3 text-xs">
+                          <div className="mb-1 flex items-center justify-between">
+                            <span className="font-semibold text-blue-800">Why am I being asked?</span>
+                            <button onClick={fetchBrief} className="rounded border border-blue-200 px-2 py-0.5 text-blue-700 hover:bg-blue-100">Refresh</button>
+                          </div>
+                          {brief ? (
+                            <>
+                              <div className="font-medium">You are the {brief.role}.</div>
+                              <div className="mt-1">You are being asked to confirm: {brief.confirms.join("; ")}.</div>
+                              <div className="mt-1 text-gray-600">You are NOT confirming: {brief.excludes.join("; ")}.</div>
+                            </>
+                          ) : (
+                            <div className="text-gray-500">Select a signer role to see your responsibility brief.</div>
+                          )}
+                        </div>
+
                         <div className="grid grid-cols-2 gap-2 text-xs">
                           <div>
                             <label className="mb-1 block font-medium text-gray-600">Decision</label>
@@ -379,13 +509,28 @@ export default function Deliverables() {
                           </div>
                           <div>
                             <label className="mb-1 block font-medium text-gray-600">Signer Role</label>
-                            <input value={signoffForm.signer_role} onChange={(e) => setSignoffForm({ ...signoffForm, signer_role: e.target.value })}
+                            <input value={signoffForm.signer_role} onChange={(e) => { setSignoffForm({ ...signoffForm, signer_role: e.target.value }); setBrief(null); }}
                               placeholder="e.g. CUSTOMER_TECHNICAL_OWNER" className="w-full rounded-lg border border-gray-300 px-2 py-1.5" />
+                          </div>
+                          <div>
+                            <label className="mb-1 block font-medium text-gray-600">Evidence Class</label>
+                            <select value={signoffForm.evidence_class} onChange={(e) => setSignoffForm({ ...signoffForm, evidence_class: e.target.value })}
+                              className="w-full rounded-lg border border-gray-300 px-2 py-1.5">
+                              {["CUSTOMER", "INTERNAL", "TEST", "FORMAL_EXTERNAL"].map((c) => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                            <div className="mt-1 text-[10px] text-gray-400">TEST/INTERNAL never qualify customer acceptance.</div>
+                          </div>
+                          <div>
+                            <label className="mb-1 block font-medium text-gray-600">Purpose</label>
+                            <select value={signoffForm.purpose} onChange={(e) => setSignoffForm({ ...signoffForm, purpose: e.target.value })}
+                              className="w-full rounded-lg border border-gray-300 px-2 py-1.5">
+                              {["ACCEPTANCE", "SIGN_OFF", "APPROVAL", "REVIEW", "ACKNOWLEDGEMENT"].map((p) => <option key={p} value={p}>{p}</option>)}
+                            </select>
                           </div>
                           <div className="col-span-2">
                             <label className="mb-1 block font-medium text-gray-600">Comment</label>
                             <textarea value={signoffForm.comment} onChange={(e) => setSignoffForm({ ...signoffForm, comment: e.target.value })}
-                              placeholder="TEST / INTERNAL ACCEPTANCE" rows={2} className="w-full rounded-lg border border-gray-300 px-2 py-1.5" />
+                              placeholder="Optional" rows={2} className="w-full rounded-lg border border-gray-300 px-2 py-1.5" />
                             <label className="mb-1 mt-2 block font-medium text-gray-600">Known exceptions (one per line: item | owner | due)</label>
                             <textarea value={signoffForm.exceptions} onChange={(e) => setSignoffForm({ ...signoffForm, exceptions: e.target.value })}
                               placeholder={"wave ownership | PM | 2026-08-30"} rows={2} className="w-full rounded-lg border border-gray-300 px-2 py-1.5" />

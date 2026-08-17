@@ -37,6 +37,7 @@ from . import xlsx as dxlsx
 from .models import (
     DeliverableAuditEvent,
     DeliverableSignoff,
+    GateResolution,
     HumanDeliverableInstance,
 )
 from .standards import BY_NAME, standard_by_name
@@ -473,15 +474,34 @@ def list_human_deliverables(db: Session, project: m.Project, actx) -> dict:
         "stale": sum(1 for r in rows if r["freshness"] == "STALE"),
     }
 
+    gates = gate_status(db, project)
+    flags = governance_flags(db, project)
+    flag_map = {f["gate"]: f for f in flags if f["flag_id"].startswith("FLAG-") and not f["flag_id"].startswith("FLAG-MC-")}
+    mc_map = {f["document"]: f for f in flags if f["flag_id"].startswith("FLAG-MC-")}
+    for r in rows:
+        gate_flag = flag_map.get(r["required_by"])
+        r["governance_flag"] = gate_flag if (gate_flag and not gate_flag["subdued"]) else None
+        r["material_change_flag"] = mc_map.get(r["code"])
+
+    # "Governance Flags" count for My Actions (flags the current user could
+    # resolve via their roles).
+    my_flags = sum(
+        1 for r in rows
+        if r["governance_flag"]
+        and r["my_role"] in ("OWNER", "APPROVER", "SIGNATORY")
+    )
+
     return {
         "project_id": project.id,
         "project_name": project.name,
         "project_key": project.key,
         "current_phase": _current_phase(profile) or "NOT SET",
-        "my_actions": my_actions,
+        "governance_policy": get_governance_policy(db, project),
+        "my_actions": {**my_actions, "governance_flags": my_flags},
         "summary": summary,
         "documents": rows,
-        "gates": gate_status(db, project),
+        "gates": gates,
+        "governance_flags": flags,
         "supporting_registers": cat.SUPPORTING_REGISTERS,
         "internal_module_count": len(BY_NAME),
     }
@@ -707,6 +727,16 @@ def transition(db: Session, project: m.Project, human_code: str, target: str, ac
 
 
 # ── Sign-off (version-specific, identity-verified) ──────────────────────────
+def _signoff_audit_action(evidence_class: str, purpose: str) -> str:
+    if evidence_class in cat.CUSTOMER_ACCEPTANCE_CLASSES and purpose in cat.ACCEPTANCE_PURPOSES:
+        return "CUSTOMER_ACCEPTANCE_RECORDED"
+    if evidence_class == "INTERNAL":
+        return "INTERNAL_APPROVAL_RECORDED"
+    if evidence_class == "TEST":
+        return "TEST_EVIDENCE_RECORDED"
+    return "SIGNED"
+
+
 def signoff(db: Session, project: m.Project, human_code: str, actx, body: dict) -> dict:
     head = _head(db, project.id, human_code)
     if not head:
@@ -727,6 +757,16 @@ def signoff(db: Session, project: m.Project, human_code: str, actx, body: dict) 
         signoff_type = "ACKNOWLEDGE"
     if decision == "REJECT":
         signoff_type = "REJECT"
+
+    # Evidence class + purpose are separate from the decision. Default is safe:
+    # INTERNAL/APPROVAL never qualifies as customer acceptance unless the caller
+    # explicitly selects CUSTOMER or FORMAL_EXTERNAL with an acceptance purpose.
+    evidence_class = (body.get("evidence_class") or "INTERNAL").upper()
+    if evidence_class not in cat.EVIDENCE_CLASSES:
+        raise DomainError(f"Unknown evidence class: {evidence_class}", status_code=422)
+    purpose = (body.get("purpose") or "APPROVAL").upper()
+    if purpose not in cat.SIGNOFF_PURPOSES:
+        raise DomainError(f"Unknown sign-off purpose: {purpose}", status_code=422)
 
     actor = _identity(actx)
     role = body.get("signer_role") or None
@@ -754,6 +794,8 @@ def signoff(db: Session, project: m.Project, human_code: str, actx, body: dict) 
         snapshot_hash=head.snapshot_hash,
         signoff_type=signoff_type,
         decision=decision,
+        evidence_class=evidence_class,
+        purpose=purpose,
         signer_user_id=actor["user_id"],
         signer_name=actor["email"],
         signer_role=role,
@@ -766,10 +808,11 @@ def signoff(db: Session, project: m.Project, human_code: str, actx, body: dict) 
     )
     db.add(sig)
     db.flush()
-    _audit(db, project.id, "SIGNOFF", sig.id, "SIGNED", actor,
+    _audit(db, project.id, "SIGNOFF", sig.id, _signoff_audit_action(evidence_class, purpose), actor,
            before=before, after={"lifecycle_status": head.lifecycle_status,
-                                 "decision": decision, "version": head.version},
-           reason=f"sign-off {decision} on v{head.version} (hash {head.snapshot_hash[:12]}…)")
+                                 "decision": decision, "version": head.version,
+                                 "evidence_class": evidence_class, "purpose": purpose},
+           reason=f"sign-off {decision} ({evidence_class}/{purpose}) on v{head.version} (hash {head.snapshot_hash[:12]}…)")
     db.commit()
     return sig.to_dict()
 
@@ -801,6 +844,13 @@ def accept_change_request(db: Session, project: m.Project, cr_code: str, actx,
     if decision not in cat.SIGNOFF_DECISIONS:
         raise DomainError(f"Unknown sign-off decision: {decision}", status_code=422)
 
+    evidence_class = (body.get("evidence_class") or "INTERNAL").upper()
+    if evidence_class not in cat.EVIDENCE_CLASSES:
+        raise DomainError(f"Unknown evidence class: {evidence_class}", status_code=422)
+    purpose = (body.get("purpose") or "APPROVAL").upper()
+    if purpose not in cat.SIGNOFF_PURPOSES:
+        raise DomainError(f"Unknown sign-off purpose: {purpose}", status_code=422)
+
     actor = _identity(actx)
     sig = DeliverableSignoff(
         id=_new_id("sgn"),
@@ -814,6 +864,8 @@ def accept_change_request(db: Session, project: m.Project, cr_code: str, actx,
         snapshot_hash=None,
         signoff_type="ACCEPT" if decision in ("ACCEPT", "APPROVE") else decision,
         decision=decision,
+        evidence_class=evidence_class,
+        purpose=purpose,
         signer_user_id=actor["user_id"],
         signer_name=actor["email"],
         signer_role=body.get("signer_role"),
@@ -826,37 +878,270 @@ def accept_change_request(db: Session, project: m.Project, cr_code: str, actx,
     )
     db.add(sig)
     db.flush()
-    _audit(db, project.id, "SIGNOFF", sig.id, "SIGNED", actor,
+    _audit(db, project.id, "SIGNOFF", sig.id, _signoff_audit_action(evidence_class, purpose), actor,
            before=None,
-           after={"decision": decision, "object": cr_code},
-           reason=f"change acceptance {decision} on {cr_code}")
+           after={"decision": decision, "object": cr_code,
+                  "evidence_class": evidence_class, "purpose": purpose},
+           reason=f"change acceptance {decision} ({evidence_class}/{purpose}) on {cr_code}")
     db.commit()
     return sig.to_dict()
 
 
-def gate_status(db: Session, project: m.Project) -> list[dict]:
-    """Status of the 7 critical gates: which are signed (or not applicable)."""
+GOV_POLICY_KEY = "governance_policy"
+
+
+def get_governance_policy(db: Session, project: m.Project) -> dict:
+    stored = (project.project_meta or {}).get(GOV_POLICY_KEY) or {}
+    policy = cat.default_governance_policy()
+    policy.update(stored)
+    return policy
+
+
+def set_governance_policy(db: Session, project: m.Project, policy: dict, *, actor: str) -> dict:
+    meta = dict(project.project_meta or {})
+    mode = (policy.get("mode") or "FLEXIBLE").upper()
+    if mode not in cat.POLICY_MODES:
+        raise DomainError(f"Unknown policy mode: {mode}", status_code=422)
+    merged = cat.default_governance_policy()
+    merged["mode"] = mode
+    gate_policy = policy.get("gate_policy") or {}
+    for code, override in gate_policy.items():
+        if code not in cat.GATE_BY_CODE:
+            raise DomainError(f"Unknown gate: {code}", status_code=422)
+        merged["gate_policy"][code] = {
+            "required": bool(override.get("required", True)),
+            "severity": override.get("severity", merged["gate_policy"][code]["severity"]),
+            "qualifying_role": override.get("qualifying_role", []),
+            "qualifying_evidence": override.get("qualifying_evidence") or merged["gate_policy"][code]["qualifying_evidence"],
+        }
+    meta[GOV_POLICY_KEY] = merged
+    project.project_meta = meta
+    db.commit()
+    return merged
+
+
+# ── Gate qualification + status ─────────────────────────────────────────────
+def _gate_docs(db: Session, project: m.Project, code: str) -> list[dict]:
+    if code == "CHANGE_ACCEPTANCE":
+        return []
+    return [c for c in compose_for_project(db, project) if c["required_by"] == code]
+
+
+def _gate_signoffs(db: Session, project: m.Project, code: str) -> list[dict]:
     sigs = signoff_register(db, project)
+    if code == "CHANGE_ACCEPTANCE":
+        return [s for s in sigs if s["human_code"].startswith("CR-")]
+    codes = {d["code"] for d in _gate_docs(db, project, code)}
+    return [s for s in sigs if s["human_code"] in codes]
+
+
+def _latest_resolution(db: Session, project: m.Project, gate_id: str) -> dict | None:
+    rows = db.execute(
+        select(GateResolution).where(
+            GateResolution.project_id == project.id,
+            GateResolution.gate_id == gate_id,
+        ).order_by(GateResolution.timestamp.desc())
+    ).scalars().all()
+    return rows[0].to_dict() if rows else None
+
+
+def gate_status(db: Session, project: m.Project) -> list[dict]:
+    """Recalculated gate status from evidence CLASS + PURPOSE.
+
+    TEST evidence never qualifies a production gate; INTERNAL approval can
+    satisfy internal governance but never customer acceptance. Waivers / N/A /
+    proceed-with-risk resolutions are honoured and preserved as evidence."""
+    policy = get_governance_policy(db, project)
+    profile = _profile(db, project)
+    phase = _current_phase(profile)
     out = []
     for gate in cat.SIGN_OFF_GATES:
         code = gate["code"]
-        if code == "CHANGE_ACCEPTANCE":
-            cr_sigs = [s for s in sigs if s["human_code"].startswith("CR-")]
-            out.append({"gate": code, "name": gate["name"], "phase": gate["phase"],
-                        "status": "SIGNED" if cr_sigs else "OPEN", "signoffs": len(cr_sigs)})
-            continue
-        docs = [c for c in compose_for_project(db, project) if c["required_by"] == code]
-        if not docs:
-            out.append({"gate": code, "name": gate["name"], "phase": gate["phase"],
-                        "status": "NOT_APPLICABLE", "signoffs": 0})
-            continue
-        signed = any(
-            s["human_code"] == d["code"] for d in docs for s in sigs
-        )
-        out.append({"gate": code, "name": gate["name"], "phase": gate["phase"],
-                    "status": "SIGNED" if signed else "OPEN",
-                    "signoffs": sum(1 for d in docs for s in sigs if s["human_code"] == d["code"])})
+        gpol = cat.effective_gate_policy(code, policy)
+        sigs = _gate_signoffs(db, project, code)
+        resolution = _latest_resolution(db, project, code)
+
+        customer_sigs = [s for s in sigs
+                         if s["evidence_class"] in cat.CUSTOMER_ACCEPTANCE_CLASSES
+                         and s["purpose"] in cat.ACCEPTANCE_PURPOSES]
+        internal_sigs = [s for s in sigs
+                         if s["evidence_class"] == "INTERNAL"
+                         and s["purpose"] in cat.APPROVAL_PURPOSES]
+        test_sigs = [s for s in sigs if s["evidence_class"] == "TEST"]
+
+        has_docs = bool(_gate_docs(db, project, code)) or code == "CHANGE_ACCEPTANCE"
+        timing_state, timing_label = _timing(code, phase)
+
+        if resolution and resolution["resolution_type"] == "WAIVED":
+            status = "WAIVED"
+        elif resolution and resolution["resolution_type"] == "NOT_APPLICABLE":
+            status = "NOT_APPLICABLE"
+        elif not has_docs and code != "CHANGE_ACCEPTANCE":
+            status = "NOT_APPLICABLE"
+        elif timing_state == "UPCOMING":
+            status = "NOT_DUE"
+        elif customer_sigs:
+            status = ("ACCEPTED_WITH_EXCEPTIONS"
+                      if any(s["decision"] == "ACCEPTED_WITH_EXCEPTIONS" for s in customer_sigs)
+                      else "ACCEPTED")
+        elif internal_sigs:
+            status = "AWAITING_CUSTOMER_ACCEPTANCE"
+        elif test_sigs:
+            status = "TEST_EVIDENCE_PRESENT"
+        else:
+            status = "OPEN"
+
+        accepted = status in ("ACCEPTED", "ACCEPTED_WITH_EXCEPTIONS")
+        resolved = status in ("WAIVED", "NOT_APPLICABLE")
+        flag_raised = not accepted and not resolved and status != "NOT_DUE"
+        subdued = timing_state == "UPCOMING"
+
+        out.append({
+            "gate": code,
+            "name": gate["name"],
+            "phase": gate["phase"],
+            "order": gate["order"],
+            "status": status,
+            "severity": gpol["severity"],
+            "required": gpol["required"],
+            "timing_state": timing_state,
+            "timing_label": timing_label,
+            "subdued": subdued,
+            "customer_evidence": bool(customer_sigs),
+            "internal_evidence": bool(internal_sigs),
+            "test_evidence": bool(test_sigs),
+            "signoffs": len(sigs),
+            "resolution": resolution,
+            "proceeded_with_risk": bool(resolution and resolution["resolution_type"] == "PROCEED_WITH_RISK"),
+            "flag": {
+                "raised": flag_raised,
+                "severity": gpol["severity"],
+                "reason": (f"{gate['name']} — "
+                           + ("customer acceptance missing" if internal_sigs or test_sigs or sigs
+                              else "no qualifying evidence recorded")),
+                "why": gpol["why"],
+                "status": status,
+                "subdued": subdued,
+            } if flag_raised else None,
+        })
     return out
+
+
+def governance_flags(db: Session, project: m.Project) -> list[dict]:
+    """Project-level Governance & Legal Flags register (derived, exportable)."""
+    flags = []
+    for g in gate_status(db, project):
+        if not g["flag"]:
+            continue
+        resolution = g.get("resolution")
+        status = "ACKNOWLEDGED" if (resolution and resolution["resolution_type"] == "PROCEED_WITH_RISK") else "OPEN"
+        flags.append({
+            "flag_id": f"FLAG-{g['gate']}",
+            "gate": g["gate"],
+            "gate_name": g["name"],
+            "document": ", ".join(d["code"] for d in _gate_docs(db, project, g["gate"])) or g["gate"],
+            "severity": g["flag"]["severity"],
+            "reason": g["flag"]["reason"],
+            "why": g["flag"]["why"],
+            "status": status,
+            "subdued": g["flag"]["subdued"],
+            "raised_at": _now().isoformat(),
+            "resolved_at": (resolution or {}).get("timestamp"),
+            "resolved_by": (resolution or {}).get("actor_name"),
+            "resolution": (resolution or {}).get("resolution_type"),
+        })
+    # material-change re-acceptance flags on signed documents
+    for c in compose_for_project(db, project):
+        head = _head(db, project.id, c["code"])
+        if head and head.lifecycle_status in ("APPROVED", "BASELINED") and head.material_change == "MATERIAL_CHANGE":
+            flags.append({
+                "flag_id": f"FLAG-MC-{c['code']}",
+                "gate": c["required_by"],
+                "gate_name": "Material Change",
+                "document": c["code"],
+                "severity": "LEGAL_STRONGLY_REQUIRED",
+                "reason": f"{c['name']} changed materially after acceptance — re-acceptance recommended.",
+                "why": "Historical acceptance is preserved; the new content has not been re-accepted.",
+                "status": "OPEN",
+                "subdued": False,
+                "raised_at": _now().isoformat(),
+                "resolved_at": None,
+                "resolved_by": None,
+                "resolution": None,
+            })
+    return flags
+
+
+def resolve_gate(db: Session, project: m.Project, gate_id: str, resolution_type: str,
+                 actx, body: dict) -> dict:
+    """Record a human decision about a gate that is NOT acceptance:
+    PROCEED_WITH_RISK / WAIVED / NOT_APPLICABLE. Never hard-locks; preserves
+    the decision and its reason as evidence."""
+    if gate_id not in cat.GATE_BY_CODE:
+        raise DomainError(f"Unknown gate: {gate_id}", status_code=404)
+    if resolution_type not in ("PROCEED_WITH_RISK", "WAIVED", "NOT_APPLICABLE"):
+        raise DomainError(f"Unknown resolution type: {resolution_type}", status_code=422)
+
+    actor = _identity(actx)
+    reason = (body.get("reason") or "").strip()
+    if not reason:
+        raise DomainError("A reason is required.", status_code=422)
+
+    gpol = cat.effective_gate_policy(gate_id, get_governance_policy(db, project))
+    res = GateResolution(
+        id=_new_id("rsk"),
+        project_id=project.id,
+        gate_id=gate_id,
+        document_id=body.get("document_id"),
+        human_code=body.get("human_code"),
+        resolution_type=resolution_type,
+        severity=gpol["severity"],
+        reason=reason,
+        scope=body.get("scope"),
+        actor_user_id=actor["user_id"],
+        actor_name=actor["email"],
+        actor_role=body.get("actor_role") or body.get("signer_role"),
+        timestamp=_now(),
+        comment=body.get("comment"),
+    )
+    db.add(res)
+    db.flush()
+    action = {"PROCEED_WITH_RISK": "PROCEEDED_WITH_RISK",
+              "WAIVED": "GATE_WAIVED",
+              "NOT_APPLICABLE": "GATE_MARKED_NOT_APPLICABLE"}[resolution_type]
+    _audit(db, project.id, "GATE", gate_id, action, actor,
+           before={"gate_status": _gate_status_value(db, project, gate_id)},
+           after={"resolution_type": resolution_type, "severity": gpol["severity"]},
+           reason=reason)
+    db.commit()
+    return res.to_dict()
+
+
+def _gate_status_value(db: Session, project: m.Project, gate_id: str) -> str:
+    for g in gate_status(db, project):
+        if g["gate"] == gate_id:
+            return g["status"]
+    return "UNKNOWN"
+
+
+def responsibility_brief(db: Session, project: m.Project, human_code: str,
+                         role: str | None = None) -> dict:
+    """Deterministic 'why am I being asked?' brief from the gate policy."""
+    hd = cat.HUMAN_DELIVERABLES.get(human_code)
+    if not hd:
+        raise DomainError(f"Unknown human deliverable: {human_code}", status_code=404)
+    gpol = cat.effective_gate_policy(hd["required_by"], get_governance_policy(db, project))
+    signatory = role or (hd["signatory_roles"][0] if hd["signatory_roles"] else hd["owner_role"])
+    return {
+        "human_code": human_code,
+        "document": hd["name"],
+        "gate": hd["required_by"],
+        "gate_name": cat.GATE_BY_CODE[hd["required_by"]]["name"],
+        "role": signatory,
+        "why": gpol["why"],
+        "confirms": gpol["confirms"],
+        "excludes": gpol["excludes"],
+    }
 
 
 def my_signoffs(db: Session, project: m.Project, actx) -> list[dict]:
@@ -974,6 +1259,22 @@ def build_human_workbook(db: Session, project: m.Project, human_code: str,
         }]
     x.render_signoff(wb, doc, signoffs)
 
+    # R17.1.1 — governance status (never falsely stamp "Approved")
+    gate = next((g for g in gate_status(db, project) if g["gate"] == hd["required_by"]), None)
+    gov_rows = [
+        ["Gate", hd["required_by"]],
+        ["Gate Status", (gate or {}).get("status", "UNKNOWN")],
+        ["Severity", (gate or {}).get("severity", "—")],
+        ["Customer Evidence", "Yes" if (gate or {}).get("customer_evidence") else "No"],
+        ["Internal Evidence", "Yes" if (gate or {}).get("internal_evidence") else "No"],
+        ["Test Evidence", "Yes" if (gate or {}).get("test_evidence") else "No"],
+        ["Risk Flag", (gate or {}).get("flag", {}).get("severity") or "None"],
+        ["Qualified Acceptance", "Yes" if (gate or {}).get("status") in ("ACCEPTED", "ACCEPTED_WITH_EXCEPTIONS") else "No"],
+    ]
+    x.render_register(wb, "85_Governance_Status",
+                      ["Field", "Value"], gov_rows, doc, landscape=False,
+                      widths=(26, 44))
+
     x.render_source_reference(wb, doc, [
         {"authority": s["authority"], "object_type": "Standard", "object_id": s["code"],
          "version": "1.0", "retrieved_at": (head.generated_at or _now()).isoformat()}
@@ -1050,6 +1351,9 @@ def acceptance_package(db: Session, project: m.Project) -> bytes:
         zf.writestr("Signoff_Evidence.json", signoff_evidence_export(db, project))
         # sign-off register xlsx
         zf.writestr("Acceptance_Register.xlsx", _signoff_register_xlsx(db, project))
+        # R17.1.1 — governance flag register + risk overrides / waivers
+        zf.writestr("Governance_Flag_Register.xlsx", _governance_flag_register_xlsx(db, project))
+        zf.writestr("Risk_Overrides_Waivers.json", resolutions_export(db, project))
         # source manifest
         manifest = {
             "project": project.name,
@@ -1057,10 +1361,46 @@ def acceptance_package(db: Session, project: m.Project) -> bytes:
             "generated_at": _now().isoformat(),
             "documents": generated,
             "internal_module_count": len(BY_NAME),
+            "governance_policy": get_governance_policy(db, project),
+            "governance_flags": governance_flags(db, project),
         }
         zf.writestr("Source_Manifest.json", json.dumps(manifest, indent=2, default=str))
         # audit trail
         zf.writestr("Audit_Trail.json", json.dumps(audit_trail(db, project), indent=2, default=str))
+    return buf.getvalue()
+
+
+def resolutions_export(db: Session, project: m.Project) -> bytes:
+    rows = db.execute(
+        select(GateResolution).where(GateResolution.project_id == project.id)
+        .order_by(GateResolution.timestamp.desc())
+    ).scalars().all()
+    payload = {
+        "project_id": project.id,
+        "project_key": project.key,
+        "generated_at": _now().isoformat(),
+        "resolutions": [r.to_dict() for r in rows],
+        "note": ("Risk overrides, waivers and not-applicable decisions are NOT "
+                 "acceptance. They preserve the human decision and its reason."),
+    }
+    return json.dumps(payload, indent=2, default=str).encode("utf-8")
+
+
+def _governance_flag_register_xlsx(db: Session, project: m.Project) -> bytes:
+    x = dxlsx.Xlsx()
+    wb = x.new_workbook()
+    doc = {"title": "Governance & Legal Flag Register", "project": project.name,
+           "project_code": project.key, "document_id": f"{project.key}-GOV-FLAGS",
+           "version": "1.0", "status": "EVIDENCE"}
+    x.render_register(wb, "Governance_Flag_Register",
+                      ["Flag ID", "Gate", "Document", "Severity", "Reason", "Status", "Raised At"],
+                      [[f["flag_id"], f["gate_name"], f["document"], f["severity"],
+                        f["reason"], f["status"], f["raised_at"][:19]]
+                       for f in governance_flags(db, project)],
+                      doc, widths=(22, 22, 26, 24, 46, 14, 20))
+    wb.active = 0
+    buf = io.BytesIO()
+    wb.save(buf)
     return buf.getvalue()
 
 
