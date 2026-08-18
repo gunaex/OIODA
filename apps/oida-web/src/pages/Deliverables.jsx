@@ -164,14 +164,26 @@ export default function Deliverables() {
   }
 
   async function download(kind, code) {
-    const url = humanApi.exportUrl(project.id, kind, code);
-    if (!url) return;
+    const path = humanApi.exportUrl(project.id, kind, code);
+    if (!path) return;
+    // exportUrl returns an API-relative path; it must be resolved against the
+    // API gateway origin, not the Pages origin (otherwise the SPA fallback
+    // returns index.html).
+    const base = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
+    const url = path.startsWith("http") ? path : `${base}${path}`;
     const token = localStorage.getItem("oida_ecosystem_token");
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      setError(`Download failed (HTTP ${res.status})${text ? `: ${text.slice(0, 120)}` : ""}`);
+      return;
+    }
     const blob = await res.blob();
+    const disposition = res.headers.get("content-disposition") || "";
+    const match = disposition.match(/filename="?([^";]+)"?/);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = url.split("/").pop() || "export";
+    a.download = match ? match[1] : `${project.key}-${kind || "export"}.xlsx`;
     a.click();
   }
 
