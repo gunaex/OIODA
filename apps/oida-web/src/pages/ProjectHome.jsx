@@ -94,7 +94,9 @@ export default function ProjectHome() {
 
   useEffect(() => {
     if (project) load();
-  }, [project?.id, pm?.slug, qa?.length]);
+  // This read batch is project-scoped. PM/QA context resolving later must not
+  // refetch the same truth and Document summaries for the same project.
+  }, [project?.id]);
 
   if (!project) return <Loading />;
 
