@@ -225,6 +225,12 @@ def ai_reviewer(project_id: str, human_code: str, body: AIReviewerIn,
     return rsvc.ai_guidance(packet, force=body.force)
 
 
+@router.get("/reviewer-ai/status")
+def reviewer_ai_status(actx=Depends(actor_ctx)):
+    """Safe readiness only; never returns provider configuration values."""
+    return rsvc.operational_status()
+
+
 class CrAcceptIn(BaseModel):
     decision: str = "ACCEPT"
     evidence_class: str | None = None

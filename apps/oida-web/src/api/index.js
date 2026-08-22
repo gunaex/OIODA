@@ -278,6 +278,7 @@ export const humanApi = {
   },
   aiReviewer: (projectId, code, body) =>
     post("da", `/projects/${projectId}/human-deliverables/${code}/ai-reviewer`, body || {}),
+  aiStatus: () => get("da", "/reviewer-ai/status"),
   acceptChangeRequest: (projectId, crCode, body) =>
     post("da", `/projects/${projectId}/change-requests/${crCode}/accept`, body),
   mySignoffs: (projectId) => get("da", `/projects/${projectId}/my-signoffs`),

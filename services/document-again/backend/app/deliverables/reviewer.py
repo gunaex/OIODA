@@ -14,6 +14,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,7 +28,7 @@ from .models import DeliverableSignoff, HumanDeliverableInstance
 EVIDENCE_VERSION = "reviewer_evidence/v1"
 BRIEF_VERSION = "reviewer_change_brief/v1"
 AI_VERSION = "ai_reviewer_brief/v1"
-PROMPT_VERSION = "reviewer_ai_prompt/v1"
+PROMPT_VERSION = "reviewer_ai_prompt/v2"
 MAX_EVIDENCE_ITEMS = 160
 MAX_AI_ITEMS_PER_SECTION = 5
 _CACHE: dict[str, dict] = {}
@@ -116,12 +118,37 @@ def _change_items(before: dict | None, after: dict | None) -> tuple[list[dict], 
     return rows[:MAX_EVIDENCE_ITEMS], "RECORDED"
 
 
-def _provider() -> tuple[str, str] | None:
+def operational_status() -> dict:
+    disabled = os.environ.get("AI_ENABLED", "true").lower() in {"0", "false", "no", "off"}
+    statuses = ai_runtime.provider_status()
+    available = next((s for s in statuses if s.get("status") in {"AVAILABLE", "LOCAL_AVAILABLE", "CONFIGURED"}
+                      and s.get("model")), None)
+    if disabled:
+        state, message = "AI_NOT_CONFIGURED", "AI guidance is disabled. Deterministic review is ready."
+    elif available:
+        state, message = "AI_AVAILABLE", "AI guidance is ready."
+    elif any(s.get("configured") for s in statuses):
+        state, message = "AI_UNAVAILABLE", "AI is configured but temporarily unavailable. Deterministic review is ready."
+    else:
+        state, message = "AI_NOT_CONFIGURED", "AI is not configured. Deterministic review is ready."
+    return {"status": state, "message": message,
+            "provider": available.get("provider_id") if available else None,
+            "model": available.get("model") if available else None,
+            "prompt_version": PROMPT_VERSION,
+            "capabilities": ({k: council._PROVIDER_CAPS.get(available["provider_id"], {}).get(k, False)
+                              for k in ("supports_structured_output", "supports_streaming")} if available else {})}
+
+
+def _provider() -> dict | None:
     if os.environ.get("AI_ENABLED", "true").lower() in {"0", "false", "no", "off"}:
         return None
     for status in ai_runtime.provider_status():
         if status.get("status") in {"AVAILABLE", "LOCAL_AVAILABLE", "CONFIGURED"} and status.get("model"):
-            return status["provider_id"], status["model"]
+            caps = council._PROVIDER_CAPS.get(status["provider_id"], {})
+            return {"provider_id": status["provider_id"], "model": status["model"],
+                    "supports_structured_output": caps.get("supports_structured_output", False),
+                    "supports_json_mode": status["provider_id"] in {"local", "openai", "deepseek", "gemini"},
+                    "supports_streaming": caps.get("supports_streaming", False)}
     return None
 
 
@@ -180,6 +207,14 @@ def build_packet(db: Session, project, human_code: str, *, role: str | None = No
         after={"lifecycle": current.lifecycle_status, "readiness": current.readiness,
                "material_change": current.material_change, "freshness": current.freshness},
         provenance={"instance_id": current.id, "precheck_id": current.precheck_id})
+    responsibility_id = add(
+        "RESPONSIBILITY", "DOCUMENT_AGAIN_POLICY",
+        f"{responsibility['role']} is asked for {purpose}: confirms {', '.join(responsibility['confirms']) or 'nothing recorded'}; does not confirm {', '.join(responsibility['excludes']) or 'nothing recorded'}.",
+        after={"role": responsibility["role"], "purpose": purpose,
+               "confirms": responsibility["confirms"], "excludes": responsibility["excludes"]},
+        provenance={"human_code": human_code, "gate": responsibility["gate"],
+                    "policy_source": "effective_gate_policy"},
+    )
     for signoff in signoffs[:20]:
         add("ACCEPTANCE", "DOCUMENT_AGAIN", f"{signoff.purpose or 'UNCLASSIFIED'} {signoff.decision} recorded for v{signoff.document_version} as {signoff.evidence_class or 'UNCLASSIFIED'} evidence.",
             classification={"purpose": signoff.purpose, "evidence_class": signoff.evidence_class,
@@ -210,6 +245,7 @@ def build_packet(db: Session, project, human_code: str, *, role: str | None = No
                        "to_hash": current.snapshot_hash, "history": history,
                        "comparison_evidence_id": comparison_id},
         "reviewer_context": {**responsibility, "purpose": purpose,
+                             "responsibility_evidence_id": responsibility_id,
                              "authority_note": "AI advises; the human reviewer decides."},
         "document_changes": [e["evidence_id"] for e in evidence if e["domain"] == "DOCUMENT"],
         "source_changes": [e["evidence_id"] for e in evidence if e["domain"] == "SOURCE"],
@@ -261,11 +297,34 @@ def _ai_projection(packet: dict) -> dict:
     }
 
 
-def _parse(raw: str) -> dict:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
-    value = json.loads(text)
+def _extract_object(text: str) -> str | None:
+    """Extract one balanced JSON object without interpreting surrounding prose."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth, quoted, escaped = 0, False, False
+    for index in range(start, len(text)):
+        char = text[index]
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+            continue
+        if char == '"':
+            quoted = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    return None
+
+
+def _schema(value: Any, text: str) -> dict:
     if not isinstance(value, dict):
         raise ValueError("AI response must be an object")
     for field in ("focus_items", "risks_and_exceptions", "reviewer_questions", "suggested_reading", "limitations"):
@@ -274,6 +333,32 @@ def _parse(raw: str) -> dict:
     if len(text.encode()) > 100_000:
         raise ValueError("AI response exceeds maximum size")
     return value
+
+
+def _parse(raw: str) -> dict:
+    """Native parse -> fenced/extracted object -> trailing-comma repair.
+
+    Repair is deliberately structural only. Truncated JSON, prose findings,
+    guessed citations, and missing fields always fail closed.
+    """
+    text = raw.strip().lstrip("\ufeff")
+    attempts: list[tuple[str, str]] = [("NATIVE_JSON", text)]
+    extracted = _extract_object(text)
+    if extracted and extracted != text:
+        attempts.append(("EXTRACTED_JSON", extracted))
+    if extracted:
+        repaired = re.sub(r",\s*([}\]])", r"\1", extracted)
+        if repaired != extracted:
+            attempts.append(("SAFE_TRAILING_COMMA_REPAIR", repaired))
+    last: Exception | None = None
+    for method, candidate in attempts:
+        try:
+            value = _schema(json.loads(candidate), candidate)
+            value["_recovery_method"] = method
+            return value
+        except (json.JSONDecodeError, ValueError) as exc:
+            last = exc
+    raise ValueError("Malformed structured AI response") from last
 
 
 def _tokens(value: Any) -> set[str]:
@@ -288,6 +373,21 @@ def _supported(statement: str, cited: list[dict]) -> bool:
     return len(overlap) >= min(2, max(1, len(st)))
 
 
+def _direct_fact_supported(statement: str, cited: list[dict]) -> bool:
+    lower = statement.lower()
+    corpus = json.dumps(cited, default=str).lower()
+    numbers = re.findall(r"(?<![a-z])\d+(?:\.\d+)?(?:%|\s*(?:day|days|week|weeks|hour|hours))?", lower)
+    if numbers and any(number.strip() not in corpus for number in numbers):
+        return False
+    if any(word in lower for word in ("approved", "waived", "authorized", "signed", "accepted")):
+        return any(e.get("domain") in {"ACCEPTANCE", "GOVERNANCE"} for e in cited)
+    if any(word in lower for word in ("version", "revision")):
+        return any(e.get("domain") == "DOCUMENT" or "revision" in json.dumps(e).lower() for e in cited)
+    if any(word in lower for word in ("added", "removed", "modified", "changed")):
+        return any(e.get("change") in {"ADDED", "REMOVED", "MODIFIED", "COMPARISON"} for e in cited)
+    return True
+
+
 def validate_ai_output(raw: dict, packet: dict) -> dict:
     allowed = {e["evidence_id"]: e for e in packet["evidence_items"]}
     rejected = []
@@ -297,7 +397,9 @@ def validate_ai_output(raw: dict, packet: dict) -> dict:
         for item in raw.get(name) or []:
             if not isinstance(item, dict):
                 rejected.append({"section": name, "reason": "MALFORMED"}); continue
-            statement = str(item.get("statement") or item.get("question") or "").strip()[:800]
+            title = str(item.get("title") or item.get("section") or "").strip()[:160]
+            explanation = str(item.get("explanation") or item.get("reason") or "").strip()[:640]
+            statement = str(item.get("statement") or item.get("question") or explanation or title).strip()[:800]
             ids = list(dict.fromkeys(item.get("evidence_ids") or []))[:12]
             if not statement or not ids:
                 rejected.append({"section": name, "statement": statement, "reason": "MISSING_CITATION"}); continue
@@ -314,9 +416,10 @@ def validate_ai_output(raw: dict, packet: dict) -> dict:
                     rejected.append({"section": name, "statement": statement, "reason": "CUSTOMER_ACCEPTANCE_UNSUPPORTED"}); continue
             if any(e.get("change") == "NOT_RECORDED" for e in cited) and any(x in lower for x in ("did not change", "unchanged", "no change")):
                 rejected.append({"section": name, "statement": statement, "reason": "UNKNOWN_HISTORY_AS_CERTAINTY"}); continue
-            if not _supported(statement, cited):
+            if not _supported(statement, cited) or not _direct_fact_supported(statement, cited):
                 rejected.append({"section": name, "statement": statement, "reason": "UNSUPPORTED_CLAIM"}); continue
-            result.append({"statement": statement, "evidence_ids": ids,
+            result.append({"title": title or None, "explanation": explanation or statement,
+                           "statement": statement, "evidence_ids": ids,
                            "ai_focus": str(item.get("ai_focus") or "MEDIUM").upper() if name != "reviewer_questions" else None})
         return result[:MAX_AI_ITEMS_PER_SECTION]
 
@@ -336,15 +439,48 @@ def validate_ai_output(raw: dict, packet: dict) -> dict:
     }
 
 
+class ReviewerAIProvider:
+    """Provider-independent runtime adapter for one grounded review request."""
+
+    def __init__(self, selection: dict):
+        self.selection = selection
+
+    def generate_grounded_review(self, system: str, user: str) -> str:
+        provider_id = self.selection["provider_id"]
+        local = provider_id == "local"
+        connect = float(os.environ.get("REVIEWER_AI_CONNECT_TIMEOUT_SECONDS", "5"))
+        read = float(os.environ.get("REVIEWER_AI_LOCAL_BUDGET_SECONDS" if local
+                                    else "REVIEWER_AI_REMOTE_BUDGET_SECONDS", "40" if local else "30"))
+        return council._chat(
+            provider_id, self.selection["model"], system, user, max_tokens=1000,
+            json_mode=self.selection.get("supports_json_mode", False),
+            connect_timeout=connect, read_timeout=read,
+        )
+
+
+def _failure(exc: Exception) -> str:
+    text = str(exc).lower()
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)) or "timeout" in text:
+        return "TIMEOUT"
+    if "429" in text or "rate limit" in text:
+        return "RATE_LIMITED"
+    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+        return "MALFORMED"
+    if "not_configured" in text:
+        return "NOT_CONFIGURED"
+    return "UNAVAILABLE"
+
+
 def ai_guidance(packet: dict, *, force: bool = False) -> dict:
     started = time.monotonic()
     selected = _provider()
     if not selected:
         disabled = os.environ.get("AI_ENABLED", "true").lower() in {"0", "false", "no", "off"}
-        return {"status": "DISABLED" if disabled else "UNAVAILABLE", "advisory": True,
+        return {"status": "DISABLED" if disabled else "NOT_CONFIGURED",
+                "operational_status": "AI_NOT_CONFIGURED", "advisory": True,
                 "message": "AI guidance is disabled." if disabled else "No configured AI provider is available. Deterministic review remains available.",
                 "evidence_packet_hash": packet["evidence_packet_hash"], "latency_ms": 0}
-    provider_id, model = selected
+    provider_id, model = selected["provider_id"], selected["model"]
     cache_key = _hash({"packet": packet["evidence_packet_hash"], "role": packet["reviewer_context"],
                        "prompt": PROMPT_VERSION, "provider": provider_id, "model": model})
     if not force and cache_key in _CACHE:
@@ -358,16 +494,25 @@ def ai_guidance(packet: dict, *, force: bool = False) -> dict:
         "state that it cannot be determined. Return JSON only; do not reveal hidden reasoning."
     )
     user = (
-        "Produce this schema: {\"summary\":\"advisory overview\",\"focus_items\":[{\"statement\":\"...\",\"evidence_ids\":[\"E-001\"],\"ai_focus\":\"HIGH|MEDIUM|LOW\"}],"
-        "\"risks_and_exceptions\":[same shape],\"reviewer_questions\":[{\"question\":\"...\",\"evidence_ids\":[\"E-001\"]}],"
-        "\"suggested_reading\":[{\"statement\":\"...\",\"evidence_ids\":[\"E-001\"]}],\"limitations\":[\"...\"]}.\n"
+        "Answer five concise needs: material changes, focus, role significance, unresolved items, and questions before decision. "
+        "Produce this schema: {\"summary\":\"brief advisory overview\",\"focus_items\":[{\"title\":\"...\",\"explanation\":\"...\",\"evidence_ids\":[\"E-001\"],\"ai_focus\":\"HIGH|MEDIUM|LOW\"}],"
+        "\"risks_and_exceptions\":[{\"title\":\"...\",\"explanation\":\"...\",\"evidence_ids\":[\"E-001\"]}],"
+        "\"reviewer_questions\":[{\"question\":\"...\",\"evidence_ids\":[\"E-001\"]}],"
+        "\"suggested_reading\":[{\"section\":\"...\",\"reason\":\"...\",\"evidence_ids\":[\"E-001\"]}],\"limitations\":[\"...\"]}.\n"
         "Do not place factual claims only in summary; material claims belong in cited arrays. Evidence packet:\n" +
         json.dumps(projection, ensure_ascii=False, separators=(",", ":"))[:30000]
     )
     try:
-        raw = council._chat(provider_id, model, system, user, max_tokens=1200)
-        validated = validate_ai_output(_parse(raw), packet)
+        raw = ReviewerAIProvider(selected).generate_grounded_review(system, user)
+        parsed = _parse(raw)
+        recovery_method = parsed.pop("_recovery_method", "NATIVE_JSON")
+        validated = validate_ai_output(parsed, packet)
+        reasons = {r["reason"] for r in validated["rejected_claims"]}
+        result_status = ("INVALID_CITATION" if reasons & {"MISSING_CITATION", "UNKNOWN_CITATION"}
+                         else "UNSUPPORTED_CLAIM" if reasons else "AVAILABLE")
         result = {"status": "AVAILABLE", **validated, "ai_brief_version": AI_VERSION,
+                  "operational_status": "AI_DEGRADED" if reasons else "AI_AVAILABLE",
+                  "result_status": result_status, "recovery_method": recovery_method,
                   "prompt_version": PROMPT_VERSION, "provider": provider_id, "model": model,
                   "generated_at": _now(), "evidence_packet_hash": packet["evidence_packet_hash"],
                   "cache_identity": cache_key, "cache": "MISS",
@@ -376,8 +521,10 @@ def ai_guidance(packet: dict, *, force: bool = False) -> dict:
         _CACHE[cache_key] = result
         return result
     except Exception as exc:
-        return {"status": "UNAVAILABLE", "advisory": True,
+        outcome = _failure(exc)
+        return {"status": outcome, "operational_status": "AI_UNAVAILABLE", "advisory": True,
                 "message": "AI guidance is unavailable. Deterministic review remains available.",
-                "failure_type": type(exc).__name__, "evidence_packet_hash": packet["evidence_packet_hash"],
+                "failure_type": outcome, "failure_class": type(exc).__name__,
+                "evidence_packet_hash": packet["evidence_packet_hash"],
                 "provider": provider_id, "model": model,
                 "latency_ms": round((time.monotonic() - started) * 1000, 2)}

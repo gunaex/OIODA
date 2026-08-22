@@ -418,7 +418,9 @@ def _normalize(provider_id: str, model: str | None, raw: str, envelope: dict) ->
 # Provider execution (sync, used inside threads)
 # ---------------------------------------------------------------------------
 
-def _chat(provider_id: str, model: str, system: str, user: str, max_tokens: int = 900) -> str:
+def _chat(provider_id: str, model: str, system: str, user: str, max_tokens: int = 900,
+          *, json_mode: bool = False, connect_timeout: float = 5.0,
+          read_timeout: float | None = None) -> str:
     """One provider round-trip. Returns text or raises RuntimeError."""
     p = ai_runtime._provider_by_id(provider_id)
     key = ai_runtime._key_for(p) if p else None
@@ -426,10 +428,14 @@ def _chat(provider_id: str, model: str, system: str, user: str, max_tokens: int 
 
     if provider_id == "local":
         base = base or "http://localhost:11434"
+        payload = {"model": model, "prompt": f"{system}\n\n{user}", "stream": False,
+                   "options": {"num_predict": max_tokens}}
+        if json_mode:
+            payload["format"] = "json"
         r = httpx.post(
             f"{base}/api/generate",
-            json={"model": model, "prompt": f"{system}\n\n{user}", "stream": False},
-            timeout=180.0,
+            json=payload,
+            timeout=httpx.Timeout(read_timeout or 180.0, connect=connect_timeout),
         )
         if r.status_code != 200:
             raise RuntimeError(f"local HTTP {r.status_code}")
@@ -443,8 +449,9 @@ def _chat(provider_id: str, model: str, system: str, user: str, max_tokens: int 
         r = httpx.post(
             f"{base}/v1beta/models/{model_name}:generateContent",
             params={"key": key},
-            json={"contents": [{"parts": [{"text": f"{system}\n\n{user}"}]}]},
-            timeout=90.0,
+            json={"contents": [{"parts": [{"text": f"{system}\n\n{user}"}]}],
+                  **({"generationConfig": {"responseMimeType": "application/json"}} if json_mode else {})},
+            timeout=httpx.Timeout(read_timeout or 90.0, connect=connect_timeout),
         )
         if r.status_code != 200:
             raise RuntimeError(f"gemini HTTP {r.status_code}: {r.text[:160]}")
@@ -457,14 +464,17 @@ def _chat(provider_id: str, model: str, system: str, user: str, max_tokens: int 
     path = "/v1/chat/completions" if provider_id == "openai" else "/chat/completions"
     if base.endswith("/v1"):
         path = "/chat/completions"
+    payload = {"model": model, "messages": [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ], "max_tokens": max_tokens}
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     r = httpx.post(
         base + path,
         headers={"Authorization": f"Bearer {key}"},
-        json={"model": model, "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ], "max_tokens": max_tokens},
-        timeout=60.0,
+        json=payload,
+        timeout=httpx.Timeout(read_timeout or 60.0, connect=connect_timeout),
     )
     if r.status_code != 200:
         raise RuntimeError(f"{provider_id} HTTP {r.status_code}: {r.text[:160]}")

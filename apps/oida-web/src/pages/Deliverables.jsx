@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { humanApi } from "../api";
 import { useProjectCtx } from "../hooks/useProject";
-import { isAiGuidanceCurrent, validCitations } from "../lib/reviewer";
+import { canRetryAi, isAiGuidanceCurrent, validCitations } from "../lib/reviewer";
 import {
   Card, CardHeader, StatCard, Table, Tr, Td, Badge, Loading, OidaError, formatDateTime,
 } from "../components/ui";
@@ -62,6 +62,7 @@ export default function Deliverables() {
   const [reviewEvidence, setReviewEvidence] = useState(null);
   const [reviewEvidenceError, setReviewEvidenceError] = useState(null);
   const [aiGuidance, setAiGuidance] = useState(null);
+  const [aiStatus, setAiStatus] = useState(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [showAi, setShowAi] = useState(false);
   const [resolveForm, setResolveForm] = useState({ gate: null, reason: "" });
@@ -81,11 +82,12 @@ export default function Deliverables() {
 
   async function openDetail(code) {
     setSelected(code); setError(null); setBusy(true);
-    setReviewEvidence(null); setReviewEvidenceError(null); setAiGuidance(null); setShowAi(false);
+    setReviewEvidence(null); setReviewEvidenceError(null); setAiGuidance(null); setAiStatus(null); setShowAi(false);
     try {
       const d = await humanApi.detail(project.id, code);
       setDetail(d);
       if (d.instance) {
+        humanApi.aiStatus().then(setAiStatus).catch(() => setAiStatus({ status: "AI_UNAVAILABLE", message: "AI status is unavailable. Deterministic review is ready." }));
         humanApi.reviewerEvidence(project.id, code, signoffForm.signer_role || undefined, signoffForm.purpose)
           .then(setReviewEvidence)
           .catch((e) => setReviewEvidenceError(e.message || String(e)));
@@ -515,6 +517,7 @@ export default function Deliverables() {
                       error={reviewEvidenceError}
                       onRefresh={refreshReviewerEvidence}
                       ai={aiGuidance}
+                      aiStatus={aiStatus}
                       aiBusy={aiBusy}
                       showAi={showAi}
                       onShowAi={() => loadAiGuidance(false)}
@@ -653,7 +656,7 @@ function EvidenceItem({ item }) {
   );
 }
 
-function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiBusy, showAi, onShowAi, onRefreshAi, onHideAi }) {
+function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, showAi, onShowAi, onRefreshAi, onHideAi }) {
   if (error) return <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Reviewer evidence unavailable: {error}. Existing review controls remain available.</div>;
   if (!packet) return <div className="mb-4 rounded-lg border border-gray-200 p-3 text-xs text-gray-500">Preparing deterministic reviewer evidence…</div>;
   const brief = packet.deterministic_brief;
@@ -665,6 +668,7 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiBusy, showAi, onS
     ["Suggested reading", "suggested_reading"],
   ];
   const aiCurrent = isAiGuidanceCurrent(packet, ai);
+  const aiFailed = canRetryAi(ai, aiBusy);
   return (
     <div className="mb-4 overflow-hidden rounded-xl border border-blue-200 bg-blue-50/40">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-100 p-3">
@@ -700,12 +704,14 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiBusy, showAi, onS
       <div className="border-t border-violet-200 bg-violet-50 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <div className="inline-flex items-center gap-1 text-sm font-semibold text-violet-900"><Sparkles size={14} /> AI Reviewer Assistant <Badge tone="violet">Advisory</Badge></div>
+            <div className="inline-flex items-center gap-1 text-sm font-semibold text-violet-900"><Sparkles size={14} /> AI Reviewer Assistant <Badge tone="violet">Advisory</Badge> {aiStatus?.status && <Badge tone={aiStatus.status === "AI_AVAILABLE" ? "emerald" : "gray"}>{aiStatus.status.replaceAll("AI_", "").replaceAll("_", " ")}</Badge>}</div>
             <div className="text-xs text-violet-700">Grounded in the review evidence shown below. You make the decision.</div>
+            {aiStatus?.message && <div className="mt-0.5 text-[10px] text-violet-600">{aiStatus.message}</div>}
           </div>
           <div className="flex gap-2">
             {!showAi && <button onClick={onShowAi} className="rounded bg-violet-700 px-3 py-1.5 text-xs text-white">Show AI guidance</button>}
-            {showAi && <button onClick={onRefreshAi} disabled={aiBusy} className="rounded border border-violet-300 bg-white px-3 py-1.5 text-xs text-violet-800">Refresh AI guidance</button>}
+            {showAi && ai?.status === "AVAILABLE" && <button onClick={onRefreshAi} disabled={aiBusy} className="rounded border border-violet-300 bg-white px-3 py-1.5 text-xs text-violet-800">Refresh AI guidance</button>}
+            {showAi && aiFailed && <button onClick={onRefreshAi} disabled={aiBusy} className="rounded border border-violet-300 bg-white px-3 py-1.5 text-xs text-violet-800">Retry AI guidance</button>}
             {showAi && <button onClick={onHideAi} className="rounded border border-violet-300 px-3 py-1.5 text-xs text-violet-800">Hide</button>}
           </div>
         </div>
@@ -718,7 +724,8 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiBusy, showAi, onS
             {aiSections.map(([label, key]) => ai[key]?.length > 0 && <div key={key} className="rounded-lg border border-violet-100 bg-white p-3">
               <div className="text-xs font-semibold text-violet-900">{label}</div>
               <ul className="mt-2 space-y-2 text-xs">{ai[key].map((item, idx) => <li key={`${key}-${idx}`}>
-                <div>{item.statement}</div>
+                {item.title && <div className="font-medium">{item.title}</div>}
+                <div>{item.explanation || item.statement}</div>
                 <div className="mt-1 flex flex-wrap gap-1">{validCitations(packet, item.evidence_ids).map((id) => <a key={id} href={`#review-evidence-${id}`} className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-blue-700">{id}</a>)}</div>
               </li>)}</ul>
             </div>)}
