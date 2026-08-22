@@ -55,9 +55,12 @@ def healthy_handler(request: httpx.Request):
         ])
     if path.endswith("/effort-estimates/summary"):
         return httpx.Response(200, json={"total_person_days": 12})
+    if path.endswith("/effort-budget"):
+        return httpx.Response(200, json={"contracted_md": 20, "used_md": 8, "committed_md": 6,
+                                         "remaining_md": 6, "remaining_percent": 30, "status": "healthy"})
     if path.endswith("/dashboard") and "/qa-1/" in path:
         return httpx.Response(200, json={"total_cases": 10, "result_counts": {"PASSED": 5, "NOT_RUN": 5},
-            "pass_rate": 50, "evidence_completeness": 40})
+            "pass_rate": 50, "evidence_completeness": {"numerator": 2, "denominator": 5, "percent": 40}})
     if path.endswith("/suites"):
         return httpx.Response(200, json=[{"id": 1, "name": "Regression"}])
     if path.endswith("/defects"):
@@ -69,6 +72,9 @@ def healthy_handler(request: httpx.Request):
         return httpx.Response(200, json={"environments": [{"environmentId": "prod"}]})
     if path.endswith("/production-readiness"):
         return httpx.Response(200, json={"readinessRecords": [{"status": "PARTIAL"}]})
+    if path.endswith("/feasibility"):
+        return httpx.Response(200, json={"feasibility": {"overallExecutability": "EXECUTABLE",
+                                                          "blockingIssues": [], "warnings": []}})
     return httpx.Response(404, json={"detail": path})
 
 
@@ -117,7 +123,91 @@ def test_all_sources_healthy_with_provenance():
     assert snap["qa"]["readiness_status"] == "BLOCKED"
     assert snap["infra"]["architecture_revision"] == 7
     assert snap["qa"]["provenance"]["source_service"] == "QA_AGAIN"
-    assert snap["downstream_call_count"] == 9
+    assert snap["downstream_call_count"] == 11
+
+
+def test_selected_attention_signals_are_deterministic():
+    today = datetime.now(timezone.utc).date()
+    overdue = today.replace(year=today.year - 1).isoformat()
+
+    def handler(request):
+        response = healthy_handler(request)
+        if request.url.path.endswith("/gantt"):
+            return httpx.Response(200, json=[
+                {"id": 1, "name": "Foundation", "is_milestone": True, "start_date": overdue,
+                 "end_date": overdue, "progress": 50, "dependencies": None},
+                {"id": 2, "name": "Cutover", "is_milestone": True, "start_date": overdue,
+                 "end_date": overdue, "progress": 0, "dependencies": "1"},
+            ])
+        if request.url.path.endswith("/dashboard") and "/qa-1/" in request.url.path:
+            return httpx.Response(200, json={"total_cases": 7,
+                "result_counts": {"PASS": 2, "FAIL": 1, "BLOCKED": 1, "NOT_RUN": 3},
+                "evidence_completeness": {"numerator": 1, "denominator": 4, "percent": 25}})
+        if request.url.path.endswith("/feasibility"):
+            return httpx.Response(200, json={"feasibility": {"overallExecutability": "NOT_EXECUTABLE",
+                "blockingIssues": ["database executor unavailable"]}})
+        if request.url.path.endswith("/designs/design-1"):
+            return httpx.Response(200, json={"design": {"revision": 7, "flow": {
+                "nodes": [{"id": "n1"}],
+                "edges": [{"id": "e1", "state": "BLOCKED"}],
+            }}})
+        return response
+
+    snap = build_project_truth(bound_project(), client_factory=factory(handler))
+    assert snap["pm"]["attention"]["next_critical_milestone"]["status"] == "OVERDUE"
+    assert snap["pm"]["attention"]["slipping_item_count"] == 2
+    assert snap["pm"]["attention"]["blocked_dependency_count"] == 1
+    assert snap["pm"]["attention"]["effort_variance"]["remaining_md"] == 6
+    assert snap["qa"]["remaining_test_count"] == 3
+    assert snap["qa"]["failed_test_count"] == 1
+    assert snap["qa"]["blocked_test_count"] == 1
+    assert snap["qa"]["evidence_status"] == "PARTIAL"
+    assert snap["qa"]["evidence_classification"]["test"] == "PRESENT"
+    assert snap["infra"]["architecture_revision"] == 7
+    assert snap["infra"]["feasibility_exception_count"] == 1
+    assert snap["infra"]["connectivity_exception_count"] == 1
+    assert snap["infra"]["environment_readiness_status"] == "UNKNOWN"
+    assert snap["infra"]["implementation_readiness_status"] == "UNKNOWN"
+    assert snap["infra"]["preflight_status"] == "UNKNOWN"
+    assert snap["attention"]["counts"] == {"blocker": 5, "issue": 3, "unverified": 4}
+
+
+def test_qa_empty_and_infra_unbound_are_not_ready_or_zero_blockers():
+    p = project({"v1": {
+        "pm": {"service": "PM_AGAIN", "external_project_id": "pm-1", "binding_status": "BOUND"},
+        "qa": [{"service": "QA_AGAIN", "external_project_id": "qa-1", "scope_id": "scope-1", "binding_status": "BOUND"}],
+        "infra": {"service": "INFRA_AGAIN", "external_project_id": None, "binding_status": "UNBOUND"},
+    }})
+
+    def handler(request):
+        if request.url.path.endswith("/dashboard") and "/qa-1/" in request.url.path:
+            return httpx.Response(200, json={"cycle": None, "message": "No test cycles yet."})
+        if request.url.path.endswith("/suites") or request.url.path.endswith("/defects"):
+            return httpx.Response(200, json=[])
+        return healthy_handler(request)
+
+    snap = build_project_truth(p, client_factory=factory(handler))
+    assert snap["sources"]["qa"]["source_status"] == "OK"
+    assert snap["qa"]["readiness_status"] == "NOT_STARTED"
+    assert snap["qa"]["evidence_status"] == "NOT_STARTED"
+    assert snap["sources"]["infra"]["source_status"] == "UNBOUND"
+    assert snap["infra"] is None
+    assert snap["attention"]["counts"]["unverified"] == 1
+
+
+def test_attention_preserves_independent_failure_states():
+    def handler(request):
+        if "/pm-1/" in request.url.path:
+            raise httpx.ConnectError("pm down", request=request)
+        if "/qa-1/" in request.url.path:
+            return httpx.Response(401, json={})
+        if "/designs/design-1" in request.url.path:
+            return httpx.Response(404, json={})
+        return healthy_handler(request)
+    snap = build_project_truth(bound_project(), client_factory=factory(handler))
+    assert snap["attention"]["counts"]["unverified"] == 3
+    assert {row["code"] for row in snap["attention"]["items"]} == {
+        "SOURCE_UNAVAILABLE", "SOURCE_UNAUTHORIZED", "SOURCE_INVALID"}
 
 
 @pytest.mark.parametrize("code,expected", [(401, "UNAUTHORIZED"), (403, "FORBIDDEN"), (404, "INVALID"), (500, "ERROR")])

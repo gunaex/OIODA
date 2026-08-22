@@ -1,20 +1,20 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { documentApi, pmApi, qaApi } from "../api";
+import { buildOwnerLinks } from "../lib/ownerLinks";
 import { useProjectCtx } from "../hooks/useProject";
 import {
-  Card, CardHeader, StatCard, SectionTitle, Badge, StatusBadge,
+  Card, CardHeader, StatCard, Badge, StatusBadge,
   Loading, formatDateTime, Table, Tr, Td,
 } from "../components/ui";
 import {
-  ClipboardList, FileText, Network, GitBranch, CalendarRange, CheckCircle2, ArrowRight, Sparkles,
+  Network, GitBranch, ArrowRight, Sparkles, AlertTriangle,
 } from "lucide-react";
 
 function documentLinks(projectId, artifacts) {
   const byType = (type) => (artifacts || []).filter((a) => a.type === type);
   const latest = (rows) => (rows.length ? rows[rows.length - 1] : null);
   const ur = byType("UR");
-  const dr = byType("DR");
   return [
     {
       title: "Requirement Register",
@@ -104,7 +104,6 @@ export default function ProjectHome() {
   const truth = data?.truth;
   const pmTruth = truth?.pm;
   const qaTruth = truth?.qa;
-  const currentQa = qa && qa.length ? qa[0] : null;
   const tests = qaTruth?.test_count;
   const pendingChanges = data?.pendingChanges || [];
   const openSuggestions = data?.openSuggestions || [];
@@ -129,6 +128,7 @@ export default function ProjectHome() {
       {/* Delivery workspace binding (R12): honest linked / not-signed-in / not-linked states */}
       <DeliveryWorkspace project={project} pm={pm} qa={qa} pmAuthed={pmAuthed} qaAuthed={qaAuthed} />
 
+      {truth && <ProjectAttention truth={truth} projectId={project.id} />}
       {truth && <ProjectTruth truth={truth} />}
 
       {/* 10-second owner view */}
@@ -162,64 +162,6 @@ export default function ProjectHome() {
           </Link>
         </Card>
       )}
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Execution */}
-        <Card>
-          <CardHeader title="Execution" subtitle={pmAuthed ? (pm ? "Source: PM Again" : "PM Again not linked") : "Planning data lives in PM Again"} />
-          <div className="px-4 py-3">
-            {!pmAuthed ? (
-              <div className="text-sm text-gray-600">
-                <p>Sign in to connect PM Again and see the execution plan (workstreams and tasks).</p>
-                <Link to="/login" className="mt-2 inline-flex items-center gap-1 font-medium text-gray-900 hover:underline">
-                  Sign in <ArrowRight size={14} />
-                </Link>
-              </div>
-            ) : pmTruth ? (
-              <div className="space-y-2 text-sm text-gray-600">
-                <div className="flex justify-between"><span>Schedule</span><StatusBadge status={pmTruth.schedule_status} /></div>
-                <div className="flex justify-between"><span>Milestones</span><span>{pmTruth.milestone_count}</span></div>
-                <div className="flex justify-between"><span>Effort</span><StatusBadge status={pmTruth.effort_status} /></div>
-              </div>
-            ) : (
-              <p className="text-sm text-gray-500">PM truth is {truth?.sources?.pm?.source_status || "UNKNOWN"}.</p>
-            )}
-            {pmAuthed && (
-              <Link to={`/projects/${project.id}/planning`} className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-gray-900 hover:underline">
-                Open Planning <ArrowRight size={14} />
-              </Link>
-            )}
-          </div>
-        </Card>
-
-        {/* Verification */}
-        <Card>
-          <CardHeader title="Verification" subtitle={qaAuthed ? (currentQa ? `Baseline ${baselineLabel(currentQa.baselineName)}` : "QA Again not linked") : "QA data lives in QA Again"} />
-          <div className="px-4 py-3">
-            {!qaAuthed ? (
-              <div className="text-sm text-gray-600">
-                <p>Sign in to connect QA Again and see the validation scope.</p>
-                <Link to="/login" className="mt-2 inline-flex items-center gap-1 font-medium text-gray-900 hover:underline">
-                  Sign in <ArrowRight size={14} />
-                </Link>
-              </div>
-            ) : qaTruth ? (
-              <div className="space-y-2 text-sm text-gray-600">
-                <div className="flex justify-between"><span>Readiness</span><StatusBadge status={qaTruth?.readiness_status || truth?.sources?.qa?.source_status} /></div>
-                <div className="flex justify-between"><span>Test cases</span><span>{qaTruth?.test_count ?? "—"}</span></div>
-                <div className="flex justify-between"><span>Blocking defects</span><span>{qaTruth?.blocking_defect_count ?? "—"}</span></div>
-              </div>
-            ) : (
-              <p className="text-sm text-gray-500">No QA validation scope linked.</p>
-            )}
-            {qaAuthed && (
-              <Link to={`/projects/${project.id}/qa`} className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-gray-900 hover:underline">
-                Open QA <ArrowRight size={14} />
-              </Link>
-            )}
-          </div>
-        </Card>
-      </div>
 
       {/* Documents */}
       <Card>
@@ -270,9 +212,98 @@ function extractVersion(name) {
   return m ? m[1] : "—";
 }
 
-function baselineLabel(name) {
-  const m = /v?(\d+(?:\.\d+)?)/i.exec(name || "");
-  return m ? m[1] : "—";
+function valueOrState(value, sourceStatus) {
+  return value ?? (sourceStatus === "OK" || sourceStatus === "EMPTY" ? "—" : sourceStatus || "UNKNOWN");
+}
+
+function ProjectAttention({ truth, projectId }) {
+  const attention = truth.attention || { counts: {}, items: [] };
+  const pm = truth.pm;
+  const qa = truth.qa;
+  const infra = truth.infra;
+  const pmStatus = truth.sources?.pm?.source_status || "UNKNOWN";
+  const qaStatus = truth.sources?.qa?.source_status || "UNKNOWN";
+  const infraStatus = truth.sources?.infra?.source_status || "UNKNOWN";
+  const milestone = pm?.attention?.next_critical_milestone;
+  const effort = pm?.attention?.effort_variance;
+  const evidence = qa?.evidence_completeness;
+  const ownerLinks = buildOwnerLinks(truth, {
+    authContinuity: import.meta.env.VITE_OWNER_AUTH_CONTINUITY === "true",
+    pmBase: import.meta.env.VITE_PM_OWNER_URL,
+    qaBase: import.meta.env.VITE_QA_OWNER_URL,
+  });
+  const cards = [
+    {
+      title: "PM Attention", source: pmStatus, to: `/projects/${projectId}/planning`, link: "Review planning in OIDA", ownerLink: ownerLinks.pm, ownerLabel: "View in PM Again",
+      rows: [
+        ["Next milestone", milestone ? `${milestone.name || "Milestone"} · ${milestone.status}` : valueOrState(null, pmStatus)],
+        ["Slipping delivery", pm ? `${pm.attention?.slipping_item_count ?? 0} overdue` : pmStatus],
+        ["Blocked dependencies", pm ? pm.attention?.blocked_dependency_count ?? 0 : pmStatus],
+        ["Effort variance", effort?.status ? `${effort.status.replaceAll("_", " ")} · ${effort.remaining_md ?? "—"} MD remaining` : "UNKNOWN"],
+      ],
+    },
+    {
+      title: "QA Readiness", source: qaStatus, to: `/projects/${projectId}/qa`, link: "Review QA in OIDA", ownerLink: ownerLinks.qa, ownerLabel: "View in QA Again",
+      rows: [
+        ["Readiness", valueOrState(qa?.readiness_status, qaStatus)],
+        ["Remaining / failed", qa ? `${qa.remaining_test_count ?? 0} / ${qa.failed_test_count ?? 0}` : qaStatus],
+        ["Blocking defects", qa ? qa.blocking_defect_count ?? 0 : qaStatus],
+        ["Evidence", qa ? `${qa.evidence_status} · ${evidence?.percent ?? "—"}% · TEST ${qa.evidence_classification?.test}` : qaStatus],
+      ],
+    },
+    {
+      title: "Infra Readiness", source: infraStatus, to: `/projects/${projectId}/infra-again`, link: "Review Infra in OIDA", ownerLink: ownerLinks.infra, ownerLabel: "View in Infra Again",
+      rows: infra ? [
+        ["Architecture revision", valueOrState(infra.architecture_revision, infraStatus)],
+        ["Feasibility exceptions", infra.feasibility_exception_count ?? "UNKNOWN"],
+        ["Environment / connectivity", `${infra.environment_readiness_status} / ${infra.connectivity_exception_count ?? "UNKNOWN"}`],
+        ["Implementation / preflight", `${infra.implementation_readiness_status} / ${infra.preflight_status}`],
+      ] : [
+        ["Architecture revision", infraStatus], ["Environment readiness", infraStatus],
+        ["Connectivity", infraStatus], ["Implementation / preflight", infraStatus],
+      ],
+    },
+  ];
+  return (
+    <Card>
+      <CardHeader title="Project Attention" subtitle="Deterministic owner facts · unknown and unbound are never counted as resolved" />
+      <div className="grid grid-cols-3 gap-2 border-b px-4 py-3 text-center sm:max-w-md sm:text-left">
+        <div><div className="text-lg font-bold text-rose-700">{attention.counts?.blocker ?? 0}</div><div className="text-xs text-gray-500">Blockers</div></div>
+        <div><div className="text-lg font-bold text-amber-700">{attention.counts?.issue ?? 0}</div><div className="text-xs text-gray-500">Issues</div></div>
+        <div><div className="text-lg font-bold text-gray-700">{attention.counts?.unverified ?? 0}</div><div className="text-xs text-gray-500">Unverified</div></div>
+      </div>
+      {attention.items?.length > 0 && (
+        <ul className="border-b px-4 py-2" aria-label="Prioritized project attention">
+          {attention.items.slice(0, 5).map((item) => (
+            <li key={item.id} className="flex items-start gap-2 py-1 text-sm text-gray-700">
+              <AlertTriangle aria-hidden="true" className={`mt-0.5 h-4 w-4 shrink-0 ${item.priority === "BLOCKER" ? "text-rose-600" : item.priority === "ISSUE" ? "text-amber-600" : "text-gray-400"}`} />
+              <span><span className="font-medium">{item.domain} · {item.priority}</span> — {item.title}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="grid gap-3 p-4 lg:grid-cols-3">
+        {cards.map((card) => (
+          <section key={card.title} className="rounded-lg border border-gray-200 p-3" aria-labelledby={`attention-${card.title.replaceAll(" ", "-").toLowerCase()}`}>
+            <div className="flex items-center justify-between gap-2">
+              <h2 id={`attention-${card.title.replaceAll(" ", "-").toLowerCase()}`} className="text-sm font-semibold">{card.title}</h2>
+              <Badge tone={card.source === "OK" ? "green" : "gray"}>{card.source}</Badge>
+            </div>
+            <dl className="mt-2 space-y-2">
+              {card.rows.map(([label, value]) => <div key={label} className="flex items-start justify-between gap-3 text-xs"><dt className="text-gray-500">{label}</dt><dd className="text-right font-medium text-gray-800">{value}</dd></div>)}
+            </dl>
+            <Link to={card.to} className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-gray-900 hover:underline">
+              {card.link} <ArrowRight size={12} />
+            </Link>
+            {card.ownerLink ? <a href={card.ownerLink} target="_blank" rel="noreferrer"
+              className="ml-3 mt-3 inline-flex items-center gap-1 text-xs font-medium text-gray-900 hover:underline">
+              {card.ownerLabel} <ArrowRight size={12} />
+            </a> : <span className="ml-3 mt-3 inline-flex text-xs text-gray-400">Owner deep link unavailable</span>}
+          </section>
+        ))}
+      </div>
+    </Card>
+  );
 }
 
 function ProjectTruth({ truth }) {
@@ -292,7 +323,7 @@ function ProjectTruth({ truth }) {
       <CardHeader title="Cross-service project truth" subtitle={`Contract ${truth.contract_version} · generated ${formatDateTime(truth.generated_at)}`} />
       <div className="grid gap-3 p-4 md:grid-cols-3">
         {blocks.map(([label, domain, source, rows]) => (
-          <details key={label} className="rounded-lg border border-gray-200 p-3" open>
+          <details key={label} className="rounded-lg border border-gray-200 p-3">
             <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold">
               {label}<Badge tone={source?.source_status === "OK" ? "green" : "amber"}>{source?.source_status || "UNKNOWN"}</Badge>
             </summary>

@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 import httpx
@@ -133,6 +133,65 @@ def _provenance(service: str, entity: str | None, revision: Any, retrieved: date
             "retrieved_at": retrieved.isoformat()}
 
 
+def _as_date(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10]) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _pm_attention(gantt: list[dict], budget: dict, today: date) -> dict:
+    """Deterministic PM attention derived only from Gantt and budget facts."""
+    by_id = {str(row.get("id")): row for row in gantt if row.get("id") is not None}
+    incomplete = lambda row: (row.get("progress") or 0) < 100
+    milestones = [row for row in gantt if row.get("is_milestone") is True]
+    candidates = [row for row in milestones if incomplete(row) and _as_date(row.get("end_date"))]
+    candidates.sort(key=lambda row: (_as_date(row.get("end_date")) >= today, _as_date(row.get("end_date"))))
+    next_row = candidates[0] if candidates else None
+    next_milestone = None
+    if next_row:
+        due = _as_date(next_row.get("end_date"))
+        next_milestone = {
+            "id": next_row.get("id"), "name": next_row.get("name"),
+            "phase": next_row.get("phase"), "target_date": due.isoformat(),
+            "progress": next_row.get("progress") or 0,
+            "status": "OVERDUE" if due < today else "UPCOMING",
+            "days_overdue": (today - due).days if due < today else 0,
+        }
+
+    slipping = []
+    for row in gantt:
+        due = _as_date(row.get("end_date"))
+        if due and due < today and incomplete(row):
+            slipping.append({"id": row.get("id"), "name": row.get("name"), "phase": row.get("phase"),
+                             "target_date": due.isoformat(), "progress": row.get("progress") or 0,
+                             "days_overdue": (today - due).days})
+    slipping.sort(key=lambda row: (-row["days_overdue"], str(row.get("name") or "")))
+
+    blocked = []
+    for row in gantt:
+        if not incomplete(row):
+            continue
+        for dep_id in [part.strip() for part in str(row.get("dependencies") or "").split(",") if part.strip()]:
+            prerequisite = by_id.get(dep_id)
+            if prerequisite and incomplete(prerequisite):
+                blocked.append({"item_id": row.get("id"), "item_name": row.get("name"),
+                                "dependency_id": prerequisite.get("id"),
+                                "dependency_name": prerequisite.get("name")})
+
+    return {
+        "next_critical_milestone": next_milestone,
+        "slipping_item_count": len(slipping), "slipping_items": slipping[:3],
+        "blocked_dependency_count": len(blocked), "blocked_dependencies": blocked[:3],
+        "effort_variance": {
+            "status": budget.get("status"), "contracted_md": budget.get("contracted_md"),
+            "used_md": budget.get("used_md"), "committed_md": budget.get("committed_md"),
+            "remaining_md": budget.get("remaining_md"), "remaining_percent": budget.get("remaining_percent"),
+            "missing": budget.get("missing") or [],
+        },
+    }
+
+
 def _read_pm(binding: dict, authorization: str | None, client_factory: Callable[..., httpx.Client]) -> dict:
     slug = binding.get("external_project_id")
     retrieved = _now()
@@ -144,10 +203,11 @@ def _read_pm(binding: dict, authorization: str | None, client_factory: Callable[
             dashboard = _get(client, f"{BASE_URLS['pm']}/api/{slug}/dashboard")
             gantt = _get(client, f"{BASE_URLS['pm']}/api/{slug}/gantt")
             effort = _get(client, f"{BASE_URLS['pm']}/api/{slug}/effort-estimates/summary")
+            budget = _get(client, f"{BASE_URLS['pm']}/api/{slug}/effort-budget")
         milestones = [row for row in gantt if row.get("is_milestone") is True]
         scheduled = [row for row in gantt if row.get("start_date") or row.get("end_date")]
         dependencies = [row.get("dependencies") for row in gantt if row.get("dependencies")]
-        updated = _latest_timestamp([dashboard, gantt, effort])
+        updated = _latest_timestamp([dashboard, gantt, effort, budget])
         revision = dashboard.get("revision") or dashboard.get("version")
         truth = {
             "project_status": dashboard.get("project", {}).get("status") or dashboard.get("status") or dashboard.get("rag"),
@@ -157,6 +217,7 @@ def _read_pm(binding: dict, authorization: str | None, client_factory: Callable[
             "progress": dashboard.get("progress") or dashboard.get("summary") or dashboard.get("phase_completion"),
             "effort_status": "AVAILABLE" if effort else "EMPTY", "effort": effort,
             "dependency_status": "AVAILABLE" if dependencies else "EMPTY", "dependency_count": len(dependencies),
+            "attention": _pm_attention(gantt, budget, retrieved.date()),
             "provenance": _provenance("PM_AGAIN", slug, revision, retrieved),
         }
         status = "EMPTY" if not gantt and not effort else "OK"
@@ -178,32 +239,55 @@ def _read_qa(bindings: list[dict], authorization: str | None, client_factory: Ca
     started = time.monotonic()
     try:
         dashboards, suites, defects = [], [], []
+        ids = list(dict.fromkeys(ids))  # repeated bindings must not double-count a QA project
         with client_factory(timeout=SOURCE_TIMEOUT, headers={"Authorization": authorization} if authorization else {}) as client:
             for slug in ids:
-                dashboards.append(_get(client, f"{BASE_URLS['qa']}/api/{slug}/dashboard"))
-                suites.extend(_get(client, f"{BASE_URLS['qa']}/api/{slug}/suites"))
-                defects.extend(_get(client, f"{BASE_URLS['qa']}/api/{slug}/defects"))
-        totals = [d.get("total_cases", 0) or 0 for d in dashboards]
+                dashboards.append({"scope_id": slug, "data": _get(client, f"{BASE_URLS['qa']}/api/{slug}/dashboard")})
+                suites.extend({"scope_id": slug, "data": row} for row in _get(client, f"{BASE_URLS['qa']}/api/{slug}/suites"))
+                defects.extend({"scope_id": slug, "data": row} for row in _get(client, f"{BASE_URLS['qa']}/api/{slug}/defects"))
+        dashboard_rows = [row["data"] for row in dashboards]
+        totals = [d.get("total_cases", 0) or 0 for d in dashboard_rows]
         counts: dict[str, int] = {}
-        for d in dashboards:
+        for d in dashboard_rows:
             for key, value in (d.get("result_counts") or {}).items(): counts[key] = counts.get(key, 0) + value
-        open_defects = [d for d in defects if str(d.get("status", "OPEN")).upper() not in {"CLOSED", "RESOLVED", "REJECTED"}]
+        open_defects = [row for row in defects if str(row["data"].get("status", "OPEN")).upper() not in {"CLOSED", "RESOLVED", "REJECTED"}]
         # QA Again's actual severity contract is P0/P1/P2/P3/UNSPECIFIED.
-        blocking = [d for d in open_defects if str(d.get("severity", "")).upper() in {"P0", "P1"}]
-        evidence_values = [d.get("evidence_completeness") for d in dashboards if d.get("evidence_completeness") is not None]
+        blocking = [row for row in open_defects if str(row["data"].get("severity", "")).upper() in {"P0", "P1"}]
+        evidence_values = [d.get("evidence_completeness") for d in dashboard_rows if isinstance(d.get("evidence_completeness"), dict)]
+        evidence_numerator = sum(v.get("numerator", 0) or 0 for v in evidence_values)
+        evidence_denominator = sum(v.get("denominator", 0) or 0 for v in evidence_values)
+        evidence_percent = round(evidence_numerator / evidence_denominator * 100, 2) if evidence_denominator else None
+        remaining = counts.get("NOT_RUN", 0) or 0
+        failed = counts.get("FAIL", counts.get("FAILED", 0)) or 0
+        blocked_results = counts.get("BLOCKED", 0) or 0
         execution_count = sum(v for k, v in counts.items() if k.upper() != "NOT_RUN")
+        if evidence_denominator == 0:
+            evidence_status = "NOT_STARTED"
+        elif evidence_numerator == evidence_denominator:
+            evidence_status = "COMPLETE"
+        elif evidence_numerator == 0:
+            evidence_status = "MISSING"
+        else:
+            evidence_status = "PARTIAL"
+        readiness_status = ("NOT_STARTED" if not sum(totals) else "BLOCKED" if blocking or failed or blocked_results
+                            else "IN_PROGRESS" if remaining else "READY")
         truth = {
-            "readiness_status": "BLOCKED" if blocking else "READY" if sum(totals) and execution_count else "NOT_STARTED",
+            "readiness_status": readiness_status,
             "test_definition_status": "AVAILABLE" if suites else "EMPTY", "suite_count": len(suites),
             "test_count": sum(totals), "execution_status": "STARTED" if execution_count else "NOT_STARTED",
-            "result_counts": counts, "pass_rate": next((d.get("pass_rate") for d in reversed(dashboards) if d.get("pass_rate") is not None), None),
+            "result_counts": counts, "pass_rate": next((d.get("pass_rate") for d in reversed(dashboard_rows) if d.get("pass_rate") is not None), None),
             "open_defect_count": len(open_defects), "blocking_defect_count": len(blocking),
-            "evidence_status": "AVAILABLE" if any(evidence_values) else "EMPTY",
-            "evidence_completeness": max(evidence_values) if evidence_values else None,
+            "remaining_test_count": remaining, "failed_test_count": failed, "blocked_test_count": blocked_results,
+            "evidence_status": evidence_status,
+            "evidence_completeness": {"numerator": evidence_numerator, "denominator": evidence_denominator,
+                                      "percent": evidence_percent},
+            "evidence_classification": {"test": "PRESENT" if evidence_numerator else "NOT_PRESENT",
+                                        "internal": "UNKNOWN", "customer": "NOT_PROVIDED_BY_QA"},
+            "aggregation_model": "SUM_OF_DISTINCT_EXPLICIT_QA_PROJECT_SCOPES",
             "provenance": _provenance("QA_AGAIN", ",".join(ids), None, retrieved),
         }
         status = "EMPTY" if not suites and not dashboards else "OK"
-        return {"source": _source("QA_AGAIN", ids, status, retrieved, updated_at=_latest_timestamp([dashboards, suites, defects]),
+        return {"source": _source("QA_AGAIN", ids, status, retrieved, updated_at=_latest_timestamp([dashboard_rows, suites, defects]),
                                    duration_ms=(time.monotonic()-started)*1000), "truth": truth}
     except Exception as exc:
         status, code = _status_from_error(exc)
@@ -224,22 +308,39 @@ def _read_infra(binding: dict, authorization: str | None, client_factory: Callab
             envelope = _get(client, f"{BASE_URLS['infra']}/api/v1/designs/{design_id}")
             environments = _get(client, f"{BASE_URLS['infra']}/api/v1/environments")
             readiness = _get(client, f"{BASE_URLS['infra']}/api/v1/production-readiness")
+            feasibility_envelope = _get(client, f"{BASE_URLS['infra']}/api/v1/designs/{design_id}/feasibility")
         design = envelope.get("design", envelope)
         flow = design.get("flow") or {}
         nodes, edges = flow.get("nodes") or [], flow.get("edges") or []
         envs = environments.get("environments", environments if isinstance(environments, list) else [])
         readiness_rows = readiness.get("readinessRecords", readiness.get("readiness", readiness.get("evaluations", readiness if isinstance(readiness, list) else [])))
+        feasibility = feasibility_envelope.get("feasibility", feasibility_envelope)
+        blocked_edges = [edge for edge in edges if str(edge.get("state", "")).upper() in {"BLOCKED", "FAILED", "CONGESTED"}]
+        readiness_scoped = [row for row in readiness_rows if row.get("designId") == design_id] if isinstance(readiness_rows, list) else []
+        readiness_row = readiness_scoped[0] if readiness_scoped else None
         revision = design.get("revision") or design.get("version")
         truth = {
             "architecture_status": "AVAILABLE" if nodes else "PARTIAL" if design else "EMPTY",
             "architecture_revision": revision, "component_count": len(nodes),
             "connectivity_status": "AVAILABLE" if edges else "EMPTY", "connection_count": len(edges),
+            "connectivity_exception_count": len(blocked_edges), "connectivity_exceptions": blocked_edges[:3],
             "environment_status": "AVAILABLE" if envs else "EMPTY", "environment_count": len(envs),
-            "readiness_status": (readiness_rows[0].get("status") if isinstance(readiness_rows, list) and readiness_rows else "UNKNOWN"),
+            "environment_readiness_status": "UNKNOWN",
+            "environment_readiness_reason": "Owner environments do not expose a readiness state.",
+            "feasibility_status": feasibility.get("overallExecutability", "UNKNOWN"),
+            "feasibility_exception_count": len(feasibility.get("blockingIssues") or []),
+            "feasibility_exceptions": (feasibility.get("blockingIssues") or [])[:3],
+            "implementation_readiness_status": "UNKNOWN",
+            "implementation_readiness_reason": "No explicit Infra implementation-plan binding is available.",
+            "preflight_status": "UNKNOWN",
+            "preflight_reason": "No explicit Infra execution-package binding is available.",
+            "readiness_status": readiness_row.get("readinessDecision", "UNKNOWN") if readiness_row else "UNKNOWN",
+            "production_readiness_exceptions": (readiness_row.get("blocks") or [])[:3] if readiness_row else [],
+            "production_readiness_reason": None if readiness_row else "Owner readiness records are not scoped to this design.",
             "provenance": _provenance("INFRA_AGAIN", design_id, revision, retrieved),
         }
         return {"source": _source("INFRA_AGAIN", design_id, "OK", retrieved, revision=str(revision) if revision is not None else None,
-                                   updated_at=_latest_timestamp([design, envs, readiness_rows]), duration_ms=(time.monotonic()-started)*1000), "truth": truth}
+                                   updated_at=_latest_timestamp([design, envs, readiness_rows, feasibility]), duration_ms=(time.monotonic()-started)*1000), "truth": truth}
     except Exception as exc:
         status, code = _status_from_error(exc)
         log.warning("project_truth_source", extra={"service": "INFRA_AGAIN", "binding": design_id,
@@ -269,16 +370,18 @@ def build_project_truth(project: Any, authorization: str | None = None,
     warnings = [f"{name.upper()} source is {result[name]['source']['source_status']}" for name in result
                 if result[name]["source"]["source_status"] not in {"OK", "EMPTY"}]
     overall = "STALE" if "STALE" in freshnesses else "AGING" if "AGING" in freshnesses else "FRESH" if "FRESH" in freshnesses else "UNKNOWN"
+    from .project_attention import build_project_attention
     snapshot = {
         "contract_version": CONTRACT, "project_id": project.id, "generated_at": _now().isoformat(),
         "bindings": bindings, "sources": {k: v["source"] for k, v in result.items()},
         "pm": result["pm"]["truth"], "qa": result["qa"]["truth"], "infra": result["infra"]["truth"],
         "overall_freshness": overall, "partial": any(s not in {"OK", "EMPTY"} for s in statuses),
         "warnings": warnings, "duration_ms": round((time.monotonic()-started)*1000, 1),
-        "downstream_call_count": (3 if bindings["pm"].get("external_project_id") else 0)
+        "downstream_call_count": (4 if bindings["pm"].get("external_project_id") else 0)
                                  + 3 * len([b for b in bindings["qa"] if b.get("external_project_id")])
-                                 + (3 if bindings["infra"].get("external_project_id") else 0),
+                                 + (4 if bindings["infra"].get("external_project_id") else 0),
     }
+    snapshot["attention"] = build_project_attention(snapshot)
     log.info("project_truth_complete", extra={"project_id": project.id, "request_result_status": statuses,
              "duration_ms": snapshot["duration_ms"], "downstream_call_count": snapshot["downstream_call_count"]})
     return snapshot
