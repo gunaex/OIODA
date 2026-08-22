@@ -130,6 +130,21 @@ Actual live latency could not be measured without a credentialed, bound runtime.
 
 Recommended next step: production/browser hardening first—deploy this focused foundation through the existing release process, validate real bindings/latencies/error states, then decide between capability projection parity and cross-service change-impact intelligence based on observed user workload.
 
+## 19. Runtime / production closure — 2026-08-22
+
+- The audit/recovery precursor was committed as `8537a86`; the dedicated R17.1.2 implementation is `89c550173325f265006503a62565ad3d16165987`.
+- The committed state was clean and was revalidated: Document 132 passed; focused truth 12 passed; gateway 3 passed; PM 38 passed; QA 101 passed / 5 skipped; frontend lint exited 0 with the existing warning backlog; the Vite production build passed. Infra completed 343 passed / 8 skipped, with 18 acceptance failures caused by the unavailable fakecloud/OpenTofu runtime.
+- Fly release 18 deployed Document image `deployment-01M0KHJHVZ75R1TXEX0J8MTJZ9`; Fly release 8 deployed gateway image `deployment-01M0KHJHVHKMQRRPP1SC1FHQX0`. Both rolling deployments completed their machine health checks. The commit was pushed to `origin/main`.
+- Production health returned HTTP 200 for OIDA Web, gateway, Document, PM, QA, and Infra.
+- The representative production project `prj_853bcc5700a54c8db170` has explicit legacy pointers normalized at runtime as `project_bindings/v1`: PM `true-cloud-migration`, five QA scopes, and Infra `DESIGN-EBAE25`.
+- A live in-machine `project_truth/v1` execution completed in 288.9 ms and made 21 owner calls. It preserved failures: PM=`UNAUTHORIZED` (401), QA=`UNAUTHORIZED` (401), Infra=`INVALID` (404). Truth bodies remained null, freshness was `UNKNOWN`, `partial=true`, and the precheck embedded the same snapshot generation timestamp and source metadata. No failure became an empty success.
+- Authenticated owner-value comparison is blocked because no valid production human credential is available. The documented development bootstrap credential was rejected, and no password or secret was requested or extracted.
+- The Cloudflare Pages frontend still served its previous asset hashes after the push; Wrangler is installed but unauthenticated. Therefore the frontend revision, Project Overview browser behavior, and full deployed-revision match are not proven.
+- Static path review confirms Project Overview uses `documentApi.projectTruth`. Remaining direct PM/QA calls in `useProject` load navigation identity and in Project Overview load explicit binding candidates; they do not provide bounded summary truth. Document precheck and generation call the same `build_project_truth` layer.
+- No browser automation capability or authenticated browser session was available. No sign-off, acceptance record, fixture, or customer evidence was created during validation.
+
+Closure classification: implementation `ACCEPTED`; runtime `PARTIAL`; production `PARTIAL`; full R17.1.2 closure `PARTIAL`. The exact unresolved items are frontend deployment/revision proof, authenticated PM/QA truth, valid Infra binding, browser validation, and owner-to-normalized-value comparison.
+
 ## OIDA R17.1.2 — Final report
 
 ```text
