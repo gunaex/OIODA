@@ -264,6 +264,15 @@ def build_packet(db: Session, project, human_code: str, *, role: str | None = No
     packet_core["provenance"]["generated_at"] = _now()
     packet_core["generation_latency_ms"] = round((time.monotonic() - started) * 1000, 2)
     packet_core["change_impact"] = impact_svc.document_impact(db, project, current, previous, signoffs)
+    packet_core["impact_confirmations"] = impact_svc.confirmation_history(
+        db, project.id, current_evidence_hash=packet_core["evidence_packet_hash"])
+    packet_core["impact_context_hash"] = _hash({
+        "relationships": [r["relationship_id"] for r in packet_core["change_impact"].get("relationships", [])],
+        "impacts": [i["impact_id"] for i in packet_core["change_impact"].get("known_impacts", [])],
+        "unknown": [i.get("relationship", {}).get("relationship_id") for i in packet_core["change_impact"].get("unknown", [])],
+        "reviews": [{k: row.get(k) for k in ("confirmation_id", "relationship_id", "decision", "evidence_hash", "stale")}
+                    for row in packet_core["impact_confirmations"].get("effective", [])],
+    })
     packet_core["deterministic_brief"] = build_brief(packet_core)
     return packet_core
 
@@ -280,6 +289,12 @@ def build_brief(packet: dict) -> dict:
         "changed": changed[:30], "needs_attention": attention[:20], "still_open": open_items[:20],
         "responsibility": packet["reviewer_context"],
         "known_impacts": packet.get("change_impact", {}).get("known_impacts", []),
+        "human_confirmed_impacts": [x for x in packet.get("impact_confirmations", {}).get("effective", [])
+                                    if x["effective_context"] == "HUMAN_CONFIRMED"],
+        "rejected_impact_relationships": [x for x in packet.get("impact_confirmations", {}).get("effective", [])
+                                          if x["human_review_status"] == "REJECTED"],
+        "unresolved_impact_relationships": [x for x in packet.get("impact_confirmations", {}).get("effective", [])
+                                            if x["human_review_status"] in {"UNRESOLVED", "STALE"}],
         "evidence_count": len(packet["evidence_items"]),
         "limitations": (["Historical comparison is NOT_RECORDED; current evidence is not proof of no change."]
                         if packet["comparison"]["history"] == "NOT_RECORDED" else []),
@@ -295,6 +310,9 @@ def _ai_projection(packet: dict) -> dict:
         "contract_version": packet["contract_version"], "evidence_packet_hash": packet["evidence_packet_hash"],
         "document": packet["document"], "comparison": packet["comparison"],
         "reviewer_context": packet["reviewer_context"],
+        "impact_context_hash": packet.get("impact_context_hash"),
+        "known_impacts": packet.get("change_impact", {}).get("known_impacts", []),
+        "human_relationship_reviews": packet.get("impact_confirmations", {}).get("effective", []),
         "evidence_items": [{k: e.get(k) for k in ("evidence_id", "domain", "source", "change", "summary", "before", "after", "path", "classification", "provenance")}
                            for e in packet["evidence_items"]],
     }
@@ -484,7 +502,7 @@ def ai_guidance(packet: dict, *, force: bool = False) -> dict:
                 "message": "AI guidance is disabled." if disabled else "No configured AI provider is available. Deterministic review remains available.",
                 "evidence_packet_hash": packet["evidence_packet_hash"], "latency_ms": 0}
     provider_id, model = selected["provider_id"], selected["model"]
-    cache_key = _hash({"packet": packet["evidence_packet_hash"], "role": packet["reviewer_context"],
+    cache_key = _hash({"packet": packet["evidence_packet_hash"], "impact": packet.get("impact_context_hash"), "role": packet["reviewer_context"],
                        "prompt": PROMPT_VERSION, "provider": provider_id, "model": model})
     if not force and cache_key in _CACHE:
         return {**_CACHE[cache_key], "cache": "HIT"}
@@ -494,7 +512,8 @@ def ai_guidance(packet: dict, *, force: bool = False) -> dict:
         "Use only supplied evidence IDs. AI advises; the human decides. Never approve, reject, accept, sign, authorize go-live, "
         "invent dependency/impact, promote TEST or INTERNAL evidence to CUSTOMER, or treat NOT_RECORDED as no change. "
         "Every material focus, risk, question premise, and reading suggestion must cite evidence_ids. If evidence is insufficient, "
-        "state that it cannot be determined. Return JSON only; do not reveal hidden reasoning."
+        "state that it cannot be determined. Treat HUMAN_CONFIRMED as human project context while preserving its origin; do not "
+        "resurface a same-context REJECTED relationship. Return JSON only; do not reveal hidden reasoning."
     )
     user = (
         "Answer five concise needs: material changes, focus, role significance, unresolved items, and questions before decision. "
@@ -518,6 +537,7 @@ def ai_guidance(packet: dict, *, force: bool = False) -> dict:
                   "result_status": result_status, "recovery_method": recovery_method,
                   "prompt_version": PROMPT_VERSION, "provider": provider_id, "model": model,
                   "generated_at": _now(), "evidence_packet_hash": packet["evidence_packet_hash"],
+                  "impact_context_hash": packet.get("impact_context_hash"),
                   "cache_identity": cache_key, "cache": "MISS",
                   "input_size_bytes": len(user.encode()), "output_size_bytes": len(raw.encode()),
                   "latency_ms": round((time.monotonic() - started) * 1000, 2)}

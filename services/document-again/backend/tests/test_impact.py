@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
 from app import models as m
@@ -124,3 +125,103 @@ def test_unknown_is_valid_and_cycles_are_bounded():
     assert result["known_impacts"] == []
     assert all(x["relationship_class"] == "UNKNOWN" for x in result["unknown"])
     assert result["traversal"] == {"depth": 1, "cycle_protection": True, "deduplication": "TARGET_STABLE_ID"}
+
+
+def test_confirmation_preserves_origin_audits_and_is_idempotent(db):
+    project, _req, old, current, signoff = _fixture(db)
+    projection = impact.document_impact(db, project, current, old, [signoff])
+    rel = projection["unknown"][0]["relationship"]
+    actor = SimpleNamespace(id="human-1", name="Reviewer One")
+    first = impact.review_relationship(
+        db, project, relationship_snapshot=rel, evidence_hash="H1", current_evidence_hash="H1",
+        impact_candidate_id=None, decision="CONFIRMED", reason="Relevant project context",
+        actor=actor, change_id="C1")
+    replay = impact.review_relationship(
+        db, project, relationship_snapshot=rel, evidence_hash="H1", current_evidence_hash="H1",
+        impact_candidate_id=None, decision="CONFIRMED", reason="Relevant project context",
+        actor=actor, change_id="C1")
+    assert first["relationship_class_at_review"] == "UNKNOWN"
+    assert first["effective_context"] == "HUMAN_CONFIRMED"
+    assert first["origin_relationship"]["relationship_class"] == "UNKNOWN"
+    assert replay["confirmation_id"] == first["confirmation_id"]
+    assert replay["idempotent_replay"] is True
+    events = db.execute(select(m.AuditEvent).where(m.AuditEvent.object_id == rel["relationship_id"])).scalars().all()
+    assert len(events) == 1 and events[0].action == "IMPACT_RELATIONSHIP_CONFIRMED"
+    assert events[0].metadata_json["customer_acceptance"] is False
+
+
+def test_reject_conflict_history_reopen_and_stale_confirmation(db):
+    project, _req, old, current, signoff = _fixture(db)
+    rel = impact.document_impact(db, project, current, old, [signoff])["unknown"][1]["relationship"]
+    actor1 = SimpleNamespace(id="human-1", name="Reviewer One")
+    actor2 = SimpleNamespace(id="human-2", name="Reviewer Two")
+    impact.review_relationship(db, project, relationship_snapshot=rel, evidence_hash="H1", current_evidence_hash="H1",
+                               impact_candidate_id=None, decision="REJECTED", reason="Not applicable", actor=actor1)
+    impact.review_relationship(db, project, relationship_snapshot=rel, evidence_hash="H1", current_evidence_hash="H1",
+                               impact_candidate_id=None, decision="CONFIRMED", reason=None, actor=actor2)
+    history = impact.confirmation_history(db, project.id, current_evidence_hash="H1")
+    assert len(history["history"]) == 2
+    assert history["effective"][0]["decision"] == "CONFIRMED"
+    stale = impact.confirmation_history(db, project.id, current_evidence_hash="H2")
+    assert all(row["human_review_status"] == "STALE" for row in stale["history"])
+    impact.review_relationship(db, project, relationship_snapshot=rel, evidence_hash="H1", current_evidence_hash="H1",
+                               impact_candidate_id=None, decision="UNRESOLVED", reason="Reopened", actor=actor2)
+    actions = db.execute(select(m.AuditEvent).where(m.AuditEvent.object_id == rel["relationship_id"])
+                         .order_by(m.AuditEvent.created_at)).scalars().all()
+    assert actions[-1].action == "IMPACT_RELATIONSHIP_REOPENED"
+
+
+def test_rejection_memory_and_guardrails(db):
+    project, _req, old, current, signoff = _fixture(db)
+    projection = impact.document_impact(db, project, current, old, [signoff])
+    rel = projection["unknown"][2]["relationship"]
+    actor = SimpleNamespace(id="human", name="Reviewer")
+    with pytest.raises(Exception, match="reason is required"):
+        impact.review_relationship(db, project, relationship_snapshot=rel, evidence_hash="H", current_evidence_hash="H",
+                                   impact_candidate_id=None, decision="REJECTED", reason=None, actor=actor)
+    with pytest.raises(Exception, match="do not require confirmation"):
+        impact.review_relationship(db, project, relationship_snapshot=projection["relationships"][0],
+                                   evidence_hash="H", current_evidence_hash="H", impact_candidate_id=None,
+                                   decision="CONFIRMED", reason=None, actor=actor)
+    rejected = impact.review_relationship(db, project, relationship_snapshot=rel, evidence_hash="H", current_evidence_hash="H",
+                                          impact_candidate_id=None, decision="REJECTED", reason="Incorrect", actor=actor)
+    history = impact.confirmation_history(db, project.id, current_evidence_hash="H")
+    suggestions = [{"relationship_id": rel["relationship_id"]}, {"relationship_id": "REL-new"}]
+    assert impact.suppress_reviewed_suggestions(suggestions, history) == [{"relationship_id": "REL-new"}]
+    assert rejected["decision"] == "REJECTED"
+    with pytest.raises(Exception, match="evidence changed"):
+        impact.review_relationship(db, project, relationship_snapshot=rel, evidence_hash="H", current_evidence_hash="H2",
+                                   impact_candidate_id=None, decision="CONFIRMED", reason=None, actor=actor)
+
+
+def test_actions_are_safe_and_owner_truth_is_unchanged(db):
+    project, _req, old, current, signoff = _fixture(db)
+    before_signoffs = db.query(DeliverableSignoff).count()
+    result = impact.document_impact(db, project, current, old, [signoff])
+    types = {row["action_type"] for row in result["suggested_actions"]["actions"]}
+    assert {"REVIEW_DOCUMENT", "CONSIDER_DOCUMENT_REVISION", "REVIEW_ACCEPTANCE_VERSION", "REVIEW_EVIDENCE"} <= types
+    assert not types & {"RUN_TESTS", "CHANGE_MILESTONE", "DEPLOY_INFRA", "APPROVE", "SIGN", "CREATE_CR"}
+    assert result["suggested_actions"]["cross_service_domain_writes"] == 0
+    assert db.query(DeliverableSignoff).count() == before_signoffs
+
+
+def test_confirmation_api_and_forbidden_project_mismatch(db):
+    project, _req, old, current, signoff = _fixture(db)
+    projection = impact.document_impact(db, project, current, old, [signoff])
+    rel = projection["unknown"][0]["relationship"]
+    app.dependency_overrides[db_session] = lambda: (yield db)
+    try:
+        with TestClient(app) as client:
+            packet = client.get(f"/api/projects/{project.id}/human-deliverables/HD-01/reviewer-evidence").json()
+            response = client.post(f"/api/projects/{project.id}/human-deliverables/HD-01/impact-confirmations", json={
+                "relationship": rel, "evidence_hash": packet["evidence_packet_hash"],
+                "decision": "UNRESOLVED", "reason": "Need owner evidence"})
+            assert response.status_code == 200
+            history = client.get(f"/api/projects/{project.id}/human-deliverables/HD-01/impact-confirmations")
+            assert history.status_code == 200 and len(history.json()["history"]) == 1
+            forbidden = {**rel, "project_id": "another-project"}
+            response = client.post(f"/api/projects/{project.id}/human-deliverables/HD-01/impact-confirmations", json={
+                "relationship": forbidden, "evidence_hash": packet["evidence_packet_hash"], "decision": "CONFIRMED"})
+            assert response.status_code == 403
+    finally:
+        app.dependency_overrides.clear()

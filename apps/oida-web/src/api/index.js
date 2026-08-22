@@ -278,6 +278,10 @@ export const humanApi = {
   },
   impact: (projectId, code) =>
     get("da", `/projects/${projectId}/human-deliverables/${code}/impact`),
+  impactConfirmations: (projectId, code) =>
+    get("da", `/projects/${projectId}/human-deliverables/${code}/impact-confirmations`),
+  reviewImpact: (projectId, code, body) =>
+    post("da", `/projects/${projectId}/human-deliverables/${code}/impact-confirmations`, body),
   aiReviewer: (projectId, code, body) =>
     post("da", `/projects/${projectId}/human-deliverables/${code}/ai-reviewer`, body || {}),
   aiStatus: () => get("da", "/reviewer-ai/status"),

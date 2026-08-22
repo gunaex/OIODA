@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aiDisplayState, canRetryAi, impactSections, isAiGuidanceCurrent, validCitations } from "./reviewer.js";
+import { aiDisplayState, canRetryAi, canReviewRelationship, effectiveImpactContext, impactSections, isAiGuidanceCurrent, validCitations } from "./reviewer.js";
 
 test("AI guidance is current only for the exact evidence hash", () => {
   assert.equal(isAiGuidanceCurrent({ evidence_packet_hash: "a" }, { evidence_packet_hash: "a" }), true);
   assert.equal(isAiGuidanceCurrent({ evidence_packet_hash: "b" }, { evidence_packet_hash: "a" }), false);
   assert.equal(isAiGuidanceCurrent({ evidence_packet_hash: "a" }, null), false);
+  assert.equal(isAiGuidanceCurrent(
+    { evidence_packet_hash: "a", impact_context_hash: "i2" },
+    { evidence_packet_hash: "a", impact_context_hash: "i1" }), false);
 });
 
 test("unknown evidence citations are not resolved by the UI", () => {
@@ -37,4 +40,18 @@ test("impact sections never merge known, suggested, and unknown truth", () => {
   assert.deepEqual(sections.known.map((x) => x.impact_id), ["K1"]);
   assert.deepEqual(sections.suggested.map((x) => x.impact_id), ["A1"]);
   assert.deepEqual(sections.unknown.map((x) => x.domain), ["QA"]);
+});
+
+test("only advisory or unknown relationships enter human relationship review", () => {
+  assert.equal(canReviewRelationship({ relationship_class: "AI_SUGGESTED" }), true);
+  assert.equal(canReviewRelationship({ relationship_class: "UNKNOWN" }), true);
+  assert.equal(canReviewRelationship({ relationship_class: "EXPLICIT" }), false);
+  assert.equal(canReviewRelationship({ relationship_class: "DETERMINISTIC" }), false);
+});
+
+test("human confirmation is an effective context without rewriting origin", () => {
+  assert.equal(effectiveImpactContext(null), "NOT_REVIEWED");
+  assert.equal(effectiveImpactContext({ decision: "CONFIRMED", stale: false }), "HUMAN_CONFIRMED");
+  assert.equal(effectiveImpactContext({ decision: "REJECTED", stale: false }), "REJECTED");
+  assert.equal(effectiveImpactContext({ decision: "CONFIRMED", stale: true }), "STALE");
 });

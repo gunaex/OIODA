@@ -1,6 +1,7 @@
 export function isAiGuidanceCurrent(packet, guidance) {
   return Boolean(packet?.evidence_packet_hash && guidance?.evidence_packet_hash
-    && packet.evidence_packet_hash === guidance.evidence_packet_hash);
+    && packet.evidence_packet_hash === guidance.evidence_packet_hash
+    && (!guidance.impact_context_hash || packet.impact_context_hash === guidance.impact_context_hash));
 }
 
 export function validCitations(packet, evidenceIds) {
@@ -25,4 +26,14 @@ export function impactSections(impact) {
     suggested: impact?.ai_suggested_impacts || [],
     unknown: impact?.unknown || [],
   };
+}
+
+export function canReviewRelationship(relationship) {
+  return ["AI_SUGGESTED", "UNKNOWN"].includes(relationship?.relationship_class);
+}
+
+export function effectiveImpactContext(review) {
+  if (!review) return "NOT_REVIEWED";
+  if (review.stale || review.human_review_status === "STALE") return "STALE";
+  return review.decision === "CONFIRMED" ? "HUMAN_CONFIRMED" : review.decision;
 }

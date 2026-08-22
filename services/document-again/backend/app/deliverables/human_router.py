@@ -226,6 +226,41 @@ class AIReviewerIn(BaseModel):
     force: bool = False
 
 
+class ImpactReviewIn(BaseModel):
+    relationship: dict
+    evidence_hash: str
+    impact_candidate_id: str | None = None
+    decision: str
+    reason: str | None = None
+    actor_role: str | None = None
+    actor_org: str | None = None
+    evidence_refs: list[str] = []
+    change_id: str | None = None
+
+
+@router.post("/projects/{project_id}/human-deliverables/{human_code}/impact-confirmations")
+def review_impact_relationship(project_id: str, human_code: str, body: ImpactReviewIn,
+                               db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    project = _project(db, project_id)
+    packet = rsvc.build_packet(db, project, human_code)
+    return isvc.review_relationship(
+        db, project, relationship_snapshot=body.relationship,
+        evidence_hash=body.evidence_hash, current_evidence_hash=packet["evidence_packet_hash"],
+        impact_candidate_id=body.impact_candidate_id, decision=body.decision,
+        reason=body.reason, actor=actx, actor_role=body.actor_role, actor_org=body.actor_org,
+        evidence_refs=body.evidence_refs, change_id=body.change_id,
+        allowed_evidence={item["evidence_id"]: item for item in packet["evidence_items"]},
+    )
+
+
+@router.get("/projects/{project_id}/human-deliverables/{human_code}/impact-confirmations")
+def impact_confirmation_history(project_id: str, human_code: str,
+                                db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    project = _project(db, project_id)
+    packet = rsvc.build_packet(db, project, human_code)
+    return packet["impact_confirmations"]
+
+
 @router.post("/projects/{project_id}/human-deliverables/{human_code}/ai-reviewer")
 def ai_reviewer(project_id: str, human_code: str, body: AIReviewerIn,
                 db: Session = Depends(db_session), actx=Depends(actor_ctx)):

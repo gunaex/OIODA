@@ -13,15 +13,19 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import models as m
-from .models import DeliverableSignoff, HumanDeliverableInstance
+from ..services import DomainError, record_audit
+from .models import DeliverableSignoff, HumanDeliverableInstance, ImpactConfirmation
 
 RELATIONSHIP_VERSION = "impact_relationships/v1"
 CHANGE_VERSION = "project_change/v1"
 IMPACT_VERSION = "impact_candidates/v1"
 RULE_VERSION = "1.0"
+CONFIRMATION_VERSION = "impact_confirmation/v1"
+ACTIONS_VERSION = "impact_actions/v1"
 
 
 def _now() -> str:
@@ -141,6 +145,150 @@ def validate_ai_suggestions(items: list[dict], evidence_ids: set[str], *,
     return accepted, rejected
 
 
+def action_recommendations(project_id: str, projection: dict) -> dict:
+    """Conservative navigation/review suggestions; never executable writes."""
+    rows: list[dict] = []
+    def add(candidate_id: str | None, action_type: str, label: str, mode: str,
+            reason: str, *, service="DOCUMENT_AGAIN", target_id=None, route=None,
+            priority="RECOMMENDED", evidence=None):
+        core = {"impact_candidate_id": candidate_id, "action_type": action_type,
+                "target_service": service, "target_entity_id": target_id,
+                "execution_mode": mode, "route": route}
+        rows.append({"action_id": f"ACT-{_hash(core)[:16]}", **core, "label": label,
+                     "action_class": priority, "reason": reason,
+                     "evidence_ids": evidence or [], "executable": mode in {"LOCAL_VIEW", "DEEP_LINK"}})
+    for item in projection.get("known_impacts") or []:
+        kind, iid = item.get("impact_type"), item.get("impact_id")
+        target = item.get("target_entity") or {}
+        evidence = item.get("evidence_ids") or []
+        if kind == "POTENTIALLY_STALE":
+            add(iid, "REVIEW_DOCUMENT", "Review Document", "LOCAL_VIEW",
+                "Inspect the stale-source evidence before deciding whether content should change.",
+                target_id=target.get("entity_id"), priority="REQUIRED_ATTENTION", evidence=evidence)
+            add(iid, "CONSIDER_DOCUMENT_REVISION", "Consider New Revision", "HUMAN_CONFIRMATION",
+                "A revision may be appropriate, but generation remains a separate human action.",
+                target_id=target.get("entity_id"), evidence=evidence)
+        elif kind == "EVIDENCE_REVIEW_RECOMMENDED":
+            add(iid, "REVIEW_ACCEPTANCE_VERSION", "Review Acceptance Applicability", "LOCAL_VIEW",
+                "Compare the accepted and current versions without invalidating historical acceptance.",
+                target_id=target.get("entity_id"), priority="REQUIRED_ATTENTION", evidence=evidence)
+        target_type = str(target.get("entity_type") or "")
+        for prefix, action_type, label, service, route in (
+            ("QA", "OPEN_QA", "Review QA Context", "QA_AGAIN", f"/projects/{project_id}/qa"),
+            ("PM", "OPEN_PM", "Review PM Context", "PM_AGAIN", f"/projects/{project_id}/planning"),
+            ("INFRA", "OPEN_INFRA", "Review Infra Context", "INFRA_AGAIN", f"/projects/{project_id}/architecture"),
+        ):
+            if target_type.startswith(prefix):
+                add(iid, action_type, label, "LOCAL_VIEW", "Open the existing OIDA owner-context view; no owner record will change.",
+                    service=service, target_id=target.get("entity_id"), route=route, evidence=evidence)
+    if projection.get("unknown"):
+        add(None, "REVIEW_EVIDENCE", "Review Source Evidence", "LOCAL_VIEW",
+            "Impact cannot be determined from current stable relationship evidence.", priority="UNVERIFIED")
+    return {"contract_version": ACTIONS_VERSION, "actions": rows,
+            "authority_note": "Recommendations require a human choice and perform no owner-domain mutation.",
+            "cross_service_domain_writes": 0}
+
+
+def _relationship_identity(snapshot: dict) -> str:
+    core = {key: snapshot.get(key) for key in (
+        "project_id", "source_type", "source_id", "target_type", "target_id",
+        "relationship_type", "relationship_class", "source_authority", "provenance",
+        "created_or_observed_at", "status")}
+    return f"REL-{_hash(core)[:16]}"
+
+
+def review_relationship(db: Session, project, *, relationship_snapshot: dict,
+                        evidence_hash: str, current_evidence_hash: str,
+                        impact_candidate_id: str | None, decision: str, reason: str | None,
+                        actor, actor_role: str | None = None, actor_org: str | None = None,
+                        evidence_refs: list[str] | None = None, change_id: str | None = None,
+                        allowed_evidence: dict[str, dict] | None = None) -> dict:
+    started = time.monotonic()
+    decision = decision.upper()
+    if decision not in {"CONFIRMED", "REJECTED", "UNRESOLVED"}:
+        raise DomainError("Decision must be CONFIRMED, REJECTED, or UNRESOLVED", status_code=422)
+    if decision == "REJECTED" and not (reason or "").strip():
+        raise DomainError("A reason is required to reject a relationship", status_code=422)
+    if evidence_hash != current_evidence_hash:
+        raise DomainError("Impact evidence changed; refresh before reviewing this relationship", status_code=409)
+    if relationship_snapshot.get("project_id") != project.id:
+        raise DomainError("Relationship does not belong to this project", status_code=403)
+    origin = relationship_snapshot.get("relationship_class")
+    if origin not in {"AI_SUGGESTED", "UNKNOWN"}:
+        raise DomainError("Known owner/structural relationships do not require confirmation", status_code=422)
+    relationship_id = relationship_snapshot.get("relationship_id")
+    if not relationship_id or relationship_id != _relationship_identity(relationship_snapshot):
+        raise DomainError("Relationship identity or provenance is invalid", status_code=422)
+    refs = list(dict.fromkeys(evidence_refs or []))[:40]
+    allowed_evidence = allowed_evidence or {}
+    if origin == "AI_SUGGESTED":
+        if not refs or any(ref not in allowed_evidence for ref in refs):
+            raise DomainError("AI suggestions require known evidence citations", status_code=422)
+        corpus = json.dumps([allowed_evidence[ref] for ref in refs], default=str)
+        if str(relationship_snapshot.get("target_id")) not in corpus:
+            raise DomainError("Suggested target is not grounded in cited evidence", status_code=422)
+    elif not str(relationship_snapshot.get("target_id") or "").startswith("UNRESOLVED:"):
+        raise DomainError("Unknown relationships may only review an unresolved domain placeholder", status_code=422)
+    idem = _hash({"project": project.id, "relationship": relationship_id, "candidate": impact_candidate_id,
+                  "evidence": evidence_hash, "decision": decision, "reason": (reason or "").strip(),
+                  "actor": actor.id})
+    existing = db.execute(select(ImpactConfirmation).where(ImpactConfirmation.idempotency_key == idem)).scalar_one_or_none()
+    if existing:
+        return {**existing.to_dict(current_evidence_hash=current_evidence_hash), "idempotent_replay": True,
+                "mutation_latency_ms": round((time.monotonic() - started) * 1000, 2)}
+    previous = db.execute(select(ImpactConfirmation).where(
+        ImpactConfirmation.project_id == project.id,
+        ImpactConfirmation.relationship_id == relationship_id,
+        ImpactConfirmation.evidence_hash == evidence_hash,
+    ).order_by(ImpactConfirmation.reviewed_at.desc(), ImpactConfirmation.id.desc())).scalars().first()
+    row = ImpactConfirmation(
+        project_id=project.id, relationship_id=relationship_id, impact_candidate_id=impact_candidate_id,
+        relationship_class_at_review=origin, relationship_snapshot=relationship_snapshot,
+        decision=decision, reason=(reason or "").strip() or None, actor_user_id=actor.id,
+        actor_name=actor.name, actor_role=actor_role, actor_org=actor_org,
+        evidence_hash=evidence_hash, change_id=change_id, evidence_refs=refs, idempotency_key=idem,
+    )
+    try:
+        db.add(row); db.flush()
+        action = ("IMPACT_RELATIONSHIP_REOPENED" if decision == "UNRESOLVED" and previous and previous.decision != "UNRESOLVED"
+                  else f"IMPACT_RELATIONSHIP_{decision}")
+        record_audit(db, action=action, project_id=project.id, actor_id=actor.id,
+                     object_type="IMPACT_RELATIONSHIP", object_id=relationship_id,
+                     revision_context=evidence_hash,
+                     metadata={"confirmation_id": row.id, "origin_class": origin,
+                               "decision": decision, "previous_decision": previous.decision if previous else None,
+                               "evidence_refs": refs, "customer_acceptance": False,
+                               "cross_service_domain_write": False})
+    except IntegrityError:
+        db.rollback()
+        row = db.execute(select(ImpactConfirmation).where(ImpactConfirmation.idempotency_key == idem)).scalar_one()
+        return {**row.to_dict(current_evidence_hash=current_evidence_hash), "idempotent_replay": True,
+                "mutation_latency_ms": round((time.monotonic() - started) * 1000, 2)}
+    return {**row.to_dict(current_evidence_hash=current_evidence_hash), "idempotent_replay": False,
+            "mutation_latency_ms": round((time.monotonic() - started) * 1000, 2)}
+
+
+def confirmation_history(db: Session, project_id: str, *, current_evidence_hash: str,
+                         relationship_id: str | None = None) -> dict:
+    q = select(ImpactConfirmation).where(ImpactConfirmation.project_id == project_id)
+    if relationship_id:
+        q = q.where(ImpactConfirmation.relationship_id == relationship_id)
+    rows = db.execute(q.order_by(ImpactConfirmation.reviewed_at.desc(), ImpactConfirmation.id.desc())).scalars().all()
+    history = [row.to_dict(current_evidence_hash=current_evidence_hash) for row in rows]
+    effective = {}
+    for row in history:
+        effective.setdefault(row["relationship_id"], row)
+    return {"contract_version": CONFIRMATION_VERSION, "history": history,
+            "effective": list(effective.values()), "current_evidence_hash": current_evidence_hash}
+
+
+def suppress_reviewed_suggestions(suggestions: list[dict], history: dict) -> list[dict]:
+    rejected = {(row["relationship_id"], row["evidence_hash"]) for row in history.get("effective", [])
+                if row["decision"] == "REJECTED" and not row["stale"]}
+    return [item for item in suggestions
+            if (item.get("relationship_id"), history.get("current_evidence_hash")) not in rejected]
+
+
 def document_impact(db: Session, project, current: HumanDeliverableInstance,
                     previous: HumanDeliverableInstance | None,
                     signoffs: list[DeliverableSignoff]) -> dict:
@@ -247,16 +395,25 @@ def document_impact(db: Session, project, current: HumanDeliverableInstance,
             "EVIDENCE_REVIEW_RECOMMENDED",
             f"Customer acceptance is recorded for version {old.document_version}; current version is {current.version}. Previous acceptance is preserved and does not automatically apply.",
             [rel["relationship_id"], old.id], "R17.3-ACCEPTED-VERSION-AWARENESS"))
-    unknown = [{"domain": domain, "relationship_class": "UNKNOWN", "impact_type": "UNKNOWN",
-                "rationale": f"No stable, authorized {domain} relationship is recorded in this document snapshot."}
-               for domain in ("PM", "QA", "INFRA")]
+    unknown = []
+    for domain in ("PM", "QA", "INFRA"):
+        unresolved = relationship(
+            project_id=project.id, source_type="DOCUMENT_VERSION", source_id=current.id,
+            target_type=f"{domain}_CONTEXT", target_id=f"UNRESOLVED:{domain}",
+            relationship_type="AFFECTS", relationship_class="UNKNOWN",
+            source_authority="NO_RELIABLE_RELATIONSHIP_RECORDED", observed_at=observed,
+            provenance={"instance_id": current.id, "snapshot_hash": current.snapshot_hash,
+                        "coverage_domain": domain}, status="UNRESOLVED")
+        unknown.append({"domain": domain, "relationship_class": "UNKNOWN", "impact_type": "UNKNOWN",
+                        "rationale": f"No stable, authorized {domain} relationship is recorded in this document snapshot.",
+                        "relationship": unresolved})
     latency = round((time.monotonic() - started) * 1000, 2)
     attention = [{"id": f"impact-{item['impact_id'].lower()}", "domain": "DOCUMENT",
                   "priority": "ISSUE", "code": item["impact_type"],
                   "title": item["rationale"],
                   "provenance": {"impact_id": item["impact_id"], "rule": item["rule"]}}
                  for item in impacts if item["impact_type"] in {"POTENTIALLY_STALE", "EVIDENCE_REVIEW_RECOMMENDED"}]
-    return {"contract_version": IMPACT_VERSION, "relationship_contract": RELATIONSHIP_VERSION,
+    result = {"contract_version": IMPACT_VERSION, "relationship_contract": RELATIONSHIP_VERSION,
             "source_change": doc_change, "relationships": rels, "known_impacts": impacts,
             "ai_suggested_impacts": [], "unknown": unknown,
             "authority_order": ["EXPLICIT", "DETERMINISTIC", "AI_SUGGESTED", "UNKNOWN"],
@@ -268,3 +425,5 @@ def document_impact(db: Session, project, current: HumanDeliverableInstance,
                         "impact_projection_ms": latency, "downstream_calls": 0},
             "provenance": {"derived": True, "read_only": True, "authoritative": False,
                            "generated_at": observed}}
+    result["suggested_actions"] = action_recommendations(project.id, result)
+    return result

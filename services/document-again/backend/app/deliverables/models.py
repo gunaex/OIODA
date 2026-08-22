@@ -364,3 +364,54 @@ class DeliverableAuditEvent(Base):
             "reason": self.reason,
             "request_id": self.request_id,
         }
+
+
+class ImpactConfirmation(Base):
+    """Immutable human review of one relationship in one evidence context.
+
+    Rows are history, not owner truth. The effective decision is the newest
+    row for a relationship/evidence context; the idempotency key prevents an
+    identical human request from producing duplicate evidence or audit spam.
+    """
+
+    __tablename__ = "impact_confirmations"
+    __table_args__ = (UniqueConstraint("idempotency_key"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("icf"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    relationship_id: Mapped[str] = mapped_column(String(80), index=True)
+    impact_candidate_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    relationship_class_at_review: Mapped[str] = mapped_column(String(24))
+    relationship_snapshot: Mapped[dict] = mapped_column(JSON)
+    decision: Mapped[str] = mapped_column(String(20), index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_user_id: Mapped[str] = mapped_column(String(200), index=True)
+    actor_name: Mapped[str] = mapped_column(String(200))
+    actor_role: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    actor_org: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    evidence_hash: Mapped[str] = mapped_column(String(64), index=True)
+    relationship_version: Mapped[str] = mapped_column(String(40), default="impact_relationships/v1")
+    change_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+    def to_dict(self, *, current_evidence_hash: str | None = None) -> dict:
+        stale = bool(current_evidence_hash and current_evidence_hash != self.evidence_hash)
+        effective = "STALE" if stale else ("HUMAN_CONFIRMED" if self.decision == "CONFIRMED" else self.decision)
+        return {
+            "contract_version": "impact_confirmation/v1", "confirmation_id": self.id,
+            "project_id": self.project_id, "relationship_id": self.relationship_id,
+            "impact_candidate_id": self.impact_candidate_id,
+            "relationship_class_at_review": self.relationship_class_at_review,
+            "origin_relationship": self.relationship_snapshot, "decision": self.decision,
+            "human_review_status": "STALE" if stale else self.decision,
+            "effective_context": effective, "reason": self.reason,
+            "actor_user_id": self.actor_user_id, "actor_name": self.actor_name,
+            "actor_role": self.actor_role, "actor_org": self.actor_org,
+            "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "evidence_hash": self.evidence_hash, "relationship_version": self.relationship_version,
+            "change_id": self.change_id, "evidence_refs": self.evidence_refs or [],
+            "stale": stale,
+            "authority_note": "Human confirmation is project context, not owner-service truth or customer acceptance.",
+        }

@@ -166,7 +166,7 @@ export default function Deliverables() {
     try {
       const packet = await humanApi.reviewerEvidence(project.id, selected, signoffForm.signer_role || undefined, signoffForm.purpose);
       setReviewEvidence(packet);
-      if (aiGuidance?.evidence_packet_hash !== packet.evidence_packet_hash) setAiGuidance(null);
+      if (aiGuidance && !isAiGuidanceCurrent(packet, aiGuidance)) setAiGuidance(null);
     } catch (e) { setReviewEvidenceError(e.message || String(e)); }
   }
 
@@ -180,6 +180,26 @@ export default function Deliverables() {
     } catch (e) {
       setAiGuidance({ status: "UNAVAILABLE", message: e.message || "AI guidance is unavailable. Deterministic review remains available." });
     } finally { setAiBusy(false); }
+  }
+
+  async function reviewImpactRelationship(relationship, decision, impactCandidateId = null, evidenceRefs = []) {
+    const reason = decision === "REJECTED"
+      ? window.prompt("Why is this relationship incorrect? A reason is required.")
+      : decision === "UNRESOLVED"
+        ? window.prompt("Optional: what evidence is still needed?")
+        : window.prompt("Optional: why is this relationship relevant?");
+    if (decision === "REJECTED" && !reason?.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      await humanApi.reviewImpact(project.id, selected, {
+        relationship, evidence_hash: reviewEvidence.evidence_packet_hash,
+        impact_candidate_id: impactCandidateId, decision, reason: reason || null,
+        actor_role: signoffForm.signer_role || null, evidence_refs: evidenceRefs,
+        change_id: reviewEvidence.change_impact?.source_change?.change_id || null,
+      });
+      await refreshReviewerEvidence();
+    } catch (e) { setError(e.message || String(e)); }
+    finally { setBusy(false); }
   }
 
   async function doResolve() {
@@ -523,6 +543,8 @@ export default function Deliverables() {
                       onShowAi={() => loadAiGuidance(false)}
                       onRefreshAi={() => loadAiGuidance(true)}
                       onHideAi={() => setShowAi(false)}
+                      onReviewImpact={reviewImpactRelationship}
+                      impactBusy={busy}
                     />
 
                     <div className="mb-4 flex flex-wrap gap-2">
@@ -656,7 +678,15 @@ function EvidenceItem({ item }) {
   );
 }
 
-function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, showAi, onShowAi, onRefreshAi, onHideAi }) {
+function ImpactReviewButtons({ disabled, onDecision }) {
+  return <div className="mt-2 flex flex-wrap gap-1">
+    <button disabled={disabled} onClick={() => onDecision("CONFIRMED")} className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-[10px] text-emerald-800 disabled:opacity-50">Confirm Relationship</button>
+    <button disabled={disabled} onClick={() => onDecision("REJECTED")} className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-[10px] text-rose-800 disabled:opacity-50">Reject Relationship</button>
+    <button disabled={disabled} onClick={() => onDecision("UNRESOLVED")} className="rounded border border-gray-300 px-2 py-1 text-[10px] text-gray-700 disabled:opacity-50">Leave Unresolved</button>
+  </div>;
+}
+
+function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, showAi, onShowAi, onRefreshAi, onHideAi, onReviewImpact, impactBusy }) {
   if (error) return <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Reviewer evidence unavailable: {error}. Existing review controls remain available.</div>;
   if (!packet) return <div className="mb-4 rounded-lg border border-gray-200 p-3 text-xs text-gray-500">Preparing deterministic reviewer evidence…</div>;
   const brief = packet.deterministic_brief;
@@ -670,6 +700,8 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
   const aiCurrent = isAiGuidanceCurrent(packet, ai);
   const aiFailed = canRetryAi(ai, aiBusy);
   const impacts = impactSections(packet.change_impact);
+  const effectiveReviews = Object.fromEntries((packet.impact_confirmations?.effective || []).map((item) => [item.relationship_id, item]));
+  const actions = packet.change_impact?.suggested_actions?.actions || [];
   return (
     <div className="mb-4 overflow-hidden rounded-xl border border-blue-200 bg-blue-50/40">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-100 p-3">
@@ -716,11 +748,23 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
           </div>
           <div className="rounded-lg border border-violet-200 bg-white p-3">
             <div className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-violet-800">Possible <Badge tone="violet">AI Suggested</Badge></div>
-            {impacts.suggested.length ? <ul className="mt-2 space-y-2 text-xs">{impacts.suggested.map((item) => <li key={item.impact_id}>{item.rationale}</li>)}</ul> : <div className="mt-2 text-xs text-gray-500">No AI relationships requested. Suggestions never become authority automatically.</div>}
+            {impacts.suggested.length ? <ul className="mt-2 space-y-2 text-xs">{impacts.suggested.map((item) => {
+              const rel = item.relationship || item;
+              const review = effectiveReviews[rel.relationship_id];
+              return <li key={item.impact_id || rel.relationship_id}>
+                <div>{item.rationale || rel.advisory?.reason}</div>
+                {review ? <div className="mt-1"><Badge tone={review.human_review_status === "CONFIRMED" ? "emerald" : review.human_review_status === "REJECTED" ? "rose" : "amber"}>{review.human_review_status}</Badge> by {review.actor_name}</div> : <ImpactReviewButtons disabled={impactBusy} onDecision={(decision) => onReviewImpact(rel, decision, item.impact_id, rel.advisory?.evidence_ids || [])} />}
+              </li>;
+            })}</ul> : <div className="mt-2 text-xs text-gray-500">No AI relationships requested. Suggestions never become authority automatically.</div>}
           </div>
           <div className="rounded-lg border border-gray-200 bg-white p-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-gray-600">Unknown</div>
-            {impacts.unknown.length ? <ul className="mt-2 space-y-1 text-xs text-gray-600">{impacts.unknown.map((item) => <li key={item.domain}><span className="font-medium">{item.domain}:</span> {item.rationale}</li>)}</ul> : <div className="mt-2 text-xs text-gray-500">No unresolved domains recorded.</div>}
+            {impacts.unknown.length ? <ul className="mt-2 space-y-2 text-xs text-gray-600">{impacts.unknown.map((item) => {
+              const review = effectiveReviews[item.relationship?.relationship_id];
+              return <li key={item.domain}><span className="font-medium">{item.domain}:</span> {item.rationale}
+                {review ? <div className="mt-1"><Badge tone={review.human_review_status === "CONFIRMED" ? "emerald" : review.human_review_status === "REJECTED" ? "rose" : "amber"}>{review.human_review_status}</Badge> by {review.actor_name}{review.stale ? " · evidence changed" : ""}</div> : <ImpactReviewButtons disabled={impactBusy} onDecision={(decision) => onReviewImpact(item.relationship, decision)} />}
+              </li>;
+            })}</ul> : <div className="mt-2 text-xs text-gray-500">No unresolved domains recorded.</div>}
           </div>
         </div>
         <details className="mt-3 rounded-lg border border-cyan-200 bg-white p-2 text-xs">
@@ -730,6 +774,21 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
             <div className="mt-1 break-all text-gray-500">{JSON.stringify(rel.provenance)}</div>
           </div>)}</div>
         </details>
+        <div className="mt-3 rounded-lg border border-cyan-200 bg-white p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-cyan-900">Suggested Next Actions</div>
+          {actions.length ? <div className="mt-2 flex flex-wrap gap-2">{actions.map((action) => action.route
+            ? <a key={action.action_id} href={action.route} className="rounded border border-cyan-200 px-2 py-1 text-xs text-cyan-800">{action.label} · {action.execution_mode.replaceAll("_", " ")}</a>
+            : <span key={action.action_id} className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-600">{action.label} · {action.execution_mode.replaceAll("_", " ")}</span>)}</div>
+            : <div className="mt-2 text-xs text-gray-500">No action recommendation is supported.</div>}
+          <div className="mt-2 text-[10px] text-gray-500">Recommendations do not execute owner-service writes.</div>
+        </div>
+        {(packet.impact_confirmations?.history || []).length > 0 && <details className="mt-3 rounded-lg border border-cyan-200 bg-white p-2 text-xs">
+          <summary className="cursor-pointer font-semibold text-cyan-900">Relationship review history ({packet.impact_confirmations.history.length})</summary>
+          <div className="mt-2 space-y-2">{packet.impact_confirmations.history.map((review) => <div key={review.confirmation_id} className="border-t border-gray-100 pt-2">
+            <div><Badge tone={review.human_review_status === "CONFIRMED" ? "emerald" : review.human_review_status === "REJECTED" ? "rose" : "amber"}>{review.human_review_status}</Badge> {review.actor_name} · {formatDateTime(review.reviewed_at)}</div>
+            <div className="text-gray-500">Origin {review.relationship_class_at_review} · evidence {(review.evidence_hash || "").slice(0, 12)} · {review.reason || "No reason supplied"}</div>
+          </div>)}</div>
+        </details>}
       </div>
 
       <div className="border-t border-violet-200 bg-violet-50 p-3">
