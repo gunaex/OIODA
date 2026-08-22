@@ -73,13 +73,17 @@ Both retain the existing authenticated project boundary. They do not accept acto
 
 ## 11. Test Evidence
 
-Document Again: **209 passed**. Focused resolution/Command Center/briefing/portfolio: **30 passed**. OIDA Web: **11 passed** and production build passed. Gateway: **3 passed**. Coverage includes state distinctions, reason classification, registry truth, P1–P5 priority, reopening, neutral time, partial packets, zero extra calls, AI absence, citations, allowlist, false-resolution/customer-acceptance rejection, and non-executable advice.
+Document Again: **210 passed**. Focused resolution/Command Center/briefing/portfolio: **30 passed**. OIDA Web: **11 passed** and production build passed. Gateway: **3 passed**. Coverage includes state distinctions, reason classification, registry truth, P1–P5 priority, reopening, neutral time, partial packets, zero extra calls, AI absence, citations, allowlist, false-resolution/customer-acceptance rejection, and non-executable advice.
 
 The Vite production build retains the pre-existing bundle-size advisory; it is not a build failure.
 
 ## 12. Deployment
 
-Deployment evidence is recorded after the changed Document Again and OIDA Web revisions pass production health and revision checks. No other service requires deployment.
+Implementation `9f9c053` was pushed to `main`. Document Again deployed as Fly release **30**, image `deployment-01M0MJ27Q04Q812N3D1680P59F`, with its machine started and one of one checks passing. The direct health endpoint returned HTTP 200.
+
+OIDA Web deployed as Cloudflare Pages production revision `5e2d20d0-5c51-46bb-816e-88ea79c4104c`, sourced from exact SHA `9f9c053`. The custom domain returned HTTP 200 and served `index-D1RE15WR.js` and `index-CiWTekrW.css`. Anonymous deterministic-intelligence GET and assistant POST calls both returned HTTP 401 at the unchanged deny-by-default gateway.
+
+Account, PM, QA, Infra, Conductor, and Gateway were unchanged and not redeployed. Authenticated representative-project browser dogfood remains an operational follow-up because no fresh human session was available in this execution context; no credential extraction or authentication bypass was attempted.
 
 ## 13. Deferred Scope
 
@@ -116,11 +120,15 @@ NEW_DATABASE=NO
 NEW_TABLE=NO
 SCHEDULER=NO
 NOTIFICATIONS=NO
-DOCUMENT_TESTS=209_PASS
+DOCUMENT_TESTS=210_PASS
 RESOLUTION_FOCUSED_TESTS=30_PASS
 FRONTEND_TESTS=11_PASS
 GATEWAY_TESTS=3_PASS
 BUILD=PASS_WITH_PRE_EXISTING_BUNDLE_WARNING
-DEPLOYMENT=PENDING
-R18_3=IMPLEMENTED_AWAITING_PRODUCTION_PROOF
+DEPLOYMENT=PASS_DOCUMENT_RELEASE_30_AND_WEB_5E2D20D0
+PRODUCTION_HEALTH=PASS
+PRODUCTION_REVISION_PROOF=PASS
+ANONYMOUS_AUTH_GUARD=PASS_HTTP_401_GET_AND_POST
+AUTHENTICATED_PROJECT_DOGFOOD=OPERATIONAL_BACKLOG
+R18_3=ACCEPTED_WITH_OPERATIONAL_GAPS
 ```
