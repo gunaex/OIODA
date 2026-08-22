@@ -18,6 +18,7 @@ from . import human as hsvc
 from . import reviewer as rsvc
 from . import impact as isvc
 from . import action_routing as arsvc
+from . import resolution as ressvc
 from .standards import BY_NAME
 
 router = APIRouter(prefix="/api")
@@ -246,6 +247,11 @@ class ImpactActionIn(BaseModel):
     parameters: dict = {}
 
 
+class ImpactResolutionRecheckIn(BaseModel):
+    confirmation_id: str
+    evidence_hash: str
+
+
 @router.post("/projects/{project_id}/human-deliverables/{human_code}/impact-confirmations")
 def review_impact_relationship(project_id: str, human_code: str, body: ImpactReviewIn,
                                db: Session = Depends(db_session), actx=Depends(actor_ctx)):
@@ -307,6 +313,34 @@ def impact_action_history(project_id: str, db: Session = Depends(db_session),
                           actx=Depends(actor_ctx)):
     project = _project(db, project_id)
     return arsvc.history(db, project.id)
+
+
+@router.get("/impact-resolutions/registry")
+def impact_resolution_registry(actx=Depends(actor_ctx)):
+    return ressvc.registry()
+
+
+@router.get("/projects/{project_id}/impact-resolutions")
+def impact_resolution_history(project_id: str, db: Session = Depends(db_session),
+                              actx=Depends(actor_ctx)):
+    project = _project(db, project_id)
+    return ressvc.history(db, project.id)
+
+
+@router.post("/projects/{project_id}/human-deliverables/{human_code}/impact-resolutions/recheck")
+def recheck_impact_resolution(project_id: str, human_code: str, body: ImpactResolutionRecheckIn,
+                              authorization: str | None = Header(default=None),
+                              db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    project = _project(db, project_id)
+    packet = rsvc.build_packet(db, project, human_code)
+    confirmation = db.get(isvc.ImpactConfirmation, body.confirmation_id)
+    if not confirmation or confirmation.project_id != project.id:
+        raise svc.DomainError("Impact confirmation was not found", status_code=404)
+    if body.evidence_hash != packet["evidence_packet_hash"]:
+        raise svc.DomainError("Resolution recheck is STALE", status_code=409)
+    return ressvc.evaluate(db, project, confirmation,
+        current_evidence_hash=packet["evidence_packet_hash"], authorization=authorization,
+        actor_id=actx.id)
 
 
 @router.post("/projects/{project_id}/human-deliverables/{human_code}/ai-reviewer")

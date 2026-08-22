@@ -228,7 +228,20 @@ export default function Deliverables() {
         action_type: actionPreview.action_type, confirmation_id: actionPreview.confirmation_id,
         evidence_hash: reviewEvidence.evidence_packet_hash, parameters: actionPreview.parameters || {},
       });
+      if (result.impact_resolution) result.resolution = result.impact_resolution;
       setActionResult(result); setActionPreview(null);
+      await refreshReviewerEvidence();
+    } catch (e) { setActionResult({ status: "FAILED", failure_detail: e.message || String(e) }); }
+    finally { setActionBusy(false); }
+  }
+
+  async function recheckImpactResolution(confirmationId) {
+    setActionBusy(true); setActionResult(null);
+    try {
+      const resolution = await humanApi.recheckImpactResolution(project.id, selected, {
+        confirmation_id: confirmationId, evidence_hash: reviewEvidence.evidence_packet_hash,
+      });
+      setActionResult({ status: "RECHECKED", resolution });
       await refreshReviewerEvidence();
     } catch (e) { setActionResult({ status: "FAILED", failure_detail: e.message || String(e) }); }
     finally { setActionBusy(false); }
@@ -582,6 +595,7 @@ export default function Deliverables() {
                       actionBusy={actionBusy}
                       onPreviewAction={previewRoutedAction}
                       onExecuteAction={executeRoutedAction}
+                      onRecheckResolution={recheckImpactResolution}
                       onCancelAction={() => setActionPreview(null)}
                     />
 
@@ -724,7 +738,7 @@ function ImpactReviewButtons({ disabled, onDecision }) {
   </div>;
 }
 
-function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, showAi, onShowAi, onRefreshAi, onHideAi, onReviewImpact, impactBusy, actionPreview, actionResult, actionBusy, onPreviewAction, onExecuteAction, onCancelAction }) {
+function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, showAi, onShowAi, onRefreshAi, onHideAi, onReviewImpact, impactBusy, actionPreview, actionResult, actionBusy, onPreviewAction, onExecuteAction, onRecheckResolution, onCancelAction }) {
   if (error) return <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Reviewer evidence unavailable: {error}. Existing review controls remain available.</div>;
   if (!packet) return <div className="mb-4 rounded-lg border border-gray-200 p-3 text-xs text-gray-500">Preparing deterministic reviewer evidence…</div>;
   const brief = packet.deterministic_brief;
@@ -740,6 +754,7 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
   const impacts = impactSections(packet.change_impact);
   const effectiveReviews = Object.fromEntries((packet.impact_confirmations?.effective || []).map((item) => [item.relationship_id, item]));
   const actions = packet.change_impact?.suggested_actions?.actions || [];
+  const resolutions = packet.impact_resolutions?.resolutions || [];
   return (
     <div className="mb-4 overflow-hidden rounded-xl border border-blue-200 bg-blue-50/40">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-100 p-3">
@@ -832,6 +847,16 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
           <div className="mt-1 text-xs text-indigo-800">Relationship confirmation is complete. Execution is a separate explicit human decision.</div>
           <div className="mt-2 flex flex-wrap gap-2">{packet.impact_confirmations.effective.filter(routedActionForReview).map((review) => <button key={review.confirmation_id} disabled={actionBusy} onClick={() => onPreviewAction(review)} className="rounded bg-indigo-700 px-3 py-1.5 text-xs text-white disabled:opacity-50">Review {routedActionForReview(review) === "ROUTE_PM_DELIVERY_HANDOFF" ? "PM Handoff" : "QA Handoff"}</button>)}</div>
         </div>}
+        {resolutions.length > 0 && <div className="mt-3 rounded-lg border border-sky-200 bg-white p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-sky-900">Impact Resolution</div>
+          <div className="mt-2 space-y-3">{resolutions.map((resolution) => <div key={resolution.resolution_id} className="border-t border-sky-100 pt-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2"><Badge tone={resolution.resolution_state === "RESOLVED" ? "emerald" : resolution.resolution_state === "BLOCKED" ? "rose" : resolution.resolution_state === "UNKNOWN" || resolution.resolution_state === "RECHECK_REQUIRED" ? "amber" : "blue"}>{resolution.resolution_state.replaceAll("_", " ")}</Badge><span>{resolution.resolution_reason}</span></div>
+            <div className="mt-1 text-[10px] text-gray-500">Rule {resolution.evaluation_rule_id} v{resolution.evaluation_rule_version} · evaluated {formatDateTime(resolution.evaluated_at)}{resolution.owner_result_ref?.service ? ` · waiting on ${resolution.owner_result_ref.service}` : ""}</div>
+            <button disabled={actionBusy} onClick={() => onRecheckResolution(resolution.confirmation_id)} className="mt-2 inline-flex items-center gap-1 rounded border border-sky-200 px-2 py-1 text-sky-800 disabled:opacity-50"><RefreshCw size={11} /> Recheck authoritative truth</button>
+            {resolution.history?.length > 0 && <details className="mt-2"><summary className="cursor-pointer text-sky-800">Resolution timeline ({resolution.history.length})</summary><div className="mt-1 space-y-1">{resolution.history.map((event, index) => <div key={`${event.timestamp}-${index}`}>{formatDateTime(event.timestamp)} · {event.from_state || "NEW"} → {event.state} · {event.reason}</div>)}</div></details>}
+          </div>)}</div>
+          <div className="mt-2 text-[10px] text-gray-500">Owner action success is not resolution. Customer acceptance is separate.</div>
+        </div>}
         {actionPreview && <div className="mt-3 rounded-lg border-2 border-indigo-300 bg-white p-3 text-xs">
           <div className="font-semibold text-indigo-950">Action Preview — {actionPreview.label}</div>
           <div className="mt-2">Target: {actionPreview.target_service} / {actionPreview.target_entity_id || "binding unavailable"}</div>
@@ -846,6 +871,7 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
           {actionResult.result_ref && <div className="mt-1">{actionResult.result_ref.service} result {actionResult.result_ref.entity_id} · {actionResult.result_ref.status}</div>}
           {actionResult.failure_category && <div className="mt-1">{actionResult.failure_category}: {actionResult.failure_detail}</div>}
           <div className="mt-1 text-gray-600">Impact is not automatically resolved.</div>
+          {actionResult.resolution && <div className="mt-2 font-medium">Resolution: {actionResult.resolution.resolution_state.replaceAll("_", " ")} — {actionResult.resolution.resolution_reason}</div>}
         </div>}
       </div>
 

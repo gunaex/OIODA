@@ -266,6 +266,8 @@ def build_packet(db: Session, project, human_code: str, *, role: str | None = No
     packet_core["change_impact"] = impact_svc.document_impact(db, project, current, previous, signoffs)
     packet_core["impact_confirmations"] = impact_svc.confirmation_history(
         db, project.id, current_evidence_hash=packet_core["evidence_packet_hash"])
+    from . import resolution as resolution_svc
+    packet_core["impact_resolutions"] = resolution_svc.history(db, project.id)
     packet_core["impact_context_hash"] = _hash({
         "relationships": [r["relationship_id"] for r in packet_core["change_impact"].get("relationships", [])],
         "impacts": [i["impact_id"] for i in packet_core["change_impact"].get("known_impacts", [])],
@@ -274,6 +276,14 @@ def build_packet(db: Session, project, human_code: str, *, role: str | None = No
                     for row in packet_core["impact_confirmations"].get("effective", [])],
     })
     packet_core["deterministic_brief"] = build_brief(packet_core)
+    packet_core["deterministic_brief"]["resolution_progress"] = {
+        "counts": packet_core["impact_resolutions"]["project_attention_projection"]["counts"],
+        "still_unresolved": [r["resolution_id"] for r in packet_core["impact_resolutions"]["resolutions"]
+                             if r["resolution_state"] not in {"RESOLVED", "RESOLVED_WITH_EXCEPTION", "NO_LONGER_APPLICABLE"}],
+        "resolved": [r["resolution_id"] for r in packet_core["impact_resolutions"]["resolutions"]
+                     if r["resolution_state"] in {"RESOLVED", "RESOLVED_WITH_EXCEPTION", "NO_LONGER_APPLICABLE"}],
+        "authority_note": "Resolution is deterministic owner-truth projection; AI cannot change it.",
+    }
     return packet_core
 
 

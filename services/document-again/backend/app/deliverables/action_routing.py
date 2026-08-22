@@ -185,13 +185,15 @@ def execute(db: Session, project, *, action_type: str, confirmation_id: str,
                     current_evidence_hash=current_evidence_hash, parameters=parameters)
     if check["status"] != "READY":
         raise DomainError(f"Action is {check['status']}", status_code=409 if check["status"] == "REQUIRES_INPUT" else 422)
+    confirmation = db.get(ImpactConfirmation, confirmation_id)
     idem = _hash({"project": project.id, "confirmation": confirmation_id, "action": action_type,
                   "parameters": parameters or {}, "evidence": current_evidence_hash})
     existing = db.execute(select(ImpactActionRoute).where(ImpactActionRoute.idempotency_key == idem)).scalar_one_or_none()
     if existing:
         return route_dict(db, existing) | {"idempotent_replay": True}
     route = ImpactActionRoute(
-        project_id=project.id, confirmation_id=confirmation_id, action_type=action_type,
+        project_id=project.id, impact_candidate_id=confirmation.impact_candidate_id,
+        confirmation_id=confirmation_id, action_type=action_type,
         target_service=check["target_service"], target_entity_id=check["target_entity_id"],
         requested_by=actor.id, parameters=parameters or {}, precondition_snapshot=check["precondition_snapshot"],
         evidence_hash=current_evidence_hash, idempotency_key=idem, status="EXECUTING")
@@ -221,7 +223,11 @@ def execute(db: Session, project, *, action_type: str, confirmation_id: str,
                      metadata={"action_type": action_type, "target_service": route.target_service,
                                "confirmation_id": confirmation_id, "result_ref": route.result_ref,
                                "human_executed": True, "customer_acceptance": False})
-        return route_dict(db, route) | {"idempotent_replay": False,
+        from . import resolution as resolution_svc
+        resolution = resolution_svc.evaluate(db, project, confirmation,
+            current_evidence_hash=current_evidence_hash, authorization=authorization,
+            actor_id=actor.id, truth=truth)
+        return route_dict(db, route) | {"idempotent_replay": False, "impact_resolution": resolution,
             "performance": {"total_ms": round((time.monotonic()-started)*1000, 2),
                             "owner_mutation_ms": round(mutation_ms, 2),
                             "reconciliation_ms": round(reconciliation_ms, 2),

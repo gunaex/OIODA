@@ -451,3 +451,45 @@ class ImpactActionEvent(Base):
     actor_user_id: Mapped[str] = mapped_column(String(200))
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ImpactResolution(Base):
+    """Current deterministic resolution projection; history lives in events."""
+    __tablename__ = "impact_resolutions"
+    __table_args__ = (UniqueConstraint("confirmation_id"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("irs"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    change_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    impact_candidate_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    confirmation_id: Mapped[str] = mapped_column(ForeignKey("impact_confirmations.id"), unique=True, index=True)
+    latest_action_route_id: Mapped[str | None] = mapped_column(ForeignKey("impact_action_routes.id"), nullable=True)
+    owner_result_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    resolution_state: Mapped[str] = mapped_column(String(32), index=True)
+    resolution_reason: Mapped[str] = mapped_column(Text)
+    evaluation_rule_id: Mapped[str] = mapped_column(String(80))
+    evaluation_rule_version: Mapped[str] = mapped_column(String(20))
+    pre_action_truth_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    post_action_truth_ref: Mapped[dict] = mapped_column(JSON, default=dict)
+    evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    evidence_hash: Mapped[str] = mapped_column(String(64), index=True)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    state_entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ImpactResolutionEvent(Base):
+    """Immutable, deduplicated resolution transition history."""
+    __tablename__ = "impact_resolution_events"
+    __table_args__ = (UniqueConstraint("transition_hash"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("ire"))
+    resolution_id: Mapped[str] = mapped_column(ForeignKey("impact_resolutions.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(60), index=True)
+    from_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    to_state: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(Text)
+    evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    actor_user_id: Mapped[str] = mapped_column(String(200))
+    transition_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)

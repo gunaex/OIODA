@@ -288,6 +288,9 @@ export const humanApi = {
     post("da", `/projects/${projectId}/human-deliverables/${code}/impact-actions/execute`, body),
   impactActionHistory: (projectId) => get("da", `/projects/${projectId}/impact-actions`),
   impactActionRegistry: () => get("da", "/impact-actions/registry"),
+  impactResolutionHistory: (projectId) => get("da", `/projects/${projectId}/impact-resolutions`),
+  recheckImpactResolution: (projectId, code, body) =>
+    post("da", `/projects/${projectId}/human-deliverables/${code}/impact-resolutions/recheck`, body),
   aiReviewer: (projectId, code, body) =>
     post("da", `/projects/${projectId}/human-deliverables/${code}/ai-reviewer`, body || {}),
   aiStatus: () => get("da", "/reviewer-ai/status"),
