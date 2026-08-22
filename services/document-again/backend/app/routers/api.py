@@ -259,6 +259,25 @@ def project_copilot(project_id: str, body: ProjectCopilotIn,
                    user_role=body.user_role, force=body.force)
 
 
+@router.get("/projects/{project_id}/resolution-intelligence")
+def project_resolution_intelligence(project_id: str,
+                                    authorization: str | None = Header(default=None),
+                                    db: Session = Depends(db_session)):
+    from ..command_center import compose
+    center = compose(db, svc.guard_project(db, project_id), authorization=authorization)
+    return center["resolution_intelligence"]
+
+
+@router.post("/projects/{project_id}/resolution-intelligence/assistant")
+def project_resolution_intelligence_assistant(
+        project_id: str, authorization: str | None = Header(default=None),
+        db: Session = Depends(db_session)):
+    from ..command_center import compose
+    from ..resolution_intelligence import assistant
+    center = compose(db, svc.guard_project(db, project_id), authorization=authorization)
+    return assistant(center["resolution_intelligence"])
+
+
 @router.get("/projects/{project_id}/briefing")
 def project_briefing(project_id: str, authorization: str | None = Header(default=None),
                      db: Session = Depends(db_session), actx=Depends(actor_ctx)):

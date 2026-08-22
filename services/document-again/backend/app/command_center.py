@@ -165,7 +165,7 @@ def compose(db: Session, project, *, authorization: str | None = None,
                "governance_flags": governance_flags, "acceptance": acceptance,
                "waiting_on": waiting_on, "evidence": evidence}
     context_hash = _hash(context)
-    return {"contract_version": CONTRACT, "project": {"id": project.id, "key": project.key,
+    result = {"contract_version": CONTRACT, "project": {"id": project.id, "key": project.key,
             "name": project.name, "lifecycle_state": project.lifecycle_state or "ACTIVE"},
         "health": health, "attention": attention, "delivery": truth.get("pm"),
         "recent_changes": changes, "active_impacts": impacts,
@@ -192,6 +192,14 @@ def compose(db: Session, project, *, authorization: str | None = None,
                         "project_truth_latency_ms": round(truth_ms, 2),
                         "downstream_calls": truth.get("downstream_call_count", 0),
                         "extra_owner_calls": 0}}
+    # R18.3 is a pure projection over the already composed owner truth. Importing
+    # here avoids coupling the lower-level resolution evaluator back to this view.
+    from . import resolution_intelligence
+    result["resolution_intelligence"] = resolution_intelligence.analyze(result)
+    result["performance"]["resolution_intelligence_latency_ms"] = result[
+        "resolution_intelligence"]["performance"]["resolution_intelligence_latency_ms"]
+    result["provenance"]["source_contracts"].append("resolution_intelligence/v1")
+    return result
 
 
 def _deterministic_items(center: dict, query_type: str) -> list[dict]:

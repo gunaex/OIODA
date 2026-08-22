@@ -16,8 +16,10 @@ def _cursor(e): return f"{e['evidence_id']}@{_hash(e.get('data'))[:16]}"
 def _checkpoint(db,user): return db.execute(select(PortfolioReviewCheckpoint).where(PortfolioReviewCheckpoint.user_id==user,PortfolioReviewCheckpoint.scope_key==SCOPE)).scalar_one_or_none()
 
 def _tier(center,brief):
-    blocked=(center.get("attention",{}).get("counts",{}).get("blocker",0)>0 or any(x.get("resolution_state")=="BLOCKED" for x in center.get("resolution_summary",{}).get("active",[])))
-    reopened=len(brief.get("reopened",[])); recheck=any(x.get("resolution_state")=="RECHECK_REQUIRED" for x in center.get("resolution_summary",{}).get("active",[]))
+    intelligence=center.get("resolution_intelligence",{})
+    blocked=(center.get("attention",{}).get("counts",{}).get("blocker",0)>0 or bool(intelligence.get("blocked")))
+    reopened=len(brief.get("reopened",[])) or any(x.get("reopened") for x in intelligence.get("unresolved_items",[]))
+    recheck=bool(intelligence.get("recheck_required"))
     waiting=len(brief.get("waiting_on",[])); new=len(brief.get("new_attention",[])); changed=len(brief.get("changed_since_review",[]))
     if blocked or reopened: return "P1", "Blocked or reopened project evidence requires attention."
     if recheck or new: return "P2", "New attention or deterministic recheck is present."
@@ -41,12 +43,18 @@ def compose(db:Session,*,user_id:str,authorization=None,projects=None,composer=N
             prior=set((checkpoint.project_evidence_cursors or {}).get(project.id,[])) if checkpoint else set()
             new_count=sum(_cursor(e) not in prior for e in center["copilot_context"]["evidence"]) if checkpoint else 0
             source=center.get("freshness",{}).get("sources",{}); unverified=any(v not in {"OK","EMPTY"} for v in source.values())
+            intelligence=center.get("resolution_intelligence",{})
             summaries.append({"project_id":project.id,"project_key":project.key,"project_name":project.name,
                 "state":"BLOCKED" if tier=="P1" else "ATTENTION" if tier in {"P2","P3"} else "UNVERIFIED" if unverified else "HEALTHY",
                 "priority_tier":tier,"priority_reason":reason,"health":center["health"],
                 "new_attention_count":new_count,"waiting_count":len(current["waiting_on"]),
                 "open_impact_count":len(center.get("active_impacts",[])),
-                "blocked_count":center.get("attention",{}).get("counts",{}).get("blocker",0),
+                "blocked_count":max(center.get("attention",{}).get("counts",{}).get("blocker",0),len(intelligence.get("blocked",[]))),
+                "resolution_intelligence":{"contract_version":intelligence.get("contract_version"),
+                    "unresolved_count":len(intelligence.get("unresolved_items",[])),
+                    "waiting_count":len(intelligence.get("waiting",[])),
+                    "recheck_count":len(intelligence.get("recheck_required",[])),
+                    "focus_items":intelligence.get("focus_items",[])[:3]},
                 "resolved_count":len(current["resolved_since_review"]),"reopened_count":len(current["reopened"]),
                 "unverified":unverified,"freshness":center.get("freshness"),"focus":current["deterministic_focus"][:3],
                 "changed":current["changed_since_review"],"waiting":current["waiting_on"],
@@ -76,7 +84,7 @@ def compose(db:Session,*,user_id:str,authorization=None,projects=None,composer=N
         "portfolio_attention":{"blocked_projects":sum(s["state"]=="BLOCKED" for s in summaries),"attention_projects":sum(s["state"]=="ATTENTION" for s in summaries),"unverified_projects":sum(s["unverified"] for s in summaries),"waiting_projects":sum(bool(s["waiting_count"]) for s in summaries)},
         "focus_projects":summaries[:7],"unverified_projects":[s for s in summaries if s["unverified"]],
         "briefing":briefing_payload,"evidence":scoped_evidence,"partial_status":{"complete_projects":len(summaries),"unavailable_projects":len(failures),"failures":failures},
-        "provenance":{"source_contracts":["project_command_center/v1","project_briefing/v1"],"authorized_scope_first":True,"project_checkpoint_independent":True},
+        "provenance":{"source_contracts":["project_command_center/v1","project_briefing/v1","resolution_intelligence/v1"],"authorized_scope_first":True,"project_checkpoint_independent":True},
         "performance":{"portfolio_latency_ms":round((time.monotonic()-started)*1000,2),"downstream_calls":total_calls,"concurrency":CONCURRENCY,"project_limit":MAX_PROJECTS}}
 
 def acknowledge(db,user_id,payload,actor_id):

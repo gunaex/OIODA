@@ -73,6 +73,8 @@ def test_command_center_composes_and_deduplicates_current_state(fixture):
     assert out["acceptance"]["customer_accepted"] is False
     assert out["freshness"]["sources"]["INFRA"] == "UNBOUND"
     assert out["performance"]["extra_owner_calls"] == 0
+    assert out["resolution_intelligence"]["contract_version"] == "resolution_intelligence/v1"
+    assert out["resolution_intelligence"]["waiting"][0]["reason_class"] == "MISSING_EVIDENCE"
 
 
 def test_partial_qa_failure_does_not_fail_workspace(fixture):
