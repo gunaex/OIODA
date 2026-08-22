@@ -59,3 +59,17 @@ Runtime validation was read-only except for the normal failed-login audit genera
 - Infra fakecloud/OpenTofu acceptance infrastructure was unavailable locally.
 
 Disposition: implementation `ACCEPTED`; runtime `PARTIAL`; production `PARTIAL`; full closure `PARTIAL`.
+
+## V2 addendum — credential, binding, frontend, and infrastructure closure
+
+V2 started from a clean `0740aea40c49d7a86f9103e5266f9e06fa9261b8`. The application implementation was unchanged. A focused CI syntax repair was committed as `be81e3c56e91e19696a719e57ea3a20beb4d04f0`; the replacement GitHub Actions run succeeded.
+
+The actual read architecture is delegated human SSO, not a backend service credential. An existing local credential store allowed direct, authenticated PM and QA reads, proving all stored PM/QA targets resolve. It did not contain a usable Account Again ecosystem password, and macOS Keychain would not grant the saved Chrome credential non-interactively. No token was minted, extracted, combined, or bypassed.
+
+Direct owner results were PM green with empty schedule/milestone/dependency counts and nonempty effort, plus authoritatively empty QA results across all five scopes. Infra's authoritative design catalog is empty, proving that the stale 404 pointer must become explicitly unbound rather than rebound by inference. The binding update remains blocked because the supported Document workflow requires the unavailable ecosystem session.
+
+Cloudflare remains blocked: Wrangler is logged out, no Cloudflare token exists in the environment, and the installed GitHub App produced no run or deployment. Bundle hashes independently prove that production still serves the prior frontend.
+
+The Infra extended-test blocker is closed. With repo-documented fakecloud and OpenTofu, the full suite completed with 361 passed and 8 skipped.
+
+V2 remains `PARTIAL`: successful direct owner reads improve runtime evidence, but production normalization, frontend revision, binding correction, Overview/precheck UI, and browser proof remain blocked.

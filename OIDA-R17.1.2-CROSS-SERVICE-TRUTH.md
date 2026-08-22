@@ -145,6 +145,20 @@ Recommended next step: production/browser hardening first—deploy this focused 
 
 Closure classification: implementation `ACCEPTED`; runtime `PARTIAL`; production `PARTIAL`; full R17.1.2 closure `PARTIAL`. The exact unresolved items are frontend deployment/revision proof, authenticated PM/QA truth, valid Infra binding, browser validation, and owner-to-normalized-value comparison.
 
+## 20. V2 production-closure attempt — 2026-08-22
+
+- Repository start was clean at `0740aea40c49d7a86f9103e5266f9e06fa9261b8`.
+- The GitHub Actions zero-job failure was traced to invalid flow-style YAML at `.github/workflows/ci.yml:56`. Commit `be81e3c56e91e19696a719e57ea3a20beb4d04f0` converted that mapping to block YAML. GitHub run `32545835437` completed successfully.
+- Production auth is delegated human ecosystem identity: gateway and Document verify the Account Again RS256 token, then Document forwards it to PM/QA. PM and QA map the verified email to their local authorization record. There is no supported shared PM/QA local token and no service-identity read path for these browser-facing owner APIs.
+- Existing authorized local credentials successfully exercised PM and QA directly as the same production user. PM dashboard/Gantt/effort returned 200; QA dashboard/suites/defects returned 200 for all five bound scopes. The Account ecosystem password was not available non-interactively, so those owner facts could not be passed through production `project_truth/v1` without bypassing auth.
+- PM owner truth was green, with zero schedule items/milestones/dependencies and a nonempty effort summary. QA owner truth was authoritatively empty across all five scopes: zero tests, suites, open/blocking defects, and no evidence completeness. These safe facts are owner evidence, not an OIDA normalization match.
+- Infra `GET /api/v1/designs` authoritatively returned an empty catalog. The stored design pointer still returns 404, so the correct intended state is `UNBOUND`, not a guessed replacement. Updating the binding through the supported workflow is blocked by the same unavailable Account session; no database bypass was used.
+- Wrangler remains unauthenticated. Cloudflare's GitHub App creates a queued, zero-run check suite but no deployment or GitHub deployment record; re-request through the authenticated GitHub API returned 404. Production continues to serve `index-Dgr_WjjG.js` / `index-BdiZJCCk.css`, while the accepted build is `index-BGNniC9R.js` / `index-DY3WuLkC.css`.
+- The documented Infra toolchain was restored locally: fakecloud was started, OpenTofu was already installed, and the full suite passed 361 tests with 8 skips.
+- A healthy snapshot plans 21 calls: PM 3, QA 15 (three endpoints for each of five explicit scopes), Infra 3. There are no duplicated bindings or retries. The QA fan-out is a scope-by-endpoint N×3 pattern; no owner batch endpoint exists, and no optimization was made without authenticated integrated latency evidence.
+
+V2 disposition remains: implementation `ACCEPTED`; runtime `PARTIAL`; production `PARTIAL`; full closure `PARTIAL`.
+
 ## OIDA R17.1.2 — Final report
 
 ```text
