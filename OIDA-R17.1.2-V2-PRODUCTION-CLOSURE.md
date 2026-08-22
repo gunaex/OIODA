@@ -136,3 +136,6 @@ Document 132/132, focused truth 12/12, PM 38/38, QA 101 passed / 5 skipped, and 
 The normal Cloudflare OAuth and OIDA Account Again login pages were opened during V3. Neither interactive authorization completed. Wrangler remained unauthenticated, no valid ecosystem session became available, production retained its old asset hashes, and the supported Infra binding workflow could not be invoked.
 
 No V2 evidence was invalidated. The access boundary is now classified more precisely as `REQUIRES_USER_LOGIN`, and full closure remains `PARTIAL`.
+# V4 Final Closure Addendum (2026-08-22)
+
+The V2 partial outcome is preserved below. V4 completed the missing supported-login work, deployed the exact frontend through the established direct Wrangler Pages path, deployed the minimal Document binding repair as Fly release v19, and proved authenticated production behavior. The final binding is PM `BOUND`, five QA scopes `BOUND`, and Infra explicitly `UNBOUND`; production truth and HD-MIG-01 precheck both return HTTP 200. See `OIDA-R17.1.2-FULL-CLOSURE.md`.

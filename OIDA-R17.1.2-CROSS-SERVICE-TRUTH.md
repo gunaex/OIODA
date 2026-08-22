@@ -210,3 +210,6 @@ COMBINED_LATENCY=measured per response; live evidence blocked
 DOWNSTREAM_CALL_COUNT=9 healthy; 0 for fully unbound
 R17_1_2=ACCEPTED (all 15 implementation criteria met; browser/production validation remains explicitly environment-blocked)
 ```
+# V4 Final Closure Addendum (2026-08-22)
+
+The V1 degraded-runtime findings below are retained as historical evidence. V4 completed the authenticated production path for `prj_853bcc5700a54c8db170`: PM is `OK`, QA is `OK`, and Infra is explicitly `UNBOUND`. The supported binding update now clears the contradictory legacy Infra pointer when an explicit unbind is saved. Production `project_truth/v1` returned HTTP 200 in 137.6 ms of service time with 18 downstream calls (PM 3, QA 15, Infra 0). The HD-MIG-01 precheck consumed that same snapshot and returned `NOT_READY`: PM schedule `MISSING`, QA readiness `MISSING`, and both Infra factors `UNKNOWN` because Infra is unbound. Full evidence is consolidated in `OIDA-R17.1.2-FULL-CLOSURE.md`.

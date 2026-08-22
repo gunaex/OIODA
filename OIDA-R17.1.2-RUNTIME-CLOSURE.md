@@ -81,3 +81,6 @@ V3 retried only the two approved interactive access paths. `wrangler login` open
 Production therefore continues to serve the prior frontend bundle, the invalid Infra pointer remains unchanged, and integrated authenticated truth/browser validation remain blocked. No protected credential store was bypassed and no direct database mutation was used.
 
 V3 final state remains: implementation `ACCEPTED`; runtime `PARTIAL`; production `PARTIAL`; full closure `PARTIAL`. The remaining actions require an authorized user to complete the normal Cloudflare and Account Again login flows locally; no secret should be sent through chat.
+# V4 Final Closure Addendum (2026-08-22)
+
+This earlier runtime report remains the record of the degraded validation pass. V4 subsequently restored the supported Account and Cloudflare sessions, corrected the production Infra binding from the invalid legacy pointer to explicit `UNBOUND`, and reran authenticated truth and precheck successfully. Final production truth is PM `OK`, QA `OK`, Infra `UNBOUND`; QA owner calls were 15/15 HTTP 200 with authoritative empty data, and Infra received zero downstream calls. See `OIDA-R17.1.2-FULL-CLOSURE.md` for the final acceptance evidence.

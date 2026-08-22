@@ -100,3 +100,6 @@ No password, token, or cookie should be provided through chat.
 - Runtime: `PARTIAL`
 - Production: `PARTIAL`
 - Full closure: `PARTIAL`
+# V4 Closure Supersession (2026-08-22)
+
+This V3 report is retained as the precise history of the login-blocked attempt. The sessions were later restored through the normal supported login flows, so its blockers are now closed rather than erased. The production binding, truth, precheck, frontend, and browser acceptance evidence is recorded in `OIDA-R17.1.2-FULL-CLOSURE.md`.
