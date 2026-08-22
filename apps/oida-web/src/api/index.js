@@ -282,6 +282,12 @@ export const humanApi = {
     get("da", `/projects/${projectId}/human-deliverables/${code}/impact-confirmations`),
   reviewImpact: (projectId, code, body) =>
     post("da", `/projects/${projectId}/human-deliverables/${code}/impact-confirmations`, body),
+  previewImpactAction: (projectId, code, body) =>
+    post("da", `/projects/${projectId}/human-deliverables/${code}/impact-actions/preview`, body),
+  executeImpactAction: (projectId, code, body) =>
+    post("da", `/projects/${projectId}/human-deliverables/${code}/impact-actions/execute`, body),
+  impactActionHistory: (projectId) => get("da", `/projects/${projectId}/impact-actions`),
+  impactActionRegistry: () => get("da", "/impact-actions/registry"),
   aiReviewer: (projectId, code, body) =>
     post("da", `/projects/${projectId}/human-deliverables/${code}/ai-reviewer`, body || {}),
   aiStatus: () => get("da", "/reviewer-ai/status"),

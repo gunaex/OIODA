@@ -17,6 +17,7 @@ from . import catalog as cat
 from . import human as hsvc
 from . import reviewer as rsvc
 from . import impact as isvc
+from . import action_routing as arsvc
 from .standards import BY_NAME
 
 router = APIRouter(prefix="/api")
@@ -238,6 +239,13 @@ class ImpactReviewIn(BaseModel):
     change_id: str | None = None
 
 
+class ImpactActionIn(BaseModel):
+    action_type: str
+    confirmation_id: str
+    evidence_hash: str
+    parameters: dict = {}
+
+
 @router.post("/projects/{project_id}/human-deliverables/{human_code}/impact-confirmations")
 def review_impact_relationship(project_id: str, human_code: str, body: ImpactReviewIn,
                                db: Session = Depends(db_session), actx=Depends(actor_ctx)):
@@ -259,6 +267,46 @@ def impact_confirmation_history(project_id: str, human_code: str,
     project = _project(db, project_id)
     packet = rsvc.build_packet(db, project, human_code)
     return packet["impact_confirmations"]
+
+
+@router.get("/impact-actions/registry")
+def impact_action_registry(actx=Depends(actor_ctx)):
+    return arsvc.registry()
+
+
+@router.post("/projects/{project_id}/human-deliverables/{human_code}/impact-actions/preview")
+def preview_impact_action(project_id: str, human_code: str, body: ImpactActionIn,
+                          db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    project = _project(db, project_id)
+    packet = rsvc.build_packet(db, project, human_code)
+    if body.evidence_hash != packet["evidence_packet_hash"]:
+        raise svc.DomainError("Action preview is STALE", status_code=409)
+    return arsvc.preview(db, project, action_type=body.action_type,
+                         confirmation_id=body.confirmation_id,
+                         current_evidence_hash=packet["evidence_packet_hash"],
+                         parameters=body.parameters)
+
+
+@router.post("/projects/{project_id}/human-deliverables/{human_code}/impact-actions/execute")
+def execute_impact_action(project_id: str, human_code: str, body: ImpactActionIn,
+                          authorization: str | None = Header(default=None),
+                          db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    project = _project(db, project_id)
+    packet = rsvc.build_packet(db, project, human_code)
+    if body.evidence_hash != packet["evidence_packet_hash"]:
+        raise svc.DomainError("Action is STALE", status_code=409)
+    return arsvc.execute(db, project, action_type=body.action_type,
+                         confirmation_id=body.confirmation_id,
+                         current_evidence_hash=packet["evidence_packet_hash"],
+                         parameters=body.parameters, actor=actx,
+                         authorization=authorization)
+
+
+@router.get("/projects/{project_id}/impact-actions")
+def impact_action_history(project_id: str, db: Session = Depends(db_session),
+                          actx=Depends(actor_ctx)):
+    project = _project(db, project_id)
+    return arsvc.history(db, project.id)
 
 
 @router.post("/projects/{project_id}/human-deliverables/{human_code}/ai-reviewer")

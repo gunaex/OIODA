@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { humanApi } from "../api";
 import { useProjectCtx } from "../hooks/useProject";
-import { canRetryAi, impactSections, isAiGuidanceCurrent, validCitations } from "../lib/reviewer";
+import { canRetryAi, impactSections, isAiGuidanceCurrent, routedActionForReview, validCitations } from "../lib/reviewer";
 import {
   Card, CardHeader, StatCard, Table, Tr, Td, Badge, Loading, OidaError, formatDateTime,
 } from "../components/ui";
@@ -65,6 +65,9 @@ export default function Deliverables() {
   const [aiStatus, setAiStatus] = useState(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [showAi, setShowAi] = useState(false);
+  const [actionPreview, setActionPreview] = useState(null);
+  const [actionResult, setActionResult] = useState(null);
+  const [actionBusy, setActionBusy] = useState(false);
   const [resolveForm, setResolveForm] = useState({ gate: null, reason: "" });
 
   const base = `/projects/${project?.id}`;
@@ -83,6 +86,7 @@ export default function Deliverables() {
   async function openDetail(code) {
     setSelected(code); setError(null); setBusy(true);
     setReviewEvidence(null); setReviewEvidenceError(null); setAiGuidance(null); setAiStatus(null); setShowAi(false);
+    setActionPreview(null); setActionResult(null);
     try {
       const d = await humanApi.detail(project.id, code);
       setDetail(d);
@@ -200,6 +204,34 @@ export default function Deliverables() {
       await refreshReviewerEvidence();
     } catch (e) { setError(e.message || String(e)); }
     finally { setBusy(false); }
+  }
+
+  async function previewRoutedAction(review) {
+    const actionType = routedActionForReview(review);
+    if (!actionType) return;
+    setActionBusy(true); setActionResult(null);
+    try {
+      const preview = await humanApi.previewImpactAction(project.id, selected, {
+        action_type: actionType, confirmation_id: review.confirmation_id,
+        evidence_hash: reviewEvidence.evidence_packet_hash, parameters: {},
+      });
+      setActionPreview(preview);
+    } catch (e) { setActionResult({ status: "FAILED", failure_detail: e.message || String(e) }); }
+    finally { setActionBusy(false); }
+  }
+
+  async function executeRoutedAction() {
+    if (!actionPreview?.executable) return;
+    setActionBusy(true);
+    try {
+      const result = await humanApi.executeImpactAction(project.id, selected, {
+        action_type: actionPreview.action_type, confirmation_id: actionPreview.confirmation_id,
+        evidence_hash: reviewEvidence.evidence_packet_hash, parameters: actionPreview.parameters || {},
+      });
+      setActionResult(result); setActionPreview(null);
+      await refreshReviewerEvidence();
+    } catch (e) { setActionResult({ status: "FAILED", failure_detail: e.message || String(e) }); }
+    finally { setActionBusy(false); }
   }
 
   async function doResolve() {
@@ -545,6 +577,12 @@ export default function Deliverables() {
                       onHideAi={() => setShowAi(false)}
                       onReviewImpact={reviewImpactRelationship}
                       impactBusy={busy}
+                      actionPreview={actionPreview}
+                      actionResult={actionResult}
+                      actionBusy={actionBusy}
+                      onPreviewAction={previewRoutedAction}
+                      onExecuteAction={executeRoutedAction}
+                      onCancelAction={() => setActionPreview(null)}
                     />
 
                     <div className="mb-4 flex flex-wrap gap-2">
@@ -686,7 +724,7 @@ function ImpactReviewButtons({ disabled, onDecision }) {
   </div>;
 }
 
-function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, showAi, onShowAi, onRefreshAi, onHideAi, onReviewImpact, impactBusy }) {
+function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, showAi, onShowAi, onRefreshAi, onHideAi, onReviewImpact, impactBusy, actionPreview, actionResult, actionBusy, onPreviewAction, onExecuteAction, onCancelAction }) {
   if (error) return <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Reviewer evidence unavailable: {error}. Existing review controls remain available.</div>;
   if (!packet) return <div className="mb-4 rounded-lg border border-gray-200 p-3 text-xs text-gray-500">Preparing deterministic reviewer evidence…</div>;
   const brief = packet.deterministic_brief;
@@ -789,6 +827,26 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
             <div className="text-gray-500">Origin {review.relationship_class_at_review} · evidence {(review.evidence_hash || "").slice(0, 12)} · {review.reason || "No reason supplied"}</div>
           </div>)}</div>
         </details>}
+        {(packet.impact_confirmations?.effective || []).some(routedActionForReview) && <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-indigo-900">Controlled Owner Actions</div>
+          <div className="mt-1 text-xs text-indigo-800">Relationship confirmation is complete. Execution is a separate explicit human decision.</div>
+          <div className="mt-2 flex flex-wrap gap-2">{packet.impact_confirmations.effective.filter(routedActionForReview).map((review) => <button key={review.confirmation_id} disabled={actionBusy} onClick={() => onPreviewAction(review)} className="rounded bg-indigo-700 px-3 py-1.5 text-xs text-white disabled:opacity-50">Review {routedActionForReview(review) === "ROUTE_PM_DELIVERY_HANDOFF" ? "PM Handoff" : "QA Handoff"}</button>)}</div>
+        </div>}
+        {actionPreview && <div className="mt-3 rounded-lg border-2 border-indigo-300 bg-white p-3 text-xs">
+          <div className="font-semibold text-indigo-950">Action Preview — {actionPreview.label}</div>
+          <div className="mt-2">Target: {actionPreview.target_service} / {actionPreview.target_entity_id || "binding unavailable"}</div>
+          <div className="mt-1">What will change: {actionPreview.what_will_change}</div>
+          <div className="mt-1 text-gray-600">{actionPreview.what_will_not_change}</div>
+          <div className="mt-1">Evidence: {(actionPreview.evidence_refs || []).join(" · ")}</div>
+          {actionPreview.required_input?.length > 0 && <div className="mt-2 text-amber-700">Required input: {actionPreview.required_input.join(", ")}</div>}
+          <div className="mt-3 flex gap-2"><button onClick={onCancelAction} className="rounded border border-gray-300 px-3 py-1.5">Cancel</button><button disabled={!actionPreview.executable || actionBusy} onClick={onExecuteAction} className="rounded bg-indigo-700 px-3 py-1.5 text-white disabled:opacity-50">Execute Human-Approved Action</button></div>
+        </div>}
+        {actionResult && <div className={`mt-3 rounded-lg border p-3 text-xs ${actionResult.status === "SUCCEEDED" ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
+          <div className="font-semibold">Action {actionResult.status === "SUCCEEDED" ? "completed by owner service" : "not completed"}</div>
+          {actionResult.result_ref && <div className="mt-1">{actionResult.result_ref.service} result {actionResult.result_ref.entity_id} · {actionResult.result_ref.status}</div>}
+          {actionResult.failure_category && <div className="mt-1">{actionResult.failure_category}: {actionResult.failure_detail}</div>}
+          <div className="mt-1 text-gray-600">Impact is not automatically resolved.</div>
+        </div>}
       </div>
 
       <div className="border-t border-violet-200 bg-violet-50 p-3">

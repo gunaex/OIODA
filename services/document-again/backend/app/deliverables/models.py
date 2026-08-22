@@ -415,3 +415,39 @@ class ImpactConfirmation(Base):
             "stale": stale,
             "authority_note": "Human confirmation is project context, not owner-service truth or customer acceptance.",
         }
+
+
+class ImpactActionRoute(Base):
+    """Local orchestration evidence for one explicitly human-executed route."""
+    __tablename__ = "impact_action_routes"
+    __table_args__ = (UniqueConstraint("idempotency_key"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("iar"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    impact_candidate_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    confirmation_id: Mapped[str] = mapped_column(ForeignKey("impact_confirmations.id"), index=True)
+    action_type: Mapped[str] = mapped_column(String(50), index=True)
+    target_service: Mapped[str] = mapped_column(String(30))
+    target_entity_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    requested_by: Mapped[str] = mapped_column(String(200))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    precondition_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    evidence_hash: Mapped[str] = mapped_column(String(64), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    result_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    failure_category: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class ImpactActionEvent(Base):
+    """Immutable lifecycle event for an action route."""
+    __tablename__ = "impact_action_events"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("iae"))
+    action_route_id: Mapped[str] = mapped_column(ForeignKey("impact_action_routes.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(50), index=True)
+    actor_user_id: Mapped[str] = mapped_column(String(200))
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

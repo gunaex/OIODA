@@ -37,3 +37,11 @@ export function effectiveImpactContext(review) {
   if (review.stale || review.human_review_status === "STALE") return "STALE";
   return review.decision === "CONFIRMED" ? "HUMAN_CONFIRMED" : review.decision;
 }
+
+export function routedActionForReview(review) {
+  if (!review || effectiveImpactContext(review) !== "HUMAN_CONFIRMED") return null;
+  const target = review.origin_relationship?.target_id;
+  if (target === "UNRESOLVED:PM") return "ROUTE_PM_DELIVERY_HANDOFF";
+  if (target === "UNRESOLVED:QA") return "ROUTE_QA_VALIDATION_HANDOFF";
+  return null;
+}

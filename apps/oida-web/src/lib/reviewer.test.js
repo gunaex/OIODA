@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aiDisplayState, canRetryAi, canReviewRelationship, effectiveImpactContext, impactSections, isAiGuidanceCurrent, validCitations } from "./reviewer.js";
+import { aiDisplayState, canRetryAi, canReviewRelationship, effectiveImpactContext, impactSections, isAiGuidanceCurrent, routedActionForReview, validCitations } from "./reviewer.js";
 
 test("AI guidance is current only for the exact evidence hash", () => {
   assert.equal(isAiGuidanceCurrent({ evidence_packet_hash: "a" }, { evidence_packet_hash: "a" }), true);
@@ -54,4 +54,12 @@ test("human confirmation is an effective context without rewriting origin", () =
   assert.equal(effectiveImpactContext({ decision: "CONFIRMED", stale: false }), "HUMAN_CONFIRMED");
   assert.equal(effectiveImpactContext({ decision: "REJECTED", stale: false }), "REJECTED");
   assert.equal(effectiveImpactContext({ decision: "CONFIRMED", stale: true }), "STALE");
+});
+
+test("controlled routing is allowlisted only for current human-confirmed PM or QA context", () => {
+  const base = { decision: "CONFIRMED", stale: false };
+  assert.equal(routedActionForReview({ ...base, origin_relationship: { target_id: "UNRESOLVED:PM" } }), "ROUTE_PM_DELIVERY_HANDOFF");
+  assert.equal(routedActionForReview({ ...base, origin_relationship: { target_id: "UNRESOLVED:QA" } }), "ROUTE_QA_VALIDATION_HANDOFF");
+  assert.equal(routedActionForReview({ ...base, origin_relationship: { target_id: "UNRESOLVED:INFRA" } }), null);
+  assert.equal(routedActionForReview({ ...base, stale: true, origin_relationship: { target_id: "UNRESOLVED:QA" } }), null);
 });
