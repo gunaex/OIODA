@@ -71,7 +71,9 @@ The Projects page adds a responsive Portfolio Command Center with labelled proje
 Document Again **202 passed**; portfolio **8 passed**; frontend **11 passed**; gateway **3 passed**. Coverage includes authorization set, scale, priority, partial failure, race-safe checkpoint, project independence, first-seen, access removal, scoped citations, and AI absence.
 
 ## 18. Deployment
-Pending CI and production rollout.
+Implementation `310ddb0` passed CI run `32568496732`. Document Again deployed as Fly release **29**, image `deployment-01M0MH8H43MDAPJK2B5W93FE0P`, with one passing check and HTTP 200 health. Runtime inspection confirmed `portfolio_review_checkpoints` exists.
+
+OIDA Web deployed as Cloudflare Pages `82929d71`, serving `index-DuWk-MFq.js` and `index-Dy-6Eraf.css`. Anonymous Portfolio read and Mark Reviewed requests return HTTP 401. No owner, Account, Conductor, or Gateway component changed.
 
 ## 19. Operational Backlog
 - Carry forward prior operational items.
@@ -117,4 +119,22 @@ NEW_OWNER_ACTION_TYPES=0
 AUTONOMOUS_ACTIONS=0
 NEW_DATABASE=NO
 NEW_TABLE=portfolio_review_checkpoints
+PORTFOLIO_LATENCY=RESPONSE_MEASURED
+DOWNSTREAM_CALLS=SUM_OF_AUTHORIZED_PROJECT_TRUTH_CALLS
+DOCUMENT_TESTS=202_PASS
+PORTFOLIO_TESTS=8_PASS
+CHECKPOINT_TESTS=PASS
+COPILOT_TESTS=PASS_DETERMINISTIC_SCOPED
+AI_SAFETY_TESTS=PASS
+FRONTEND_TESTS=11_PASS
+GATEWAY_TESTS=3_PASS
+LINT=PASS_WITH_PRE_EXISTING_WARNINGS
+BUILD=PASS_WITH_PRE_EXISTING_BUNDLE_WARNING
+DEPLOYMENT=PASS_DOCUMENT_RELEASE_29_AND_WEB_82929D71
+PRODUCTION_REVISION_PROOF=PASS
+AUTHENTICATED_PORTFOLIO_DOGFOOD=OPERATIONAL_BACKLOG
+SECURITY_REGRESSION=PASS
+GOVERNANCE_REGRESSION=PASS
+CUSTOMER_ACCEPTANCE_INTEGRITY=PASS
+R18_1=ACCEPTED_WITH_OPERATIONAL_GAPS
 ```
