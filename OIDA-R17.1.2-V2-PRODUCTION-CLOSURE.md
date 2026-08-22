@@ -130,3 +130,9 @@ Document 132/132, focused truth 12/12, PM 38/38, QA 101 passed / 5 skipped, and 
 - Runtime: `PARTIAL`
 - Production: `PARTIAL`
 - Full R17.1.2 closure: `PARTIAL`
+
+## V3 access-restoration addendum
+
+The normal Cloudflare OAuth and OIDA Account Again login pages were opened during V3. Neither interactive authorization completed. Wrangler remained unauthenticated, no valid ecosystem session became available, production retained its old asset hashes, and the supported Infra binding workflow could not be invoked.
+
+No V2 evidence was invalidated. The access boundary is now classified more precisely as `REQUIRES_USER_LOGIN`, and full closure remains `PARTIAL`.

@@ -159,6 +159,16 @@ Closure classification: implementation `ACCEPTED`; runtime `PARTIAL`; production
 
 V2 disposition remains: implementation `ACCEPTED`; runtime `PARTIAL`; production `PARTIAL`; full closure `PARTIAL`.
 
+## 21. V3 access-restoration attempt — 2026-08-22
+
+- V3 started clean at `83e962b5564b12cebc5cdc2a2ad8a4845aab385a`; no application source had changed.
+- The current accepted build still produces `index-BGNniC9R.js` / `index-DY3WuLkC.css`, while production still serves `index-Dgr_WjjG.js` / `index-BdiZJCCk.css`.
+- The normal `wrangler login` OAuth flow and the production OIDA login page were opened. Neither produced an authenticated session during the validation window. Wrangler remained logged out and no valid Account Again ecosystem token appeared in browser storage.
+- Because Cloudflare deployment and Account Again binding/truth operations require those normal interactive authorizations, no frontend deployment, Infra binding mutation, authenticated truth request, or browser acceptance was performed.
+- V3 introduced no auth bypass, password forwarding, static credential, fake Infra design, customer acceptance, or application code change.
+
+V3 disposition: `CLOUDFLARE_AUTH=REQUIRES_USER_LOGIN`, `ACCOUNT_HUMAN_SESSION=REQUIRES_USER_LOGIN`; implementation `ACCEPTED`, runtime `PARTIAL`, production `PARTIAL`, full closure `PARTIAL`.
+
 ## OIDA R17.1.2 — Final report
 
 ```text

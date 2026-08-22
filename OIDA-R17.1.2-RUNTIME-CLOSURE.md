@@ -73,3 +73,11 @@ Cloudflare remains blocked: Wrangler is logged out, no Cloudflare token exists i
 The Infra extended-test blocker is closed. With repo-documented fakecloud and OpenTofu, the full suite completed with 361 passed and 8 skipped.
 
 V2 remains `PARTIAL`: successful direct owner reads improve runtime evidence, but production normalization, frontend revision, binding correction, Overview/precheck UI, and browser proof remain blocked.
+
+## V3 addendum — interactive access restoration
+
+V3 retried only the two approved interactive access paths. `wrangler login` opened Cloudflare OAuth, and the normal production OIDA login page was opened in Chrome. Cloudflare authorization did not complete, Wrangler remained unauthenticated, and browser storage contained no valid Account Again ecosystem token.
+
+Production therefore continues to serve the prior frontend bundle, the invalid Infra pointer remains unchanged, and integrated authenticated truth/browser validation remain blocked. No protected credential store was bypassed and no direct database mutation was used.
+
+V3 final state remains: implementation `ACCEPTED`; runtime `PARTIAL`; production `PARTIAL`; full closure `PARTIAL`. The remaining actions require an authorized user to complete the normal Cloudflare and Account Again login flows locally; no secret should be sent through chat.
