@@ -493,3 +493,19 @@ class ImpactResolutionEvent(Base):
     actor_user_id: Mapped[str] = mapped_column(String(200))
     transition_hash: Mapped[str] = mapped_column(String(64), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+class ProjectReviewCheckpoint(Base):
+    """OIDA-owned, per-user/project explicit briefing acknowledgement."""
+    __tablename__ = "project_review_checkpoints"
+    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("prc"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[str] = mapped_column(String(200), index=True)
+    reviewed_through: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    reviewed_evidence_cursors: Mapped[list] = mapped_column(JSON, default=list)
+    briefing_cursor: Mapped[str] = mapped_column(String(64))
+    review_source: Mapped[str] = mapped_column(String(40), default="COMMAND_CENTER_MARK_REVIEWED")
+    acknowledged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)

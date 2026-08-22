@@ -86,6 +86,9 @@ export const documentApi = {
   projectTruth: (id) => get("da", `/projects/${id}/truth`, { headers: daHeaders() }),
   commandCenter: (id) => get("da", `/projects/${id}/command-center`, { headers: daHeaders() }),
   projectCopilot: (id, body) => post("da", `/projects/${id}/copilot`, body, { headers: daHeaders() }),
+  projectBriefing: (id) => get("da", `/projects/${id}/briefing`, { headers: daHeaders() }),
+  markBriefingReviewed: (id, body) => post("da", `/projects/${id}/briefing/mark-reviewed`, body, { headers: daHeaders() }),
+  briefingAi: (id) => post("da", `/projects/${id}/briefing/ai`, {}, { headers: daHeaders() }),
   generateSuggestions: (id, mode = "STANDARD") =>
     post("da", `/projects/${id}/suggestions/generate`, { mode }, { headers: daHeaders() }),
   listSuggestions: (id) => get("da", `/projects/${id}/suggestions`, { headers: daHeaders() }),

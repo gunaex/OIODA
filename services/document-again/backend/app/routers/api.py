@@ -112,6 +112,12 @@ class ProjectCopilotIn(BaseModel):
     force: bool = False
 
 
+class BriefingReviewedIn(BaseModel):
+    cutoff: str
+    briefing_cursor: str
+    evidence_cursors: list[str]
+
+
 @router.post("/projects/{project_id}/archive")
 def archive_project(project_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
     svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
@@ -229,7 +235,11 @@ def project_truth(project_id: str, db: Session = Depends(db_session),
 def project_command_center(project_id: str, authorization: str | None = Header(default=None),
                            db: Session = Depends(db_session), actx=Depends(actor_ctx)):
     from ..command_center import compose
-    return compose(db, svc.guard_project(db, project_id), authorization=authorization)
+    from ..briefing import generate
+    project = svc.guard_project(db, project_id)
+    center = compose(db, project, authorization=authorization)
+    center["daily_briefing"] = generate(db, project, user_id=actx.id, center=center)
+    return center
 
 
 @router.post("/projects/{project_id}/copilot")
@@ -240,6 +250,31 @@ def project_copilot(project_id: str, body: ProjectCopilotIn,
     center = compose(db, svc.guard_project(db, project_id), authorization=authorization)
     return copilot(center, query_type=body.query_type, question=body.question,
                    user_role=body.user_role, force=body.force)
+
+
+@router.get("/projects/{project_id}/briefing")
+def project_briefing(project_id: str, authorization: str | None = Header(default=None),
+                     db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    from ..briefing import generate
+    return generate(db, svc.guard_project(db, project_id), user_id=actx.id, authorization=authorization)
+
+
+@router.post("/projects/{project_id}/briefing/mark-reviewed")
+def mark_project_briefing_reviewed(project_id: str, body: BriefingReviewedIn,
+                                   db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    from ..briefing import acknowledge
+    project = svc.guard_project(db, project_id)
+    return acknowledge(db, project, user_id=actx.id, cutoff=body.cutoff,
+        briefing_cursor=body.briefing_cursor, evidence_cursors=body.evidence_cursors,
+        actor_id=actx.id)
+
+
+@router.post("/projects/{project_id}/briefing/ai")
+def project_briefing_ai(project_id: str, authorization: str | None = Header(default=None),
+                        db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    from ..briefing import ai_explain, generate
+    packet = generate(db, svc.guard_project(db, project_id), user_id=actx.id, authorization=authorization)
+    return ai_explain(packet)
 
 
 # ---------------------------------------------------------------------------
