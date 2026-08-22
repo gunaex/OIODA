@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { humanApi } from "../api";
 import { useProjectCtx } from "../hooks/useProject";
+import { isAiGuidanceCurrent, validCitations } from "../lib/reviewer";
 import {
   Card, CardHeader, StatCard, Table, Tr, Td, Badge, Loading, OidaError, formatDateTime,
 } from "../components/ui";
 import {
-  Download, RefreshCw, Stamp,
+  Download, RefreshCw, Stamp, Sparkles,
 } from "lucide-react";
 
 const APPL_TONE = { MANDATORY: "rose", RECOMMENDED: "amber", CONDITIONAL: "gray", OPTIONAL: "gray" };
@@ -58,6 +59,11 @@ export default function Deliverables() {
   const [detail, setDetail] = useState(null);
   const [signoffForm, setSignoffForm] = useState({ decision: "ACCEPT", comment: "", signer_role: "", exceptions: "", evidence_class: "CUSTOMER", purpose: "ACCEPTANCE" });
   const [brief, setBrief] = useState(null);
+  const [reviewEvidence, setReviewEvidence] = useState(null);
+  const [reviewEvidenceError, setReviewEvidenceError] = useState(null);
+  const [aiGuidance, setAiGuidance] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [showAi, setShowAi] = useState(false);
   const [resolveForm, setResolveForm] = useState({ gate: null, reason: "" });
 
   const base = `/projects/${project?.id}`;
@@ -75,9 +81,15 @@ export default function Deliverables() {
 
   async function openDetail(code) {
     setSelected(code); setError(null); setBusy(true);
+    setReviewEvidence(null); setReviewEvidenceError(null); setAiGuidance(null); setShowAi(false);
     try {
       const d = await humanApi.detail(project.id, code);
       setDetail(d);
+      if (d.instance) {
+        humanApi.reviewerEvidence(project.id, code, signoffForm.signer_role || undefined, signoffForm.purpose)
+          .then(setReviewEvidence)
+          .catch((e) => setReviewEvidenceError(e.message || String(e)));
+      }
     } catch (e) { setError(e.message || String(e)); }
     finally { setBusy(false); }
   }
@@ -145,6 +157,27 @@ export default function Deliverables() {
       const b = await humanApi.brief(project.id, selected, signoffForm.signer_role || undefined);
       setBrief(b);
     } catch (e) { setBrief(null); }
+  }
+
+  async function refreshReviewerEvidence() {
+    setReviewEvidenceError(null);
+    try {
+      const packet = await humanApi.reviewerEvidence(project.id, selected, signoffForm.signer_role || undefined, signoffForm.purpose);
+      setReviewEvidence(packet);
+      if (aiGuidance?.evidence_packet_hash !== packet.evidence_packet_hash) setAiGuidance(null);
+    } catch (e) { setReviewEvidenceError(e.message || String(e)); }
+  }
+
+  async function loadAiGuidance(force = false) {
+    setShowAi(true); setAiBusy(true);
+    try {
+      const guidance = await humanApi.aiReviewer(project.id, selected, {
+        role: signoffForm.signer_role || null, purpose: signoffForm.purpose, force,
+      });
+      setAiGuidance(guidance);
+    } catch (e) {
+      setAiGuidance({ status: "UNAVAILABLE", message: e.message || "AI guidance is unavailable. Deterministic review remains available." });
+    } finally { setAiBusy(false); }
   }
 
   async function doResolve() {
@@ -477,6 +510,18 @@ export default function Deliverables() {
                       <div><span className="font-semibold text-gray-500">Material Change</span><div>{inst.material_change}</div></div>
                     </div>
 
+                    <ReviewerChangeBrief
+                      packet={reviewEvidence}
+                      error={reviewEvidenceError}
+                      onRefresh={refreshReviewerEvidence}
+                      ai={aiGuidance}
+                      aiBusy={aiBusy}
+                      showAi={showAi}
+                      onShowAi={() => loadAiGuidance(false)}
+                      onRefreshAi={() => loadAiGuidance(true)}
+                      onHideAi={() => setShowAi(false)}
+                    />
+
                     <div className="mb-4 flex flex-wrap gap-2">
                       {inst.lifecycle_status === "DRAFT" && <button onClick={() => transition("INTERNAL_REVIEW")} disabled={busy} className="rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50">Submit for Internal Review</button>}
                       {inst.lifecycle_status === "INTERNAL_REVIEW" && <button onClick={() => transition("CUSTOMER_REVIEW")} disabled={busy} className="rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50">Send to Customer Review</button>}
@@ -584,6 +629,108 @@ export default function Deliverables() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function EvidenceItem({ item }) {
+  if (!item) return null;
+  return (
+    <details id={`review-evidence-${item.evidence_id}`} className="rounded-lg border border-gray-200 bg-white p-2 text-xs">
+      <summary className="flex cursor-pointer list-none items-center gap-2">
+        <span className="font-mono font-semibold text-blue-700">{item.evidence_id}</span>
+        <Badge tone={item.change === "NOT_RECORDED" ? "amber" : item.change === "CURRENT" ? "gray" : "blue"}>{item.change}</Badge>
+        <span className="font-medium">{item.summary}</span>
+      </summary>
+      <div className="mt-2 grid gap-1 border-t border-gray-100 pt-2 text-gray-600">
+        <div>Domain: {item.domain} · Source: {item.source}</div>
+        {item.path && <div>Path: <span className="font-mono">{item.path}</span></div>}
+        {item.before !== null && item.before !== undefined && <div className="break-all">Before: {JSON.stringify(item.before)}</div>}
+        {item.after !== null && item.after !== undefined && <div className="break-all">After: {JSON.stringify(item.after)}</div>}
+        <div className="break-all">Provenance: {JSON.stringify(item.provenance || {})}</div>
+      </div>
+    </details>
+  );
+}
+
+function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiBusy, showAi, onShowAi, onRefreshAi, onHideAi }) {
+  if (error) return <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Reviewer evidence unavailable: {error}. Existing review controls remain available.</div>;
+  if (!packet) return <div className="mb-4 rounded-lg border border-gray-200 p-3 text-xs text-gray-500">Preparing deterministic reviewer evidence…</div>;
+  const brief = packet.deterministic_brief;
+  const byId = Object.fromEntries(packet.evidence_items.map((item) => [item.evidence_id, item]));
+  const aiSections = [
+    ["Top things to focus on", "focus_items"],
+    ["Risks and exceptions", "risks_and_exceptions"],
+    ["Questions to consider", "reviewer_questions"],
+    ["Suggested reading", "suggested_reading"],
+  ];
+  const aiCurrent = isAiGuidanceCurrent(packet, ai);
+  return (
+    <div className="mb-4 overflow-hidden rounded-xl border border-blue-200 bg-blue-50/40">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-100 p-3">
+        <div>
+          <div className="text-sm font-semibold text-gray-900">Reviewer Change Brief</div>
+          <div className="text-xs text-gray-600">{packet.document.document_id} · {brief.comparison.from_version} → {brief.comparison.to_version} · deterministic evidence first</div>
+        </div>
+        <button onClick={onRefresh} className="inline-flex items-center gap-1 rounded border border-blue-200 bg-white px-2 py-1 text-xs text-blue-700"><RefreshCw size={12} /> Refresh evidence</button>
+      </div>
+      <div className="grid gap-3 p-3 lg:grid-cols-2">
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Changed</div>
+          {brief.changed.length ? <ul className="mt-2 space-y-1 text-xs">{brief.changed.slice(0, 10).map((e) => <li key={e.evidence_id}><a className="font-mono text-blue-700" href={`#review-evidence-${e.evidence_id}`}>{e.evidence_id}</a> {e.summary}</li>)}</ul> : <div className="mt-2 text-xs text-gray-500">No deterministic changed items recorded.</div>}
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-white p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Your responsibility</div>
+          <div className="mt-2 text-xs font-medium">{brief.responsibility.role} · {brief.responsibility.purpose}</div>
+          <div className="mt-1 text-xs">Confirm: {(brief.responsibility.confirms || []).join("; ") || "—"}</div>
+          <div className="mt-1 text-xs text-gray-600">Not confirming: {(brief.responsibility.excludes || []).join("; ") || "—"}</div>
+        </div>
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">Needs attention / still open</div>
+          {[...brief.needs_attention, ...brief.still_open].length ? <ul className="mt-2 space-y-1 text-xs">{[...brief.needs_attention, ...brief.still_open].slice(0, 10).map((e) => <li key={e.evidence_id}><a className="font-mono text-blue-700" href={`#review-evidence-${e.evidence_id}`}>{e.evidence_id}</a> {e.summary}</li>)}</ul> : <div className="mt-2 text-xs text-gray-500">No recorded attention or open items.</div>}
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-600">
+          <div className="font-semibold uppercase tracking-wide text-gray-500">Evidence identity</div>
+          <div className="mt-2">Packet {packet.contract_version} · {packet.evidence_items.length} items</div>
+          <div className="break-all font-mono text-[10px]">{packet.evidence_packet_hash}</div>
+          {brief.limitations.map((x) => <div key={x} className="mt-1 text-amber-700">{x}</div>)}
+        </div>
+      </div>
+
+      <div className="border-t border-violet-200 bg-violet-50 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="inline-flex items-center gap-1 text-sm font-semibold text-violet-900"><Sparkles size={14} /> AI Reviewer Assistant <Badge tone="violet">Advisory</Badge></div>
+            <div className="text-xs text-violet-700">Grounded in the review evidence shown below. You make the decision.</div>
+          </div>
+          <div className="flex gap-2">
+            {!showAi && <button onClick={onShowAi} className="rounded bg-violet-700 px-3 py-1.5 text-xs text-white">Show AI guidance</button>}
+            {showAi && <button onClick={onRefreshAi} disabled={aiBusy} className="rounded border border-violet-300 bg-white px-3 py-1.5 text-xs text-violet-800">Refresh AI guidance</button>}
+            {showAi && <button onClick={onHideAi} className="rounded border border-violet-300 px-3 py-1.5 text-xs text-violet-800">Hide</button>}
+          </div>
+        </div>
+        {showAi && aiBusy && <div className="mt-3 text-xs text-violet-700">Generating cited guidance… The deterministic brief remains available.</div>}
+        {showAi && !aiBusy && ai && ai.status !== "AVAILABLE" && <div className="mt-3 rounded border border-amber-200 bg-white p-2 text-xs text-amber-800">{ai.message || "AI guidance is unavailable."}</div>}
+        {showAi && !aiBusy && ai?.status === "AVAILABLE" && !aiCurrent && <div className="mt-3 rounded border border-amber-200 bg-white p-2 text-xs text-amber-800">AI guidance is stale for the current evidence. Refresh it before use.</div>}
+        {showAi && !aiBusy && ai?.status === "AVAILABLE" && aiCurrent && (
+          <div className="mt-3 space-y-3">
+            <div className="text-xs text-gray-700">{ai.summary}</div>
+            {aiSections.map(([label, key]) => ai[key]?.length > 0 && <div key={key} className="rounded-lg border border-violet-100 bg-white p-3">
+              <div className="text-xs font-semibold text-violet-900">{label}</div>
+              <ul className="mt-2 space-y-2 text-xs">{ai[key].map((item, idx) => <li key={`${key}-${idx}`}>
+                <div>{item.statement}</div>
+                <div className="mt-1 flex flex-wrap gap-1">{validCitations(packet, item.evidence_ids).map((id) => <a key={id} href={`#review-evidence-${id}`} className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-blue-700">{id}</a>)}</div>
+              </li>)}</ul>
+            </div>)}
+            {ai.limitations?.map((x) => <div key={x} className="text-xs text-amber-700">{x}</div>)}
+          </div>
+        )}
+      </div>
+
+      <details className="border-t border-blue-100 bg-white p-3">
+        <summary className="cursor-pointer text-xs font-semibold text-blue-800">Inspect deterministic evidence ({packet.evidence_items.length})</summary>
+        <div className="mt-2 grid gap-2">{packet.evidence_items.map((item) => <EvidenceItem key={item.evidence_id} item={byId[item.evidence_id]} />)}</div>
+      </details>
     </div>
   );
 }

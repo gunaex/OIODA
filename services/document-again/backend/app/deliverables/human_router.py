@@ -15,6 +15,7 @@ from ..models import Project
 from ..routers.deps import actor_ctx, db_session
 from . import catalog as cat
 from . import human as hsvc
+from . import reviewer as rsvc
 from .standards import BY_NAME
 
 router = APIRouter(prefix="/api")
@@ -198,6 +199,30 @@ def resolve_gate(project_id: str, gate_id: str, body: GateResolveIn,
 def responsibility_brief(project_id: str, human_code: str, role: str | None = None,
                          db: Session = Depends(db_session)):
     return hsvc.responsibility_brief(db, _project(db, project_id), human_code, role)
+
+
+@router.get("/projects/{project_id}/human-deliverables/{human_code}/reviewer-evidence")
+def reviewer_evidence(project_id: str, human_code: str, role: str | None = None,
+                      purpose: str = "REVIEW", db: Session = Depends(db_session),
+                      actx=Depends(actor_ctx)):
+    """Authorized, read-only evidence and deterministic reviewer brief."""
+    return rsvc.build_packet(db, _project(db, project_id), human_code,
+                             role=role, purpose=purpose)
+
+
+class AIReviewerIn(BaseModel):
+    role: str | None = None
+    purpose: str = "REVIEW"
+    force: bool = False
+
+
+@router.post("/projects/{project_id}/human-deliverables/{human_code}/ai-reviewer")
+def ai_reviewer(project_id: str, human_code: str, body: AIReviewerIn,
+                db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    """Generate advisory guidance. This creates no project/domain write."""
+    packet = rsvc.build_packet(db, _project(db, project_id), human_code,
+                               role=body.role, purpose=body.purpose)
+    return rsvc.ai_guidance(packet, force=body.force)
 
 
 class CrAcceptIn(BaseModel):

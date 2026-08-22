@@ -271,6 +271,13 @@ export const humanApi = {
     post("da", `/projects/${projectId}/gates/${gateId}/resolve`, body),
   brief: (projectId, code, role) =>
     get("da", `/projects/${projectId}/human-deliverables/${code}/brief${role ? `?role=${encodeURIComponent(role)}` : ""}`),
+  reviewerEvidence: (projectId, code, role, purpose = "REVIEW") => {
+    const params = new URLSearchParams({ purpose });
+    if (role) params.set("role", role);
+    return get("da", `/projects/${projectId}/human-deliverables/${code}/reviewer-evidence?${params}`);
+  },
+  aiReviewer: (projectId, code, body) =>
+    post("da", `/projects/${projectId}/human-deliverables/${code}/ai-reviewer`, body || {}),
   acceptChangeRequest: (projectId, crCode, body) =>
     post("da", `/projects/${projectId}/change-requests/${crCode}/accept`, body),
   mySignoffs: (projectId) => get("da", `/projects/${projectId}/my-signoffs`),
