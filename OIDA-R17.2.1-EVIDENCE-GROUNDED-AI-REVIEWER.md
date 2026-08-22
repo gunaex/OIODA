@@ -327,3 +327,21 @@ R17_2_1=PARTIAL
 NEXT_RECOMMENDATION:
 Run one fresh authenticated production closure pass over a two-version deliverable; accept R17.2.1 only after evidence, deterministic brief, AI available/unavailable UX, citations, console/network, timings, and manual decision boundary pass.
 ```
+
+## Authenticated Production Closure
+
+R17.2.1-V began from clean `main` at `77ddee960361d2a46b12b4d1e3b0faa3c9bb032d`. Non-authenticated closure checks proved the exact production frontend source (`745010b`, Cloudflare deployment `f51b6998-9377-4fff-9375-c4ef42c529b7`), the deployed Document Again R17.2.1 image (Fly release 21, `deployment-01M0M3FRAC284K09T9D0GSMFMB`), healthy frontend/gateway/document endpoints, and fail-closed reviewer access (HTTP 401 without an Account session).
+
+The prior 32,524.8 ms local AI result was classified from its retained runtime response as `MALFORMED_RESPONSE`: the local `llama3.1:8b` call completed but returned output that failed structured JSON parsing (`JSONDecodeError`). It was not a configured timeout, network failure, retry accumulation, or Conductor routing path. Production currently reports DeepSeek, Gemini, OpenAI, and local providers `NOT_CONFIGURED`; Codex is `NOT_AVAILABLE` by design. No authorized production provider restoration mechanism or credential was present, so no configuration was changed.
+
+A fresh normal Account Again human session was not available in the execution context. Per the closure instruction, no credential, cookie, token, session, API key, or authentication bypass was requested or used. Authenticated project membership, a real two-version target, production evidence/brief/API calls, reviewer UI, citation drill-down, browser network/console, precheck, and manual workflow therefore remain unproven. The outcome remains:
+
+```text
+ACCOUNT_HUMAN_SESSION=REQUIRES_USER_LOGIN
+CLOSURE_BLOCKED_BY_HUMAN_LOGIN
+AI_IMPLEMENTATION=PASS_AUTOMATED
+AI_PROVIDER_RUNTIME=BLOCKED_NOT_CONFIGURED
+R17_2_1=PARTIAL
+```
+
+Full evidence and the closure acceptance matrix are recorded in `OIDA-R17.2.1-PRODUCTION-CLOSURE.md`. No source code or product scope changed in this closure pass.
