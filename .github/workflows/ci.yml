@@ -53,7 +53,9 @@ jobs:
     strategy:
       matrix:
         svc: [account-again, document-again, conductor-again, pm-again, qa-again, infra-again]
-    defaults: { run: { working-directory: services/${{ matrix.svc }} } }
+    defaults:
+      run:
+        working-directory: services/${{ matrix.svc }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
