@@ -105,6 +105,13 @@ class ProjectArchiveIn(BaseModel):
     pass
 
 
+class ProjectCopilotIn(BaseModel):
+    query_type: str = "FOCUS_TODAY"
+    question: str | None = None
+    user_role: str | None = None
+    force: bool = False
+
+
 @router.post("/projects/{project_id}/archive")
 def archive_project(project_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
     svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
@@ -216,6 +223,23 @@ def project_truth(project_id: str, db: Session = Depends(db_session),
                   authorization: str | None = Header(default=None)):
     from ..project_truth import build_project_truth
     return build_project_truth(svc.guard_project(db, project_id), authorization)
+
+
+@router.get("/projects/{project_id}/command-center")
+def project_command_center(project_id: str, authorization: str | None = Header(default=None),
+                           db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    from ..command_center import compose
+    return compose(db, svc.guard_project(db, project_id), authorization=authorization)
+
+
+@router.post("/projects/{project_id}/copilot")
+def project_copilot(project_id: str, body: ProjectCopilotIn,
+                    authorization: str | None = Header(default=None),
+                    db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    from ..command_center import compose, copilot
+    center = compose(db, svc.guard_project(db, project_id), authorization=authorization)
+    return copilot(center, query_type=body.query_type, question=body.question,
+                   user_role=body.user_role, force=body.force)
 
 
 # ---------------------------------------------------------------------------
