@@ -183,3 +183,15 @@ CUSTOMER_ACCEPTANCE_INTEGRITY=PASS
 ```
 
 The implementation is accepted locally and deployed, but R17.1.3 remains `PARTIAL` until a fresh authorized browser session proves the production representative-project truth and Overview. This status does not weaken the already accepted R17.1.2 baseline.
+
+## Authenticated Production Closure
+
+R17.1.3-V closed the remaining authentication and browser gate on 2026-08-22. A fresh normal Account Again session resolved identity and project access without exposing credential material. The representative project returned `project_truth/v1` and embedded `project_attention/v1` with PM `OK`, QA `OK`, Infra `UNBOUND`, and 19 downstream calls. Five fresh samples completed in 281–314 ms (median 291.7 ms).
+
+Production owner facts were sparse and authoritative: PM returned an empty Gantt and an unconfigured effort gauge through four HTTP 200 calls; all 15 QA calls across five distinct explicit scopes returned HTTP 200 with zero cases, suites, or defects. The UI matched this truth as 0 blockers, 0 issues, and 1 unverified Infra domain. It never presented empty QA as ready or unbound Infra as zero/healthy.
+
+Authenticated desktop and narrow-viewport browser checks rendered Project Attention, PM Attention, QA Readiness, Infra Readiness, and inspectable raw truth. The final clean navigation produced one logical truth GET plus its expected CORS OPTIONS preflight, no HTTP errors, no console events, and no JavaScript exceptions. A validation-discovered duplicate-load defect was fixed in commits `5dac990`, `9e7dc18`, and `667cbdb`: project reads no longer depend on later PM/QA enrichment, production no longer enables development effect replay, and ecosystem service probing settles before protected project content mounts. These are lifecycle/performance fixes only.
+
+HD-MIG-01 precheck returned HTTP 200 in 370.6 ms, remained honestly `NOT_READY`, and embedded `project_truth/v1`. PM and QA standalone routes still require their own sign-in; QA additionally has five ambiguous scopes. Owner deep links therefore remain disabled, and Infra remains not applicable while unbound. Go-live readiness remains deferred. Full closure evidence is in `OIDA-R17.1.3-PRODUCTION-CLOSURE.md`.
+
+Final closure status: `R17.1.3 = ACCEPTED`. The approved partial capabilities remain partial; acceptance means the implemented Wave 1 projection is production-proven, not that those deferred owner contracts were implemented.
