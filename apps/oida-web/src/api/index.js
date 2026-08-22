@@ -83,6 +83,7 @@ export const documentApi = {
   createProject: (body) => post("da", "/projects", body, { headers: daHeaders() }),
   getWorkspaceBindings: (id) => get("da", `/projects/${id}/workspace-bindings`, { headers: daHeaders() }),
   updateWorkspaceBindings: (id, body) => put("da", `/projects/${id}/workspace-bindings`, body, { headers: daHeaders() }),
+  projectTruth: (id) => get("da", `/projects/${id}/truth`, { headers: daHeaders() }),
   generateSuggestions: (id, mode = "STANDARD") =>
     post("da", `/projects/${id}/suggestions/generate`, { mode }, { headers: daHeaders() }),
   listSuggestions: (id) => get("da", `/projects/${id}/suggestions`, { headers: daHeaders() }),

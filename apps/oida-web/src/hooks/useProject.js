@@ -18,6 +18,8 @@ export function useProject(projectId) {
   const [baselines, setBaselines] = useState([]);
   const [pm, setPm] = useState(null); // { name, slug }
   const [qa, setQa] = useState([]); // [{ handoffId, baselineId, slug, name }]
+  const [pmError, setPmError] = useState(null);
+  const [qaError, setQaError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -29,11 +31,11 @@ export function useProject(projectId) {
     setLoading(true);
     setError(null);
     try {
-      const [proj, homeData, baselinesData, pmHandoffs, qaHandoffs] = await Promise.all([
+      const [proj, homeData, baselinesData, bindingsResponse, qaHandoffs] = await Promise.all([
         documentApi.getProject(projectId),
         documentApi.projectHome(projectId).catch(() => null),
         documentApi.listBaselines(projectId).catch(() => []),
-        documentApi.executionHandoffs(projectId).catch(() => []),
+        documentApi.getWorkspaceBindings(projectId),
         documentApi.qaHandoffs(projectId).catch(() => []),
       ]);
       setProject(proj);
@@ -43,45 +45,38 @@ export function useProject(projectId) {
       // Workspace bindings are correlation metadata stored on the Document
       // project (authority keeps business truth). They make PM/QA resolution
       // deterministic instead of name/slug guessing.
-      const bindings = proj?.metadata?.workspace_bindings || {};
+      const bindings = bindingsResponse?.binding_contract || {};
 
-      // PM project: prefer the stored binding; fall back to name matching.
+      // Project identity is explicit. Display names and slugs are never used
+      // to infer a binding.
       if (pmAuthed) {
         try {
-          const boundSlug = bindings.pm_project_slug;
-          let match = null;
-          if (boundSlug) {
-            match = await pmApi.getProject(boundSlug).then((p) => ({ name: p.name, slug: p.slug })).catch(() => null);
-          }
-          if (!match) {
-            const pmProjects = await pmApi.listProjects();
-            match = (pmProjects || []).find(
-              (p) => (p.name || "").toLowerCase() === (proj.name || "").toLowerCase()
-            );
-          }
+          setPmError(null);
+          const boundSlug = bindings.pm?.external_project_id;
+          const match = boundSlug
+            ? await pmApi.getProject(boundSlug).then((p) => ({ name: p.name, slug: p.slug }))
+            : null;
           setPm(match ? { name: match.name, slug: match.slug } : null);
-        } catch {
+        } catch (err) {
           setPm(null);
+          setPmError(err);
         }
       } else {
         setPm(null);
       }
 
-      // QA projects: one per Document QA handoff. Prefer the stored binding;
-      // fall back to the slug derived from the handoff id.
+      // QA projects: one per explicit binding; handoff IDs only label scope.
       if (qaAuthed) {
         try {
+          setQaError(null);
           const qaProjects = await qaApi.listProjects();
+          const explicit = Object.fromEntries((bindings.qa || []).map((b) => [b.scope_id, b.external_project_id]));
           const baselineById = Object.fromEntries(
             (baselinesData || []).map((b) => [b.id, b])
           );
           const resolved = (qaHandoffs || []).map((h) => {
-            const boundSlug = bindings.qa_project_slugs?.[h.id];
-            const slugified = (h.id || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-            const fallbackSlug = `wp-${slugified}`;
-            const found =
-              (boundSlug && (qaProjects || []).find((p) => p.slug === boundSlug)) ||
-              (qaProjects || []).find((p) => p.slug === fallbackSlug);
+            const boundSlug = explicit[h.id];
+            const found = boundSlug && (qaProjects || []).find((p) => p.slug === boundSlug);
             const baseline = baselineById[h.baseline_id];
             return {
               handoffId: h.id,
@@ -90,7 +85,9 @@ export function useProject(projectId) {
               releaseVersion: baseline ? baseline.target_release : null,
               requirementIds: h.requirement_ids || [],
               designRevisionIds: h.design_revision_ids || [],
-              slug: found ? found.slug : (boundSlug || fallbackSlug),
+              // A derived slug is a lookup hint, not authoritative identity.
+              // Do not expose it as a usable binding when QA has no project.
+              slug: found ? found.slug : null,
               name: found ? found.name : null,
               status: h.status,
               linked: Boolean(found),
@@ -100,8 +97,9 @@ export function useProject(projectId) {
             String(b.baselineName).localeCompare(String(a.baselineName), undefined, { numeric: true })
           );
           setQa(resolved);
-        } catch {
+        } catch (err) {
           setQa([]);
+          setQaError(err);
         }
       } else {
         setQa([]);
@@ -117,5 +115,5 @@ export function useProject(projectId) {
     load();
   }, [load]);
 
-  return { project, home, baselines, pm, qa, pmAuthed, qaAuthed, loading, error, reload: load };
+  return { project, home, baselines, pm, qa, pmAuthed, qaAuthed, pmError, qaError, loading, error, reload: load };
 }

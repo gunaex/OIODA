@@ -255,7 +255,50 @@ def _timing(required_by: str, phase: str | None) -> tuple[str, str]:
 
 
 # ── Precheck ────────────────────────────────────────────────────────────────
-def precheck(db: Session, project: m.Project, human_code: str) -> dict:
+def _external_standard_state(std: dict, truth_snapshot: dict) -> dict | None:
+    authority = std["authority"]
+    source_key = {"PM_AGAIN": "pm", "QA_AGAIN": "qa", "INFRA_AGAIN": "infra"}.get(authority)
+    if not source_key:
+        return None
+    source = (truth_snapshot.get("sources") or {}).get(source_key) or {}
+    truth = truth_snapshot.get(source_key)
+    source_status = source.get("source_status", "ERROR")
+    base = {"source_status": source_status, "source": source,
+            "provenance": (truth or {}).get("provenance") if truth else None}
+    if source_status not in {"OK", "EMPTY"}:
+        return {**base, "state": "UNKNOWN",
+                "reason": f"{AUTHORITY_LABEL[authority]} truth could not be verified ({source_status})."}
+    if not truth:
+        return {**base, "state": "MISSING", "reason": f"{AUTHORITY_LABEL[authority]} returned no project truth."}
+
+    name = std["name"].lower()
+    if authority == "PM_AGAIN":
+        if "dependenc" in name:
+            domain_status = truth.get("dependency_status")
+        elif "effort" in name:
+            domain_status = truth.get("effort_status")
+        else:
+            domain_status = truth.get("schedule_status")
+    elif authority == "QA_AGAIN":
+        if truth.get("readiness_status") == "BLOCKED":
+            return {**base, "state": "PARTIAL",
+                    "reason": f"QA readiness is blocked by {truth.get('blocking_defect_count', 0)} high/critical open defect(s)."}
+        domain_status = truth.get("evidence_status") if "result" in name or "evidence" in name else truth.get("test_definition_status")
+    else:
+        if "network" in name or "integration" in name:
+            domain_status = truth.get("connectivity_status")
+        elif "environment" in name or "landing zone" in name:
+            domain_status = truth.get("environment_status")
+        else:
+            domain_status = truth.get("architecture_status")
+
+    state = "READY" if domain_status in {"AVAILABLE", "READY"} else "PARTIAL" if domain_status == "PARTIAL" else "MISSING"
+    return {**base, "state": state,
+            "reason": f"{AUTHORITY_LABEL[authority]} reports {domain_status or 'no applicable status'}."}
+
+
+def precheck(db: Session, project: m.Project, human_code: str,
+             truth_snapshot: dict | None = None) -> dict:
     hd = cat.HUMAN_DELIVERABLES.get(human_code)
     if not hd:
         raise DomainError(f"Unknown human deliverable: {human_code}", status_code=404)
@@ -270,24 +313,32 @@ def precheck(db: Session, project: m.Project, human_code: str) -> dict:
     for section in sections:
         states = []
         for std in section["standards"]:
+            external = _external_standard_state(std, truth_snapshot) if truth_snapshot else None
             value = indicators.get(std["source_key"], 0)
-            if value > 0:
+            if external:
+                state = external["state"]
+            elif value > 0:
                 state = "READY"
             elif std["authority"] == "DOCUMENT_AGAIN":
                 state = "MISSING"
             else:
                 state = "NO_SOURCE"
-            states.append({
+            item = {
                 "code": std["code"], "name": std["name"], "state": state,
                 "authority": std["authority"],
                 "owner_label": AUTHORITY_LABEL.get(std["authority"], std["authority"]),
                 "owner_route": AUTHORITY_ROUTE.get(std["authority"], ""),
-            })
+            }
+            if external:
+                item.update({"reason": external["reason"], "source_status": external["source_status"],
+                             "provenance": external["provenance"], "source_metadata": external["source"]})
+            states.append(item)
         section_results.append({
             "title": section["title"],
             "kind": section["kind"],
             "ready": sum(1 for s in states if s["state"] == "READY"),
             "partial": sum(1 for s in states if s["state"] in ("PARTIAL",)),
+            "unknown": sum(1 for s in states if s["state"] == "UNKNOWN"),
             "missing": sum(1 for s in states if s["state"] == "MISSING"),
             "no_source": sum(1 for s in states if s["state"] == "NO_SOURCE"),
             "standards": states,
@@ -297,17 +348,52 @@ def precheck(db: Session, project: m.Project, human_code: str) -> dict:
     ready_modules = sum(s["ready"] for s in section_results)
     missing_modules = sum(s["missing"] for s in section_results)
     no_source_modules = sum(s["no_source"] for s in section_results)
+    unknown_modules = sum(s["unknown"] for s in section_results)
     fully_ready_sections = sum(
         1 for s in section_results
-        if s["missing"] == 0 and s["no_source"] == 0 and s["ready"] == len(s["standards"])
+        if s["missing"] == 0 and s["no_source"] == 0 and s["unknown"] == 0 and s["ready"] == len(s["standards"])
     )
+
+    cross_service_dependencies = []
+    if truth_snapshot and human_code in {"HD-MIG-01", "HD-MIG-02"}:
+        dependency_specs = [
+            ("Migration Schedule", "PM_AGAIN", "pm", "schedule_status"),
+            ("QA Readiness", "QA_AGAIN", "qa", "readiness_status"),
+            ("Target Architecture", "INFRA_AGAIN", "infra", "architecture_status"),
+            ("Infrastructure Connectivity", "INFRA_AGAIN", "infra", "connectivity_status"),
+        ]
+        for name, authority, key, field in dependency_specs:
+            source = (truth_snapshot.get("sources") or {}).get(key) or {}
+            truth = truth_snapshot.get(key)
+            source_status = source.get("source_status", "ERROR")
+            if source_status not in {"OK", "EMPTY"}:
+                state, reason = "UNKNOWN", f"{AUTHORITY_LABEL[authority]} truth could not be verified ({source_status})."
+            else:
+                domain_status = (truth or {}).get(field)
+                if domain_status == "BLOCKED":
+                    state = "BLOCKED"
+                elif domain_status in {"AVAILABLE", "READY"}:
+                    state = "READY"
+                elif domain_status == "PARTIAL":
+                    state = "PARTIAL"
+                else:
+                    state = "MISSING"
+                reason = f"{AUTHORITY_LABEL[authority]} reports {domain_status or 'no applicable status'}."
+                if authority == "QA_AGAIN" and domain_status == "BLOCKED":
+                    reason = f"QA readiness is blocked by {(truth or {}).get('blocking_defect_count', 0)} high/critical open defect(s)."
+            cross_service_dependencies.append({
+                "name": name, "authority": authority, "state": state, "reason": reason,
+                "source_status": source_status, "source_metadata": source,
+                "provenance": (truth or {}).get("provenance") if truth else None,
+            })
+    dependency_gaps = [d for d in cross_service_dependencies if d["state"] != "READY"]
 
     # overall readiness (deterministic — no arbitrary percentages)
     if timing_state == "UPCOMING":
         readiness = "NOT_DUE"
-    elif fully_ready_sections == len(section_results) and total > 0:
+    elif fully_ready_sections == len(section_results) and total > 0 and not dependency_gaps:
         readiness = "READY"
-    elif ready_modules > 0:
+    elif ready_modules > 0 or unknown_modules > 0:
         readiness = "READY_WITH_GAPS"
     else:
         readiness = "NOT_READY"
@@ -324,9 +410,17 @@ def precheck(db: Session, project: m.Project, human_code: str) -> dict:
         "ready_modules": ready_modules,
         "missing_modules": missing_modules,
         "no_source_modules": no_source_modules,
+        "unknown_modules": unknown_modules,
         "total_modules": total,
         "precheck_id": _new_id("pc"),
         "sections": section_results,
+        "cross_service_dependencies": cross_service_dependencies,
+        "project_truth": {
+            "contract_version": truth_snapshot.get("contract_version"),
+            "generated_at": truth_snapshot.get("generated_at"),
+            "sources": truth_snapshot.get("sources"),
+            "warnings": truth_snapshot.get("warnings"),
+        } if truth_snapshot else None,
     }
 
 
@@ -521,7 +615,8 @@ def _my_role(composed: dict, my_roles: list[str]) -> str:
 
 # ── Generation (on demand, human confirmed) ─────────────────────────────────
 def generate(db: Session, project: m.Project, human_code: str, actx,
-             *, with_gaps: bool = False, precheck_id: str | None = None) -> dict:
+             *, with_gaps: bool = False, precheck_id: str | None = None,
+             truth_snapshot: dict | None = None) -> dict:
     hd = cat.HUMAN_DELIVERABLES.get(human_code)
     if not hd:
         raise DomainError(f"Unknown human deliverable: {human_code}", status_code=404)
@@ -537,7 +632,8 @@ def generate(db: Session, project: m.Project, human_code: str, actx,
 
     if head and head.lifecycle_status in IMMUTABLE_STATES:
         # signed/approved versions are immutable → create a new revision
-        return _create_revision(db, project, hd, composed[human_code], head, actor, with_gaps)
+        return _create_revision(db, project, hd, composed[human_code], head, actor, with_gaps,
+                                truth_snapshot=truth_snapshot)
     if head and head.lifecycle_status not in ("SUPERSEDED",):
         raise DomainError(
             f"{hd['name']} already generated (v{head.version}, {head.lifecycle_status}). "
@@ -545,7 +641,7 @@ def generate(db: Session, project: m.Project, human_code: str, actx,
             status_code=409,
         )
 
-    pc = precheck(db, project, human_code)
+    pc = precheck(db, project, human_code, truth_snapshot)
     if pc["readiness"] == "NOT_READY" and not with_gaps:
         raise DomainError(
             f"Precheck is {pc['readiness']} — confirm 'Generate Draft With Gaps' to proceed.",
@@ -585,7 +681,9 @@ def generate(db: Session, project: m.Project, human_code: str, actx,
             "ready_modules": pc["ready_modules"],
             "missing_modules": pc["missing_modules"],
             "no_source_modules": pc["no_source_modules"],
+            "unknown_modules": pc["unknown_modules"],
             "with_gaps": with_gaps,
+            "project_truth": pc.get("project_truth"),
         },
         source_snapshot=snapshot,
         snapshot_hash=snapshot_hash,
@@ -605,8 +703,9 @@ def generate(db: Session, project: m.Project, human_code: str, actx,
 
 
 def _create_revision(db: Session, project: m.Project, hd: dict, composed: dict,
-                     old: HumanDeliverableInstance, actor: dict, with_gaps: bool) -> dict:
-    pc = precheck(db, project, hd["code"])
+                     old: HumanDeliverableInstance, actor: dict, with_gaps: bool,
+                     truth_snapshot: dict | None = None) -> dict:
+    pc = precheck(db, project, hd["code"], truth_snapshot)
     if pc["readiness"] == "NOT_READY" and not with_gaps:
         raise DomainError(
             f"Precheck is {pc['readiness']} — confirm 'Generate Draft With Gaps' to proceed.",
@@ -642,6 +741,8 @@ def _create_revision(db: Session, project: m.Project, hd: dict, composed: dict,
         readiness_at_generation={
             "readiness": pc["readiness"],
             "with_gaps": with_gaps,
+            "unknown_modules": pc["unknown_modules"],
+            "project_truth": pc.get("project_truth"),
         },
         source_snapshot=snapshot,
         snapshot_hash=snapshot_hash,

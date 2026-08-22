@@ -194,6 +194,7 @@ class WorkspaceBindingsIn(BaseModel):
     pm_project_slug: str | None = None
     qa_project_slugs: dict[str, str] | None = None  # handoff_id -> qa project slug
     infra_design_id: str | None = None  # Infra Again design id (correlation pointer)
+    binding_contract: dict | None = None
 
 
 @router.get("/projects/{project_id}/workspace-bindings")
@@ -204,7 +205,17 @@ def get_workspace_bindings(project_id: str, db: Session = Depends(db_session)):
 @router.put("/projects/{project_id}/workspace-bindings")
 def put_workspace_bindings(project_id: str, body: WorkspaceBindingsIn, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
     svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
-    return svc.put_workspace_bindings(db, project_id, pm_project_slug=body.pm_project_slug, qa_project_slugs=body.qa_project_slugs, infra_design_id=body.infra_design_id)
+    return svc.put_workspace_bindings(db, project_id, pm_project_slug=body.pm_project_slug,
+                                      qa_project_slugs=body.qa_project_slugs,
+                                      infra_design_id=body.infra_design_id,
+                                      binding_contract=body.binding_contract)
+
+
+@router.get("/projects/{project_id}/truth")
+def project_truth(project_id: str, db: Session = Depends(db_session),
+                  authorization: str | None = Header(default=None)):
+    from ..project_truth import build_project_truth
+    return build_project_truth(svc.guard_project(db, project_id), authorization)
 
 
 # ---------------------------------------------------------------------------

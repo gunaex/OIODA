@@ -64,19 +64,14 @@ export default function ProjectHome() {
     setError(null);
     try {
       const projectId = project.id;
-      const [requirements, memory, artifacts, timeline, changes, suggestions, pmData, qaData] = await Promise.all([
+      const [requirements, memory, artifacts, timeline, changes, suggestions, truth] = await Promise.all([
         documentApi.listRequirements(projectId),
         documentApi.projectMemory(projectId).catch(() => null),
         documentApi.listArtifacts(projectId).catch(() => []),
         documentApi.timeline(projectId).catch(() => []),
         documentApi.listChanges(projectId).catch(() => []),
         documentApi.listSuggestions(projectId).catch(() => []),
-        pm && pm.slug
-          ? Promise.all([pmApi.functions(pm.slug).catch(() => []), pmApi.tasks(pm.slug).catch(() => [])])
-          : Promise.resolve([[], []]),
-        qa && qa.length
-          ? qaApi.dashboard(qa[qa.length - 1].slug).catch(() => null)
-          : Promise.resolve(null),
+        documentApi.projectTruth(projectId),
       ]);
       const clarifications = (memory?.clarifications || []).filter((c) => !c.resolved);
       const currentBaseline = [...(baselines || [])].sort(
@@ -89,9 +84,7 @@ export default function ProjectHome() {
         timeline: Array.isArray(timeline) ? timeline.slice(0, 10) : [],
         pendingChanges: (changes || []).filter((c) => c.status !== "CONFIRMED" && c.status !== "CANCELLED"),
         openSuggestions: (suggestions || []).filter((s) => !["ACCEPTED", "REJECTED", "RESOLVED"].includes(s.status)),
-        functions: pmData[0] || [],
-        tasks: pmData[1] || [],
-        qaDashboard: qaData,
+        truth,
         currentBaseline,
       });
     } catch (err) {
@@ -108,11 +101,11 @@ export default function ProjectHome() {
   const docs = documentLinks(project.id, data?.artifacts || []);
   const openClarifications = data?.clarifications || [];
   const reqCount = data?.requirements?.length || 0;
-  const tasks = data?.tasks || [];
-  const doneTasks = tasks.filter((t) => t.status === "Done").length;
-  const blockedTasks = tasks.filter((t) => t.status === "Blocked").length;
+  const truth = data?.truth;
+  const pmTruth = truth?.pm;
+  const qaTruth = truth?.qa;
   const currentQa = qa && qa.length ? qa[0] : null;
-  const tests = data?.qaDashboard?.activeCycle ? 1 : 0;
+  const tests = qaTruth?.test_count;
   const pendingChanges = data?.pendingChanges || [];
   const openSuggestions = data?.openSuggestions || [];
 
@@ -136,12 +129,14 @@ export default function ProjectHome() {
       {/* Delivery workspace binding (R12): honest linked / not-signed-in / not-linked states */}
       <DeliveryWorkspace project={project} pm={pm} qa={qa} pmAuthed={pmAuthed} qaAuthed={qaAuthed} />
 
+      {truth && <ProjectTruth truth={truth} />}
+
       {/* 10-second owner view */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatCard label="Current Baseline" value={data?.currentBaseline ? `V${extractVersion(data.currentBaseline.name)}` : "—"} sub={data?.currentBaseline?.name} tone="blue" />
         <StatCard label="Requirements" value={reqCount} sub={`${openClarifications.length} open clarifications`} />
-        <StatCard label="Tasks" value={pmAuthed ? tasks.length : "—"} sub={pmAuthed ? `${doneTasks} done · ${blockedTasks} blocked` : "Sign in to see planning"} tone="amber" />
-        <StatCard label="Tests" value={qaAuthed ? tests : "—"} sub={qaAuthed ? (data?.qaDashboard ? "Validation scope ready" : "Awaiting test design") : "Sign in to see QA"} tone="green" />
+        <StatCard label="Schedule Items" value={pmTruth?.schedule_item_count ?? "—"} sub={truth?.sources?.pm?.source_status || "UNKNOWN"} tone="amber" />
+        <StatCard label="Tests" value={tests ?? "—"} sub={truth?.sources?.qa?.source_status || "UNKNOWN"} tone="green" />
       </div>
 
       {pendingChanges.length > 0 && (
@@ -180,17 +175,14 @@ export default function ProjectHome() {
                   Sign in <ArrowRight size={14} />
                 </Link>
               </div>
-            ) : data?.functions?.length ? (
-              <div className="space-y-2">
-                {data.functions.map((f) => (
-                  <div key={f.id} className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2">
-                    <span className="text-sm font-medium text-gray-700">{f.name}</span>
-                    <StatusBadge status={f.status} />
-                  </div>
-                ))}
+            ) : pmTruth ? (
+              <div className="space-y-2 text-sm text-gray-600">
+                <div className="flex justify-between"><span>Schedule</span><StatusBadge status={pmTruth.schedule_status} /></div>
+                <div className="flex justify-between"><span>Milestones</span><span>{pmTruth.milestone_count}</span></div>
+                <div className="flex justify-between"><span>Effort</span><StatusBadge status={pmTruth.effort_status} /></div>
               </div>
             ) : (
-              <p className="text-sm text-gray-500">No workstreams yet.</p>
+              <p className="text-sm text-gray-500">PM truth is {truth?.sources?.pm?.source_status || "UNKNOWN"}.</p>
             )}
             {pmAuthed && (
               <Link to={`/projects/${project.id}/planning`} className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-gray-900 hover:underline">
@@ -211,11 +203,11 @@ export default function ProjectHome() {
                   Sign in <ArrowRight size={14} />
                 </Link>
               </div>
-            ) : currentQa ? (
+            ) : qaTruth ? (
               <div className="space-y-2 text-sm text-gray-600">
-                <div className="flex justify-between"><span>Validation Scope</span><StatusBadge status={data?.qaDashboard?.activeCycle ? "Ready" : "Received"} /></div>
-                <div className="flex justify-between"><span>Test cases</span><span>{data?.qaDashboard?.activeCycle?.testCaseCount ?? 0}</span></div>
-                <div className="flex justify-between"><span>Executed</span><span>0 — honest, none run yet</span></div>
+                <div className="flex justify-between"><span>Readiness</span><StatusBadge status={qaTruth?.readiness_status || truth?.sources?.qa?.source_status} /></div>
+                <div className="flex justify-between"><span>Test cases</span><span>{qaTruth?.test_count ?? "—"}</span></div>
+                <div className="flex justify-between"><span>Blocking defects</span><span>{qaTruth?.blocking_defect_count ?? "—"}</span></div>
               </div>
             ) : (
               <p className="text-sm text-gray-500">No QA validation scope linked.</p>
@@ -283,6 +275,43 @@ function baselineLabel(name) {
   return m ? m[1] : "—";
 }
 
+function ProjectTruth({ truth }) {
+  const blocks = [
+    ["PM Again", truth.pm, truth.sources?.pm, [
+      ["Schedule", truth.pm?.schedule_status], ["Milestones", truth.pm?.milestone_count], ["Effort", truth.pm?.effort_status],
+    ]],
+    ["QA Again", truth.qa, truth.sources?.qa, [
+      ["Readiness", truth.qa?.readiness_status], ["Tests", truth.qa?.test_count], ["Blocking defects", truth.qa?.blocking_defect_count],
+    ]],
+    ["Infra Again", truth.infra, truth.sources?.infra, [
+      ["Architecture", truth.infra?.architecture_status], ["Revision", truth.infra?.architecture_revision], ["Environments", truth.infra?.environment_count],
+    ]],
+  ];
+  return (
+    <Card>
+      <CardHeader title="Cross-service project truth" subtitle={`Contract ${truth.contract_version} · generated ${formatDateTime(truth.generated_at)}`} />
+      <div className="grid gap-3 p-4 md:grid-cols-3">
+        {blocks.map(([label, domain, source, rows]) => (
+          <details key={label} className="rounded-lg border border-gray-200 p-3" open>
+            <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold">
+              {label}<Badge tone={source?.source_status === "OK" ? "green" : "amber"}>{source?.source_status || "UNKNOWN"}</Badge>
+            </summary>
+            {domain ? rows.map(([key, value]) => (
+              <div key={key} className="mt-2 flex justify-between text-xs text-gray-600"><span>{key}</span><span>{value ?? "—"}</span></div>
+            )) : <p className="mt-2 text-xs text-gray-500">Truth unavailable; no empty values were inferred.</p>}
+            <div className="mt-3 border-t pt-2 text-[11px] text-gray-400">
+              <div>Binding: {Array.isArray(source?.source_project_id) ? source.source_project_id.join(", ") : source?.source_project_id || "Unbound"}</div>
+              <div>Freshness: {source?.freshness || "UNKNOWN"}{source?.age_seconds != null ? ` · ${source.age_seconds}s` : ""}</div>
+              <div>Retrieved: {formatDateTime(source?.retrieved_at)}</div>
+              {source?.error_message && <div className="mt-1 text-rose-600">{source.error_message}</div>}
+            </div>
+          </details>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 /**
  * R12 — Delivery Workspace binding.
  *
@@ -300,6 +329,15 @@ function DeliveryWorkspace({ project, pm, qa, pmAuthed, qaAuthed }) {
   const [initializing, setInitializing] = useState(false);
   const [saved, setSaved] = useState(null);
   const [error, setError] = useState(null);
+  const [pmCandidates, setPmCandidates] = useState([]);
+  const [qaCandidates, setQaCandidates] = useState([]);
+  const [selectedPm, setSelectedPm] = useState("");
+  const [selectedQa, setSelectedQa] = useState({});
+
+  useEffect(() => {
+    if (pmAuthed) pmApi.listProjects().then(setPmCandidates).catch((e) => setError(e.message));
+    if (qaAuthed) qaApi.listProjects().then(setQaCandidates).catch((e) => setError(e.message));
+  }, [pmAuthed, qaAuthed]);
 
   const bindings = project?.metadata?.workspace_bindings || {};
   const pmBound = Boolean(bindings.pm_project_slug);
@@ -321,29 +359,24 @@ function DeliveryWorkspace({ project, pm, qa, pmAuthed, qaAuthed }) {
     setError(null);
     setSaved(null);
     try {
-      const body = {};
-      if (pmAuthed) {
-        const projects = await pmApi.listProjects();
-        const match = (projects || []).find(
-          (p) => (p.name || "").toLowerCase() === (project.name || "").toLowerCase()
-        );
-        if (match) body.pm_project_slug = match.slug;
-      }
-      if (qaAuthed && qa.length > 0) {
-        const qaProjects = await qaApi.listProjects();
-        const qa_map = {};
-        for (const q of qa) {
-          const slugified = (q.handoffId || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-          const fallback = `wp-${slugified}`;
-          const found = (qaProjects || []).find((p) => p.slug === q.slug || p.slug === fallback);
-          if (found) qa_map[q.handoffId] = found.slug;
-        }
-        if (Object.keys(qa_map).length > 0) body.qa_project_slugs = qa_map;
-      }
-      if (Object.keys(body).length === 0) {
-        setError("Nothing to bind yet — sign in to PM Again and QA Again first.");
+      const qaBindings = Object.entries(selectedQa).filter(([, id]) => id).map(([scope, id]) => ({
+        service: "QA_AGAIN", external_project_id: id, scope_id: scope,
+        binding_status: "BOUND", bound_at: new Date().toISOString(), source: "USER_SELECTED",
+      }));
+      if (!selectedPm && qaBindings.length === 0) {
+        setError("Select the exact PM or QA project to bind. OIDA will not infer it from names.");
         return;
       }
+      const body = {
+        pm_project_slug: selectedPm || undefined,
+        qa_project_slugs: Object.fromEntries(qaBindings.map((b) => [b.scope_id, b.external_project_id])),
+        binding_contract: {
+          contract_version: "project_bindings/v1",
+          pm: selectedPm ? { service: "PM_AGAIN", external_project_id: selectedPm, binding_status: "BOUND", bound_at: new Date().toISOString(), source: "USER_SELECTED" } : null,
+          qa: qaBindings,
+          infra: bindings.infra_design_id ? { service: "INFRA_AGAIN", external_project_id: bindings.infra_design_id, binding_status: "BOUND", source: "LEGACY_POINTER" } : null,
+        },
+      };
       await documentApi.updateWorkspaceBindings(project.id, body);
       setSaved("Delivery workspace binding saved. Refresh to see the resolved PM/QA links.");
     } catch (e) {
@@ -394,6 +427,22 @@ function DeliveryWorkspace({ project, pm, qa, pmAuthed, qaAuthed }) {
 
       {saved && <div className="mt-2 text-xs text-emerald-600">{saved}</div>}
       {error && <div className="mt-2 text-xs text-rose-600">{error}</div>}
+      {(pmState === "unlinked" || qaState === "unlinked") && (
+        <div className="mt-3 grid gap-2 border-t pt-3 md:grid-cols-2">
+          {pmState === "unlinked" && <label className="text-xs text-gray-600">Exact PM project
+            <select className="input mt-1" value={selectedPm} onChange={(e) => setSelectedPm(e.target.value)}>
+              <option value="">Select; do not infer…</option>
+              {pmCandidates.map((p) => <option key={p.slug} value={p.slug}>{p.name} · {p.slug}</option>)}
+            </select>
+          </label>}
+          {qaState === "unlinked" && qa.map((scope) => <label key={scope.handoffId} className="text-xs text-gray-600">QA scope {scope.baselineName}
+            <select className="input mt-1" value={selectedQa[scope.handoffId] || ""} onChange={(e) => setSelectedQa({ ...selectedQa, [scope.handoffId]: e.target.value })}>
+              <option value="">Select; do not infer…</option>
+              {qaCandidates.map((p) => <option key={p.slug} value={p.slug}>{p.name} · {p.slug}</option>)}
+            </select>
+          </label>)}
+        </div>
+      )}
     </Card>
   );
 }

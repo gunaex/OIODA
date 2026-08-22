@@ -481,17 +481,22 @@ def import_project(db: Session, package: dict, *, actor="local-user", actor_id: 
 
 def get_workspace_bindings(db: Session, project_id: str) -> dict:
     project = guard_project(db, project_id)
+    from .project_truth import normalize_bindings
     meta = project.project_meta or {}
     bindings = meta.get("workspace_bindings") or {}
-    return {
+    legacy = {
         "project_id": project.id,
         "pm_project_slug": bindings.get("pm_project_slug"),
         "qa_project_slugs": bindings.get("qa_project_slugs") or {},
         "infra_design_id": bindings.get("infra_design_id"),
     }
+    legacy["binding_contract"] = normalize_bindings(project)
+    return legacy
 
 
-def put_workspace_bindings(db: Session, project_id: str, *, pm_project_slug: str | None = None, qa_project_slugs: dict | None = None, infra_design_id: str | None = None) -> dict:
+def put_workspace_bindings(db: Session, project_id: str, *, pm_project_slug: str | None = None,
+                           qa_project_slugs: dict | None = None, infra_design_id: str | None = None,
+                           binding_contract: dict | None = None) -> dict:
     project = guard_project(db, project_id)
     meta = dict(project.project_meta or {})
     bindings = dict(meta.get("workspace_bindings") or {})
@@ -503,6 +508,25 @@ def put_workspace_bindings(db: Session, project_id: str, *, pm_project_slug: str
         bindings["qa_project_slugs"] = merged
     if infra_design_id is not None:
         bindings["infra_design_id"] = infra_design_id
+    if binding_contract is not None:
+        current_v1 = dict(bindings.get("v1") or {})
+        current_v1.update({k: v for k, v in binding_contract.items() if v is not None})
+        bindings["v1"] = current_v1
+    elif bindings.get("v1"):
+        current_v1 = dict(bindings["v1"])
+        if pm_project_slug is not None:
+            current_v1["pm"] = {"service": "PM_AGAIN", "external_project_id": pm_project_slug,
+                                "binding_status": "BOUND", "source": "USER_SELECTED"}
+        if qa_project_slugs is not None:
+            existing_qa = {b.get("scope_id"): b for b in current_v1.get("qa", [])}
+            existing_qa.update({scope: {"service": "QA_AGAIN", "external_project_id": slug,
+                                        "scope_id": scope, "binding_status": "BOUND", "source": "USER_SELECTED"}
+                                for scope, slug in qa_project_slugs.items() if slug})
+            current_v1["qa"] = list(existing_qa.values())
+        if infra_design_id is not None:
+            current_v1["infra"] = {"service": "INFRA_AGAIN", "external_project_id": infra_design_id,
+                                   "binding_status": "BOUND", "source": "USER_SELECTED"}
+        bindings["v1"] = current_v1
     meta["workspace_bindings"] = bindings
     project.project_meta = meta
     db.commit()
@@ -511,7 +535,8 @@ def put_workspace_bindings(db: Session, project_id: str, *, pm_project_slug: str
         object_type="Project", object_id=project_id,
         metadata={"pm_project_slug": bindings.get("pm_project_slug"),
                   "qa_project_slugs": bindings.get("qa_project_slugs"),
-                  "infra_design_id": bindings.get("infra_design_id")},
+                  "infra_design_id": bindings.get("infra_design_id"),
+                  "binding_contract_version": "project_bindings/v1" if bindings.get("v1") else None},
     )
     return get_workspace_bindings(db, project_id)
 

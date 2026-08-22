@@ -6,7 +6,7 @@ an authenticated ecosystem identity (actor_ctx); AI never signs or approves.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Header, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -60,10 +60,12 @@ def list_human_deliverables(project_id: str, db: Session = Depends(db_session),
 
 @router.get("/projects/{project_id}/human-deliverables/{human_code}")
 def get_human_deliverable(project_id: str, human_code: str,
-                          db: Session = Depends(db_session)):
+                          db: Session = Depends(db_session),
+                          authorization: str | None = Header(default=None)):
+    from ..project_truth import build_project_truth
     project = _project(db, project_id)
     head = hsvc._head(db, project.id, human_code)
-    precheck = hsvc.precheck(db, project, human_code)
+    precheck = hsvc.precheck(db, project, human_code, build_project_truth(project, authorization))
     return {
         "project_id": project.id,
         "human_code": human_code,
@@ -80,8 +82,11 @@ class PrecheckEmpty(BaseModel):
 
 
 @router.post("/projects/{project_id}/human-deliverables/{human_code}/precheck")
-def precheck(project_id: str, human_code: str, db: Session = Depends(db_session)):
-    return hsvc.precheck(db, _project(db, project_id), human_code)
+def precheck(project_id: str, human_code: str, db: Session = Depends(db_session),
+             authorization: str | None = Header(default=None)):
+    from ..project_truth import build_project_truth
+    project = _project(db, project_id)
+    return hsvc.precheck(db, project, human_code, build_project_truth(project, authorization))
 
 
 class GenerateIn(BaseModel):
@@ -91,9 +96,14 @@ class GenerateIn(BaseModel):
 
 @router.post("/projects/{project_id}/human-deliverables/{human_code}/generate")
 def generate(project_id: str, human_code: str, body: GenerateIn,
-             db: Session = Depends(db_session), actx=Depends(actor_ctx)):
-    return hsvc.generate(db, _project(db, project_id), human_code, actx,
-                         with_gaps=body.with_gaps, precheck_id=body.precheck_id)
+             db: Session = Depends(db_session), actx=Depends(actor_ctx),
+             authorization: str | None = Header(default=None)):
+    from ..project_truth import build_project_truth
+    project = _project(db, project_id)
+    truth = build_project_truth(project, authorization)
+    return hsvc.generate(db, project, human_code, actx,
+                         with_gaps=body.with_gaps, precheck_id=body.precheck_id,
+                         truth_snapshot=truth)
 
 
 class TransitionIn(BaseModel):

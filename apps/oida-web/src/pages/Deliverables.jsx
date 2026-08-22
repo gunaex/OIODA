@@ -42,7 +42,7 @@ const SOURCE_ROUTE = {
 };
 
 function SectionState({ state }) {
-  const tone = { READY: "emerald", PARTIAL: "amber", MISSING: "rose", NO_SOURCE: "gray" }[state] || "gray";
+  const tone = { READY: "green", PARTIAL: "amber", BLOCKED: "red", UNKNOWN: "amber", MISSING: "red", NO_SOURCE: "gray" }[state] || "gray";
   return <Badge tone={tone}>{state}</Badge>;
 }
 
@@ -430,22 +430,28 @@ export default function Deliverables() {
                       <div key={s.title} className="mb-2 rounded-lg border border-gray-100 p-2">
                         <div className="flex items-center justify-between text-xs">
                           <span className="font-medium">{s.title}</span>
-                          <span className="text-gray-400">{s.ready} ready · {s.missing} missing · {s.no_source} no source</span>
+                          <span className="text-gray-400">{s.ready} ready · {s.partial} partial · {s.unknown || 0} unknown · {s.missing} missing</span>
                         </div>
                         <div className="mt-1 flex flex-wrap gap-1">
                           {s.standards.map((std) => (
-                            <span key={std.name} className="inline-flex items-center gap-1 rounded bg-gray-50 px-1.5 py-0.5 text-[10px]">
-                              <SectionState state={std.state} />
-                              {std.name}
-                              {std.state !== "READY" && (
-                                <a href={`${base}/${SOURCE_ROUTE[std.authority] || "requirements"}`} onClick={(e) => e.stopPropagation()}
-                                  className="text-blue-600 underline">open {std.owner_label}</a>
-                              )}
-                            </span>
+                            <details key={std.name} className="rounded bg-gray-50 px-1.5 py-0.5 text-[10px]">
+                              <summary className="inline-flex cursor-pointer list-none items-center gap-1"><SectionState state={std.state} />{std.name}</summary>
+                              {std.reason && <div className="mt-1 max-w-sm text-gray-600">{std.reason}</div>}
+                              {std.provenance && <div className="text-gray-400">Source {std.provenance.source_service} · revision {std.provenance.source_revision || "not supplied"} · retrieved {formatDateTime(std.provenance.retrieved_at)}</div>}
+                              {std.state !== "READY" && <a href={`${base}/${SOURCE_ROUTE[std.authority] || "requirements"}`} onClick={(e) => e.stopPropagation()} className="text-blue-600 underline">open {std.owner_label}</a>}
+                            </details>
                           ))}
                         </div>
                       </div>
                     ))}
+                    {pc.cross_service_dependencies?.length > 0 && <div className="mt-3 rounded-lg border border-gray-200 p-2">
+                      <div className="mb-1 text-xs font-semibold">Live cross-service dependencies</div>
+                      {pc.cross_service_dependencies.map((dep) => <details key={dep.name} className="border-t border-gray-100 py-1 text-xs">
+                        <summary className="flex cursor-pointer list-none items-center justify-between"><span>{dep.name} · {dep.authority.replace("_", " ")}</span><SectionState state={dep.state} /></summary>
+                        <div className="mt-1 text-gray-600">{dep.reason}</div>
+                        {dep.provenance && <div className="text-gray-400">Revision {dep.provenance.source_revision || "not supplied"} · retrieved {formatDateTime(dep.provenance.retrieved_at)}</div>}
+                      </details>)}
+                    </div>}
                   </div>
                 )}
 
