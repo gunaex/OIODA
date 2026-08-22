@@ -23,38 +23,6 @@ export function AuthProvider({ children }) {
     return t ? { accessToken: t } : null;
   });
 
-  // Bootstrap: a stored token is only valid if the gateway accepts it. Never
-  // trust localStorage alone — validate the token against /api/auth/me before
-  // declaring the user AUTHENTICATED.
-  const bootstrap = useCallback(async () => {
-    const token = localStorage.getItem(ECO_TOKEN_KEY);
-    if (!token) {
-      setAuthenticated(false);
-      setIdentity(null);
-      setMustChangePassword(false);
-      setLoading(false);
-      return;
-    }
-    try {
-      const me = await request("auth", "/me");
-      setAuthenticated(true);
-      setIdentity(me);
-      setMustChangePassword(Boolean(me.must_change_password));
-      setEcosystem({ accessToken: token });
-    } catch {
-      localStorage.removeItem(ECO_TOKEN_KEY);
-      setEcosystem(null);
-      setAuthenticated(false);
-      setIdentity(null);
-      setMustChangePassword(false);
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    bootstrap();
-  }, [bootstrap]);
-
   const probe = useCallback(async () => {
     const next = { da: { available: true, actor: getActor() } };
     await Promise.all(
@@ -70,9 +38,39 @@ export function AuthProvider({ children }) {
     setSession(next);
   }, []);
 
+  // Bootstrap: a stored token is only valid if the gateway accepts it. Never
+  // trust localStorage alone — validate the token against /api/auth/me before
+  // mounting protected pages. Settle owner-service identity at the same time
+  // so project context is loaded once with a stable ecosystem session.
+  const bootstrap = useCallback(async () => {
+    const token = localStorage.getItem(ECO_TOKEN_KEY);
+    if (!token) {
+      setAuthenticated(false);
+      setIdentity(null);
+      setMustChangePassword(false);
+      setLoading(false);
+      return;
+    }
+    try {
+      const me = await request("auth", "/me");
+      setAuthenticated(true);
+      setIdentity(me);
+      setMustChangePassword(Boolean(me.must_change_password));
+      setEcosystem({ accessToken: token });
+      await probe();
+    } catch {
+      localStorage.removeItem(ECO_TOKEN_KEY);
+      setEcosystem(null);
+      setAuthenticated(false);
+      setIdentity(null);
+      setMustChangePassword(false);
+    }
+    setLoading(false);
+  }, [probe]);
+
   useEffect(() => {
-    if (authenticated) probe();
-  }, [authenticated, probe]);
+    bootstrap();
+  }, [bootstrap]);
 
   const login = useCallback(async (email, password) => {
     // Single sign-on: authenticate ONCE against Account Again, store the
