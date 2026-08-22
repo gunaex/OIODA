@@ -87,6 +87,23 @@ export function Empty({ title, children }) {
   );
 }
 
+export function IntegrationState({ service, error, onRetry }) {
+  const status = error?.status;
+  const state = status === 401 ? "UNAUTHORIZED"
+    : status === 403 ? "FORBIDDEN"
+      : status === 502 || status === 503 || status === 504 ? "UNAVAILABLE"
+        : status === 404 ? "NOT_SUPPORTED"
+          : "ERROR";
+  return (
+    <OidaError
+      title={`${service} · ${state}`}
+      message={error?.message || `${service} could not be loaded.`}
+      details={status ? `HTTP ${status}` : undefined}
+      onRetry={onRetry}
+    />
+  );
+}
+
 export function OidaError({ title = "Oops!…I Did It Again.", message, onRetry, details }) {
   return (
     <div className="oida-card mx-auto mt-8 max-w-lg px-6 py-10 text-center">

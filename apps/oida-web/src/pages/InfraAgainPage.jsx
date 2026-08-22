@@ -7,7 +7,7 @@ import "@xyflow/react/dist/style.css";
 import { Server, Database, Cloud, Network, Boxes, Link2 } from "lucide-react";
 import { documentApi, infraApi } from "../api";
 import { useProjectCtx } from "../hooks/useProject";
-import { Card, CardHeader, Badge, Loading, Empty } from "../components/ui";
+import { Card, CardHeader, Badge, Loading, Empty, IntegrationState } from "../components/ui";
 
 // Infra Again is the infrastructure authority. OIDA only projects its truth.
 const CATEGORY_ICON = {
@@ -54,11 +54,21 @@ export default function InfraAgainPage() {
   const [linking, setLinking] = useState(false);
   const [linkMsg, setLinkMsg] = useState(null);
   const [error, setError] = useState(null);
+  const [loadError, setLoadError] = useState(null);
 
   const loadBindings = () => documentApi.getWorkspaceBindings(project?.id).then(setBindings).catch(() => setBindings(null));
   const loadInfra = () => {
-    infraApi.environments().then((r) => setEnvironments(Array.isArray(r) ? r : (r?.environments || []))).catch(() => setEnvironments([]));
-    infraApi.designs().then((r) => setDesigns(Array.isArray(r) ? r : (r?.designs || []))).catch(() => setDesigns([]));
+    setLoadError(null);
+    Promise.all([infraApi.environments(), infraApi.designs()])
+      .then(([envResult, designResult]) => {
+        setEnvironments(Array.isArray(envResult) ? envResult : (envResult?.environments || []));
+        setDesigns(Array.isArray(designResult) ? designResult : (designResult?.designs || []));
+      })
+      .catch((err) => {
+        setEnvironments([]);
+        setDesigns([]);
+        setLoadError(err);
+      });
   };
 
   useEffect(() => { if (project?.id) { loadBindings(); loadInfra(); } }, [project?.id]);
@@ -68,7 +78,7 @@ export default function InfraAgainPage() {
     if (!bindings?.infra_design_id) { setDesign(null); return; }
     infraApi.getDesign(bindings.infra_design_id)
       .then((r) => setDesign(r?.design || r))
-      .catch(() => setDesign(null));
+      .catch((err) => { setDesign(null); setLoadError(err); });
   }, [bindings?.infra_design_id]);
 
   async function linkDesign(id) {
@@ -116,6 +126,8 @@ export default function InfraAgainPage() {
           Review Architecture with Council
         </Link>
       </div>
+
+      {loadError && <IntegrationState service="Infra Again" error={loadError} onRetry={loadInfra} />}
 
       {/* Binding */}
       <Card className="px-4 py-3">

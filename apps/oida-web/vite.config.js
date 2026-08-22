@@ -41,6 +41,7 @@ function buildProxyRule(svc, { target, upstreamBase }) {
       changeOrigin: true,
       rewrite: (path) => {
         const rest = path.slice(prefix.length) || "/";
+        if (svc === "infra" && rest === "/health") return "/health";
         return upstreamBase + rest;
       },
       configure(proxy) {

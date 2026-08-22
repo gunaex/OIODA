@@ -105,6 +105,13 @@ def _unauthorized(detail: str = "Not authenticated") -> Response:
                     media_type="application/json")
 
 
+def _upstream_path(service: str, path: str, upstream_prefix: str) -> str:
+    """Map a shell path to the bounded service's published route contract."""
+    if service == "infra" and path == "health":
+        return "/health"
+    return f"{upstream_prefix}/{path}"
+
+
 CORS_ORIGIN = os.environ.get("OIDA_WEB_ORIGIN", "https://oida.kanphong.com")
 app.add_middleware(
     CORSMiddleware,
@@ -177,7 +184,12 @@ async def proxy(service: str, path: str, request: Request):
             return _unauthorized("Invalid or expired token")
 
     base, upstream_prefix = route
-    target = f"{base}{upstream_prefix}/{path}"
+    # Infra Again exposes its liveness probe at /health while its business API
+    # is rooted at /api/v1. Keep that contract explicit here; routing health to
+    # /api/v1/health produced a guaranteed 404 and made the shell report a
+    # healthy service as unavailable.
+    target_path = _upstream_path(service, path, upstream_prefix)
+    target = f"{base}{target_path}"
     if request.url.query:
         target += f"?{request.url.query}"
 
