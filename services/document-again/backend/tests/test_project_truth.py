@@ -86,6 +86,22 @@ def test_binding_contract_valid_and_legacy_migration():
     assert legacy["qa"][0]["scope_id"] == "h"
 
 
+def test_explicit_unbound_infra_removes_legacy_pointer(db):
+    p = svc.create_project(db, key="UNBIND", name="Unbind Project")
+    p.project_meta = {"workspace_bindings": {"infra_design_id": "missing-design"}}
+    db.commit()
+
+    result = svc.put_workspace_bindings(db, p.id, binding_contract={
+        "contract_version": "project_bindings/v1",
+        "infra": {"service": "INFRA_AGAIN", "external_project_id": None,
+                  "binding_status": "UNBOUND", "source": "USER_SELECTED"},
+    })
+
+    assert result["infra_design_id"] is None
+    assert result["binding_contract"]["infra"]["binding_status"] == "UNBOUND"
+    assert result["binding_contract"]["infra"]["external_project_id"] is None
+
+
 def test_unbound_sources_are_not_empty_truth():
     snap = build_project_truth(project(), client_factory=factory(healthy_handler))
     assert snap["pm"] is None and snap["sources"]["pm"]["source_status"] == "UNBOUND"

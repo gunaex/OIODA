@@ -512,6 +512,14 @@ def put_workspace_bindings(db: Session, project_id: str, *, pm_project_slug: str
         current_v1 = dict(bindings.get("v1") or {})
         current_v1.update({k: v for k, v in binding_contract.items() if v is not None})
         bindings["v1"] = current_v1
+        # An explicit v1 UNBOUND selection supersedes and removes the legacy
+        # pointer. Keeping the old ID would leave two contradictory binding
+        # states and make a later v1 cleanup resurrect an invalid resource.
+        infra_v1 = binding_contract.get("infra")
+        if (isinstance(infra_v1, dict)
+                and infra_v1.get("binding_status") == "UNBOUND"
+                and not infra_v1.get("external_project_id")):
+            bindings.pop("infra_design_id", None)
     elif bindings.get("v1"):
         current_v1 = dict(bindings["v1"])
         if pm_project_slug is not None:
