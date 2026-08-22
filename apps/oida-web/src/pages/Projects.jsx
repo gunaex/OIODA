@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { documentApi } from "../api";
 import { Card, Loading, OidaError, Badge, formatDateTime } from "../components/ui";
-import { Boxes, Archive, RotateCcw, Copy, Trash2 } from "lucide-react";
+import { Boxes, Archive, RotateCcw, Copy, Trash2, Bot } from "lucide-react";
 import NewProjectModal from "../components/NewProjectModal";
 
 const STATE_TONE = { ACTIVE: "green", ARCHIVED: "amber", DELETE_REQUESTED: "red", DELETED: "gray" };
@@ -85,11 +85,18 @@ export default function Projects() {
   const [cloneTarget, setCloneTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [msg, setMsg] = useState(null);
+  const [portfolio, setPortfolio] = useState(null);
+  const [portfolioBusy, setPortfolioBusy] = useState(false);
+  const [portfolioAi, setPortfolioAi] = useState(null);
 
   async function load() {
     setError(null);
     try {
-      setProjects(await documentApi.listProjects(tab === "ALL" ? null : tab));
+      const [rows, portfolioData] = await Promise.all([
+        documentApi.listProjects(tab === "ALL" ? null : tab),
+        tab === "ACTIVE" ? documentApi.portfolio().catch(() => null) : Promise.resolve(null),
+      ]);
+      setProjects(rows); setPortfolio(portfolioData);
     } catch (err) {
       setError(err);
     }
@@ -104,6 +111,20 @@ export default function Projects() {
       setMsg(doneMsg);
       load();
     } catch (err) { setError(err); }
+  }
+
+  async function markPortfolioReviewed() {
+    if (!portfolio?.briefing?.mark_reviewed) return;
+    setPortfolioBusy(true);
+    try { await documentApi.markPortfolioReviewed(portfolio.briefing.mark_reviewed); await load(); }
+    catch (err) { setError(err); } finally { setPortfolioBusy(false); }
+  }
+
+  async function askPortfolio() {
+    setPortfolioBusy(true);
+    try { setPortfolioAi(await documentApi.portfolioCopilot({ query_type: "FOCUS_PORTFOLIO_TODAY" })); }
+    catch (err) { setPortfolioAi({ status: "UNAVAILABLE", answer: err.message || String(err) }); }
+    finally { setPortfolioBusy(false); }
   }
 
   return (
@@ -132,6 +153,8 @@ export default function Projects() {
       {msg && <div className="mb-3 text-xs text-emerald-600">{msg}</div>}
       {error && <OidaError message={String(error.message || error)} onRetry={load} />}
       {!error && !projects && <Loading />}
+
+      {tab === "ACTIVE" && portfolio && <PortfolioCenter data={portfolio} busy={portfolioBusy} ai={portfolioAi} onReviewed={markPortfolioReviewed} onAsk={askPortfolio} />}
 
       {projects && (
         <div className="space-y-3">
@@ -184,4 +207,15 @@ export default function Projects() {
       )}
     </div>
   );
+}
+
+function PortfolioCenter({ data, busy, ai, onReviewed, onAsk }) {
+  const a=data.portfolio_attention||{}, brief=data.briefing||{};
+  return <section className="mb-6 space-y-3" aria-labelledby="portfolio-title">
+    <Card className="border-blue-200 bg-blue-50/30"><div className="flex flex-wrap items-start justify-between gap-3 border-b p-4"><div><h2 id="portfolio-title" className="font-semibold text-blue-950">Portfolio Command Center</h2><p className="text-xs text-blue-700">{data.authorized_project_count} authorized project(s) · deterministic, project-scoped evidence</p></div><button onClick={onReviewed} disabled={busy} className="rounded bg-blue-700 px-3 py-2 text-xs text-white disabled:opacity-50">Mark Portfolio Reviewed</button></div>
+      <div className="grid grid-cols-2 gap-2 p-4 sm:grid-cols-4">{[["Blocked",a.blocked_projects],["Attention",a.attention_projects],["Waiting",a.waiting_projects],["Unverified",a.unverified_projects]].map(([label,count])=><div key={label} className="rounded border bg-white p-2"><b className="text-lg">{count||0}</b><div className="text-xs text-gray-500">{label} projects</div></div>)}</div>
+      <div className="grid gap-3 border-t p-4 lg:grid-cols-[1.2fr_.8fr]"><div><h3 className="text-xs font-semibold uppercase text-blue-900">Focus Projects Today</h3><ol className="mt-2 space-y-2">{(data.focus_projects||[]).slice(0,7).map((p,i)=><li key={p.project_id} className="rounded border bg-white p-2 text-xs"><Link to={`/projects/${p.project_id}`} className="font-semibold text-blue-900">{i+1}. {p.project_name}</Link> <Badge tone={p.priority_tier==="P1"?"rose":p.priority_tier==="P2"?"amber":"blue"}>{p.priority_tier}</Badge><div>{p.priority_reason}</div><div className="text-[10px] text-gray-500">{p.new_attention_count} new · {p.waiting_count} waiting · {p.reopened_count} reopened · {p.unverified?"unverified":"verified sources"}</div></li>)}</ol></div><div className="rounded border border-violet-200 bg-white p-3"><h3 className="flex items-center gap-1 text-sm font-semibold text-violet-900"><Bot size={15}/> Grounded Portfolio Copilot</h3><p className="mt-1 text-xs text-violet-700">No bulk actions. AI authority: none.</p><button onClick={onAsk} disabled={busy} className="mt-2 rounded bg-violet-700 px-3 py-1.5 text-xs text-white">What should I focus on?</button>{ai&&<div className="mt-2 text-xs"><Badge tone={ai.status==="NOT_CONFIGURED"?"gray":"violet"}>{ai.status}</Badge><p className="mt-1">{ai.answer}</p>{(ai.focus_projects||[]).slice(0,3).map(x=><div key={x.project_id} className="mt-1">{x.project_name}: {x.reason}</div>)}</div>}</div></div>
+      <div className="border-t px-4 py-2 text-xs text-gray-500">{brief.mode?.replaceAll("_"," ")} · {brief.cross_project_changes?.length||0} changes · {brief.resolved_since_review?.length||0} resolved · {brief.reopened?.length||0} reopened{data.partial_status?.unavailable_projects?` · ${data.partial_status.unavailable_projects} unavailable`:""}</div>
+    </Card>
+  </section>;
 }

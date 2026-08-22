@@ -118,6 +118,13 @@ class BriefingReviewedIn(BaseModel):
     evidence_cursors: list[str]
 
 
+class PortfolioReviewedIn(BaseModel):
+    portfolio_cursor: str
+    project_cutoffs: dict
+    project_evidence_cursors: dict
+    included_project_ids: list[str]
+
+
 @router.post("/projects/{project_id}/archive")
 def archive_project(project_id: str, db: Session = Depends(db_session), actx=Depends(actor_ctx)):
     svc.record_actor(db, actx.id, actx.name, actx.tenant_id, actx.source)
@@ -275,6 +282,27 @@ def project_briefing_ai(project_id: str, authorization: str | None = Header(defa
     from ..briefing import ai_explain, generate
     packet = generate(db, svc.guard_project(db, project_id), user_id=actx.id, authorization=authorization)
     return ai_explain(packet)
+
+
+@router.get("/portfolio/command-center")
+def portfolio_command_center(authorization: str | None = Header(default=None),
+                             db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    from ..portfolio import compose
+    return compose(db, user_id=actx.id, authorization=authorization)
+
+
+@router.post("/portfolio/mark-reviewed")
+def mark_portfolio_reviewed(body: PortfolioReviewedIn, db: Session = Depends(db_session),
+                            actx=Depends(actor_ctx)):
+    from ..portfolio import acknowledge
+    return acknowledge(db, actx.id, body.model_dump(), actx.id)
+
+
+@router.post("/portfolio/copilot")
+def portfolio_copilot(body: ProjectCopilotIn, authorization: str | None = Header(default=None),
+                      db: Session = Depends(db_session), actx=Depends(actor_ctx)):
+    from ..portfolio import compose, copilot
+    return copilot(compose(db, user_id=actx.id, authorization=authorization), body.query_type)
 
 
 # ---------------------------------------------------------------------------

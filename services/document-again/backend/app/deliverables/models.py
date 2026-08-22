@@ -509,3 +509,19 @@ class ProjectReviewCheckpoint(Base):
     review_source: Mapped[str] = mapped_column(String(40), default="COMMAND_CENTER_MARK_REVIEWED")
     acknowledged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class PortfolioReviewCheckpoint(Base):
+    """Independent per-user portfolio acknowledgement; never clears project briefs."""
+    __tablename__ = "portfolio_review_checkpoints"
+    __table_args__ = (UniqueConstraint("user_id", "scope_key"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _new_id("pfc"))
+    user_id: Mapped[str] = mapped_column(String(200), index=True)
+    scope_key: Mapped[str] = mapped_column(String(80), default="MY_AUTHORIZED_PROJECTS")
+    project_cutoffs: Mapped[dict] = mapped_column(JSON, default=dict)
+    project_evidence_cursors: Mapped[dict] = mapped_column(JSON, default=dict)
+    included_project_ids: Mapped[list] = mapped_column(JSON, default=list)
+    portfolio_cursor: Mapped[str] = mapped_column(String(64))
+    acknowledged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
