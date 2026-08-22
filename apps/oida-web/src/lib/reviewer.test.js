@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aiDisplayState, canRetryAi, isAiGuidanceCurrent, validCitations } from "./reviewer.js";
+import { aiDisplayState, canRetryAi, impactSections, isAiGuidanceCurrent, validCitations } from "./reviewer.js";
 
 test("AI guidance is current only for the exact evidence hash", () => {
   assert.equal(isAiGuidanceCurrent({ evidence_packet_hash: "a" }, { evidence_packet_hash: "a" }), true);
@@ -26,4 +26,15 @@ test("manual retry is offered only after failure", () => {
   assert.equal(canRetryAi({ status: "MALFORMED" }), true);
   assert.equal(canRetryAi({ status: "AVAILABLE" }), false);
   assert.equal(canRetryAi(null), false);
+});
+
+test("impact sections never merge known, suggested, and unknown truth", () => {
+  const sections = impactSections({
+    known_impacts: [{ impact_id: "K1" }],
+    ai_suggested_impacts: [{ impact_id: "A1" }],
+    unknown: [{ domain: "QA" }],
+  });
+  assert.deepEqual(sections.known.map((x) => x.impact_id), ["K1"]);
+  assert.deepEqual(sections.suggested.map((x) => x.impact_id), ["A1"]);
+  assert.deepEqual(sections.unknown.map((x) => x.domain), ["QA"]);
 });

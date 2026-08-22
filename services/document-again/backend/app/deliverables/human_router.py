@@ -16,6 +16,7 @@ from ..routers.deps import actor_ctx, db_session
 from . import catalog as cat
 from . import human as hsvc
 from . import reviewer as rsvc
+from . import impact as isvc
 from .standards import BY_NAME
 
 router = APIRouter(prefix="/api")
@@ -208,6 +209,15 @@ def reviewer_evidence(project_id: str, human_code: str, role: str | None = None,
     """Authorized, read-only evidence and deterministic reviewer brief."""
     return rsvc.build_packet(db, _project(db, project_id), human_code,
                              role=role, purpose=purpose)
+
+
+@router.get("/projects/{project_id}/human-deliverables/{human_code}/impact")
+def document_impact(project_id: str, human_code: str, db: Session = Depends(db_session),
+                    actx=Depends(actor_ctx)):
+    """Authorized one-hop relationship and impact read model; no writes."""
+    project = _project(db, project_id)
+    packet = rsvc.build_packet(db, project, human_code)
+    return packet["change_impact"]
 
 
 class AIReviewerIn(BaseModel):

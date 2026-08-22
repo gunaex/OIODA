@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { humanApi } from "../api";
 import { useProjectCtx } from "../hooks/useProject";
-import { canRetryAi, isAiGuidanceCurrent, validCitations } from "../lib/reviewer";
+import { canRetryAi, impactSections, isAiGuidanceCurrent, validCitations } from "../lib/reviewer";
 import {
   Card, CardHeader, StatCard, Table, Tr, Td, Badge, Loading, OidaError, formatDateTime,
 } from "../components/ui";
@@ -669,6 +669,7 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
   ];
   const aiCurrent = isAiGuidanceCurrent(packet, ai);
   const aiFailed = canRetryAi(ai, aiBusy);
+  const impacts = impactSections(packet.change_impact);
   return (
     <div className="mb-4 overflow-hidden rounded-xl border border-blue-200 bg-blue-50/40">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-100 p-3">
@@ -699,6 +700,36 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
           <div className="break-all font-mono text-[10px]">{packet.evidence_packet_hash}</div>
           {brief.limitations.map((x) => <div key={x} className="mt-1 text-amber-700">{x}</div>)}
         </div>
+      </div>
+
+      <div className="border-t border-cyan-200 bg-cyan-50/60 p-3">
+        <div className="text-sm font-semibold text-cyan-950">Change Impact</div>
+        <div className="mt-0.5 text-xs text-cyan-800">One-hop, evidence-backed relationships only. Impact recommends review; it does not trigger action or invalidate acceptance.</div>
+        <div className="mt-3 grid gap-3 lg:grid-cols-3">
+          <div className="rounded-lg border border-emerald-200 bg-white p-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-emerald-800">Known</div>
+            {impacts.known.length ? <ul className="mt-2 space-y-2 text-xs">{impacts.known.map((item) => <li key={item.impact_id}>
+              <div className="font-medium">{item.impact_type.replaceAll("_", " ")}</div>
+              <div className="text-gray-600">{item.rationale}</div>
+              <div className="mt-1 text-[10px] text-gray-400">{item.relationship_class} · {item.rule?.rule_id} v{item.rule?.rule_version}</div>
+            </li>)}</ul> : <div className="mt-2 text-xs text-gray-500">No deterministic impact candidate is proven.</div>}
+          </div>
+          <div className="rounded-lg border border-violet-200 bg-white p-3">
+            <div className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-violet-800">Possible <Badge tone="violet">AI Suggested</Badge></div>
+            {impacts.suggested.length ? <ul className="mt-2 space-y-2 text-xs">{impacts.suggested.map((item) => <li key={item.impact_id}>{item.rationale}</li>)}</ul> : <div className="mt-2 text-xs text-gray-500">No AI relationships requested. Suggestions never become authority automatically.</div>}
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-white p-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-gray-600">Unknown</div>
+            {impacts.unknown.length ? <ul className="mt-2 space-y-1 text-xs text-gray-600">{impacts.unknown.map((item) => <li key={item.domain}><span className="font-medium">{item.domain}:</span> {item.rationale}</li>)}</ul> : <div className="mt-2 text-xs text-gray-500">No unresolved domains recorded.</div>}
+          </div>
+        </div>
+        <details className="mt-3 rounded-lg border border-cyan-200 bg-white p-2 text-xs">
+          <summary className="cursor-pointer font-semibold text-cyan-900">Relationship provenance ({packet.change_impact?.relationships?.length || 0})</summary>
+          <div className="mt-2 space-y-2">{(packet.change_impact?.relationships || []).map((rel) => <div key={rel.relationship_id} className="border-t border-gray-100 pt-2">
+            <div><span className="font-mono text-blue-700">{rel.relationship_id}</span> · {rel.source_type} {rel.relationship_type} {rel.target_type} · <Badge tone={rel.relationship_class === "EXPLICIT" ? "emerald" : "blue"}>{rel.relationship_class}</Badge></div>
+            <div className="mt-1 break-all text-gray-500">{JSON.stringify(rel.provenance)}</div>
+          </div>)}</div>
+        </details>
       </div>
 
       <div className="border-t border-violet-200 bg-violet-50 p-3">

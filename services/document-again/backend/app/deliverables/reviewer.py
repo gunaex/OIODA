@@ -23,6 +23,7 @@ from .. import ai as ai_runtime
 from .. import council
 from ..services import DomainError
 from . import human as hsvc
+from . import impact as impact_svc
 from .models import DeliverableSignoff, HumanDeliverableInstance
 
 EVIDENCE_VERSION = "reviewer_evidence/v1"
@@ -262,6 +263,7 @@ def build_packet(db: Session, project, human_code: str, *, role: str | None = No
     packet_core["evidence_packet_hash"] = _hash(packet_core)
     packet_core["provenance"]["generated_at"] = _now()
     packet_core["generation_latency_ms"] = round((time.monotonic() - started) * 1000, 2)
+    packet_core["change_impact"] = impact_svc.document_impact(db, project, current, previous, signoffs)
     packet_core["deterministic_brief"] = build_brief(packet_core)
     return packet_core
 
@@ -277,6 +279,7 @@ def build_brief(packet: dict) -> dict:
         "comparison": packet["comparison"],
         "changed": changed[:30], "needs_attention": attention[:20], "still_open": open_items[:20],
         "responsibility": packet["reviewer_context"],
+        "known_impacts": packet.get("change_impact", {}).get("known_impacts", []),
         "evidence_count": len(packet["evidence_items"]),
         "limitations": (["Historical comparison is NOT_RECORDED; current evidence is not proof of no change."]
                         if packet["comparison"]["history"] == "NOT_RECORDED" else []),

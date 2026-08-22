@@ -18,3 +18,11 @@ export function aiDisplayState({ guidance, busy, current }) {
 export function canRetryAi(guidance, busy = false) {
   return Boolean(guidance && guidance.status !== "AVAILABLE" && !busy);
 }
+
+export function impactSections(impact) {
+  return {
+    known: impact?.known_impacts || [],
+    suggested: impact?.ai_suggested_impacts || [],
+    unknown: impact?.unknown || [],
+  };
+}

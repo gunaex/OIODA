@@ -276,6 +276,8 @@ export const humanApi = {
     if (role) params.set("role", role);
     return get("da", `/projects/${projectId}/human-deliverables/${code}/reviewer-evidence?${params}`);
   },
+  impact: (projectId, code) =>
+    get("da", `/projects/${projectId}/human-deliverables/${code}/impact`),
   aiReviewer: (projectId, code, body) =>
     post("da", `/projects/${projectId}/human-deliverables/${code}/ai-reviewer`, body || {}),
   aiStatus: () => get("da", "/reviewer-ai/status"),
