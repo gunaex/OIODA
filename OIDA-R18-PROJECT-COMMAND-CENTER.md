@@ -84,7 +84,9 @@ The response exposes Command Center latency, truth latency, downstream-call coun
 
 ## 17. Deployment
 
-To be completed after CI and production rollout. Only Document Again and OIDA Web require deployment.
+Implementation `3528c036fdd547461ecff6fe7bb5a363698fb0b4` passed CI run `32567045991`. Document Again deployed as Fly release **27**, image `deployment-01M0MFC39554JVZ9E5RD5RN7Q4`, with one passing check and HTTP 200 health.
+
+OIDA Web production deployment is Cloudflare Pages `26d1156b`, sourced from `3528c03`, serving `index-Br4fV86Q.js` and `index-sfLoufqr.css`. Anonymous Command Center and Copilot calls both return HTTP 401. Owner services, Conductor, Account, and Gateway were unchanged and not redeployed.
 
 ## 18. Operational Backlog
 
@@ -134,4 +136,22 @@ AI_AUTHORITY_BOUNDARY=NONE
 NEW_OWNER_ACTION_TYPES=0
 AUTONOMOUS_ACTIONS=0
 NEW_DATABASE=NO
+COMMAND_CENTER_LATENCY=RESPONSE_MEASURED
+DOWNSTREAM_CALLS=EXISTING_PROJECT_TRUTH_FAN_OUT; EXTRA_OWNER_CALLS_0
+COPILOT_LATENCY=SEPARATE_RESPONSE_MEASURED
+DOCUMENT_TESTS=187_PASS
+COMMAND_CENTER_TESTS=7_PASS
+COPILOT_TESTS=7_PASS_FOCUSED_SUITE
+AI_SAFETY_TESTS=PASS
+FRONTEND_TESTS=11_PASS
+GATEWAY_TESTS=3_PASS
+LINT=PASS_WITH_PRE_EXISTING_WARNINGS
+BUILD=PASS_WITH_PRE_EXISTING_BUNDLE_WARNING
+DEPLOYMENT=PASS_DOCUMENT_RELEASE_27_AND_WEB_26D1156B
+PRODUCTION_REVISION_PROOF=PASS
+AUTHENTICATED_DOGFOOD=OPERATIONAL_GAP
+SECURITY_REGRESSION=PASS
+GOVERNANCE_REGRESSION=PASS
+CUSTOMER_ACCEPTANCE_INTEGRITY=PASS
+R18=ACCEPTED_WITH_OPERATIONAL_GAPS
 ```
