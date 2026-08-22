@@ -71,7 +71,9 @@ Unit evaluation is sub-millisecond on fixture truth and returns `evaluation_late
 
 ## 15. Deployment
 
-To be completed after CI and production rollout. Runtime proof must include migration tables, health, authenticated-boundary behavior, and served frontend asset IDs.
+Implementation `d52e19a6b65af4a090f413129468c565e1a51953` passed CI run `32566314713`. Document Again deployed as Fly release **26**, image `deployment-01M0MEEWWQ62Y1JTBJNFHPHV3M`, with one passing check and HTTP 200 health. Runtime inspection confirmed `impact_resolutions` and `impact_resolution_events` exist.
+
+OIDA Web production deployment is Cloudflare Pages `fb2868b5`, sourced from `d52e19a`, serving `index-DTobTVAq.js` and `index-CRt5ItaM.css`. Anonymous registry and project-history requests both return HTTP 401. Account, PM, QA, Infra, Conductor, and Gateway were unchanged and not redeployed.
 
 ## 16. Operational Backlog
 
@@ -119,4 +121,11 @@ FRONTEND_TESTS=11_PASS
 GATEWAY_TESTS=3_PASS
 LINT=PASS_WITH_PRE_EXISTING_WARNINGS
 BUILD=PASS_WITH_PRE_EXISTING_BUNDLE_WARNING
+DEPLOYMENT=PASS_DOCUMENT_RELEASE_26_AND_WEB_FB2868B5
+PRODUCTION_REVISION_PROOF=PASS
+AUTHENTICATED_DOGFOOD=OPERATIONAL_GAP_OPS_RESOLUTION_01
+SECURITY_REGRESSION=PASS
+GOVERNANCE_REGRESSION=PASS
+CUSTOMER_ACCEPTANCE_INTEGRITY=PASS
+R17_6=ACCEPTED_WITH_OPERATIONAL_GAPS
 ```
