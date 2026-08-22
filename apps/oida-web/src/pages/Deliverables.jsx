@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { humanApi } from "../api";
+import { API_BASE } from "../api/client";
 import { useProjectCtx } from "../hooks/useProject";
 import { canRetryAi, impactSections, isAiGuidanceCurrent, routedActionForReview, validCitations } from "../lib/reviewer";
 import { impactResolutionFromActionResult } from "../lib/actionResult";
@@ -270,8 +271,7 @@ export default function Deliverables() {
     // exportUrl returns an API-relative path; it must be resolved against the
     // API gateway origin, not the Pages origin (otherwise the SPA fallback
     // returns index.html).
-    const base = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
-    const url = path.startsWith("http") ? path : `${base}${path}`;
+    const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
     const token = localStorage.getItem("oida_ecosystem_token");
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) {

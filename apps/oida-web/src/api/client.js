@@ -7,7 +7,18 @@ export const SERVICES = ["da", "pm", "qa", "conductor", "account"];
 
 // Production API base (gateway). Empty in local dev → relative /api/* (Vite proxy).
 // Set VITE_API_BASE=https://api-oida.kanphong.com for production builds.
-const API_BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
+export function resolveApiBase(configured, hostname) {
+  const explicit = String(configured || "").replace(/\/+$/, "");
+  if (explicit) return explicit;
+  // Production must never send API calls to the static Pages origin. Keep
+  // local/preview builds relative so Vite's bounded-service proxy still works.
+  return hostname === "oida.kanphong.com" ? "https://api-oida.kanphong.com" : "";
+}
+
+export const API_BASE = resolveApiBase(
+  import.meta.env?.VITE_API_BASE,
+  globalThis.location?.hostname
+);
 
 export class ApiError extends Error {
   constructor(message, status, payload) {
@@ -45,9 +56,16 @@ export async function request(service, path, options = {}) {
   if (res.status === 204) return null;
 
   const contentType = res.headers.get("content-type") || "";
-  const data = contentType.includes("application/json")
+  const isJson = contentType.includes("application/json");
+  const data = isJson
     ? await res.json().catch(() => null)
     : await res.text().catch(() => null);
+
+  // A static host returning the SPA shell with HTTP 200 is not API success.
+  // Reject it before auth/project code can mistake HTML for trusted data.
+  if (res.ok && !isJson) {
+    throw new ApiError("Unexpected non-JSON response from the API", 502, null);
+  }
 
   if (!res.ok) {
     const detail =
