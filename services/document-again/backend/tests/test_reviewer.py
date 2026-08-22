@@ -81,6 +81,18 @@ def test_evidence_packet_has_explicit_versions_provenance_and_diff(packet):
     assert next(e for e in packet["evidence_items"] if e["evidence_id"] == responsibility_id)["domain"] == "RESPONSIBILITY"
 
 
+def test_plain_review_language_does_not_imply_a_decision(packet):
+    context = packet["reviewer_context"]
+    assert context["purpose"] == "REVIEW"
+    assert context["instruction_label"] == "Review scope"
+    assert "does not approve" in context["authority_limit"]
+    assert "This approval" not in context["why"]
+    evidence = next(e for e in packet["evidence_items"]
+                    if e["evidence_id"] == context["responsibility_evidence_id"])
+    assert "scope is" in evidence["summary"]
+    assert "confirms" not in evidence["summary"]
+
+
 def test_packet_hash_is_stable_and_role_context_is_distinct(db, packet):
     project = db.get(m.Project, packet["project"]["id"])
     repeated = reviewer.build_packet(db, project, "HD-MIG-01", role="TECHNICAL_LEAD", purpose="REVIEW")

@@ -167,7 +167,20 @@ def build_packet(db: Session, project, human_code: str, *, role: str | None = No
     if current.supersedes_id and not previous:
         previous = db.get(HumanDeliverableInstance, current.supersedes_id)
 
+    purpose = str(purpose or "REVIEW").upper()
     responsibility = hsvc.responsibility_brief(db, project, human_code, role)
+    if purpose == "REVIEW":
+        # DOGFOOD-R19-01: gate policy explains eventual acceptance, but a
+        # reviewer is only being asked to inspect evidence. Never present that
+        # policy language as authority granted by a plain REVIEW request.
+        responsibility = {**responsibility,
+            "why": "Review the recorded evidence, changes, assumptions, and exceptions before any separate human decision.",
+            "instruction_label": "Review scope",
+            "authority_limit": "Review identifies findings only; it does not approve, acknowledge, accept, sign off, or waive."}
+    else:
+        responsibility = {**responsibility,
+            "instruction_label": "Decision scope",
+            "authority_limit": f"Only the authenticated human may record this {purpose.lower()} decision."}
     changes, history = _change_items(previous.source_snapshot if previous else None, current.source_snapshot)
     signoffs = db.execute(select(DeliverableSignoff).where(
         DeliverableSignoff.project_id == project.id,
@@ -210,9 +223,10 @@ def build_packet(db: Session, project, human_code: str, *, role: str | None = No
         provenance={"instance_id": current.id, "precheck_id": current.precheck_id})
     responsibility_id = add(
         "RESPONSIBILITY", "DOCUMENT_AGAIN_POLICY",
-        f"{responsibility['role']} is asked for {purpose}: confirms {', '.join(responsibility['confirms']) or 'nothing recorded'}; does not confirm {', '.join(responsibility['excludes']) or 'nothing recorded'}.",
+        f"{responsibility['role']} is asked for {purpose}: scope is {', '.join(responsibility['confirms']) or 'nothing recorded'}; outside scope is {', '.join(responsibility['excludes']) or 'nothing recorded'}. {responsibility['authority_limit']}",
         after={"role": responsibility["role"], "purpose": purpose,
-               "confirms": responsibility["confirms"], "excludes": responsibility["excludes"]},
+               "confirms": responsibility["confirms"], "excludes": responsibility["excludes"],
+               "authority_limit": responsibility["authority_limit"]},
         provenance={"human_code": human_code, "gate": responsibility["gate"],
                     "policy_source": "effective_gate_policy"},
     )

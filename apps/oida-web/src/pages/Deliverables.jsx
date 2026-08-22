@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { humanApi } from "../api";
 import { useProjectCtx } from "../hooks/useProject";
 import { canRetryAi, impactSections, isAiGuidanceCurrent, routedActionForReview, validCitations } from "../lib/reviewer";
+import { impactResolutionFromActionResult } from "../lib/actionResult";
 import {
   Card, CardHeader, StatCard, Table, Tr, Td, Badge, Loading, OidaError, formatDateTime,
 } from "../components/ui";
@@ -772,8 +773,9 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
         <div className="rounded-lg border border-gray-200 bg-white p-3">
           <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Your responsibility</div>
           <div className="mt-2 text-xs font-medium">{brief.responsibility.role} · {brief.responsibility.purpose}</div>
-          <div className="mt-1 text-xs">Confirm: {(brief.responsibility.confirms || []).join("; ") || "—"}</div>
-          <div className="mt-1 text-xs text-gray-600">Not confirming: {(brief.responsibility.excludes || []).join("; ") || "—"}</div>
+          <div className="mt-1 text-xs">{brief.responsibility.instruction_label || "Decision scope"}: {(brief.responsibility.confirms || []).join("; ") || "—"}</div>
+          <div className="mt-1 text-xs text-gray-600">Outside scope: {(brief.responsibility.excludes || []).join("; ") || "—"}</div>
+          {brief.responsibility.authority_limit && <div className="mt-1 text-xs font-medium text-blue-700">{brief.responsibility.authority_limit}</div>}
         </div>
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
           <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">Needs attention / still open</div>
@@ -871,7 +873,7 @@ function ReviewerChangeBrief({ packet, error, onRefresh, ai, aiStatus, aiBusy, s
           {actionResult.result_ref && <div className="mt-1">{actionResult.result_ref.service} result {actionResult.result_ref.entity_id} · {actionResult.result_ref.status}</div>}
           {actionResult.failure_category && <div className="mt-1">{actionResult.failure_category}: {actionResult.failure_detail}</div>}
           <div className="mt-1 text-gray-600">Impact is not automatically resolved.</div>
-          {actionResult.resolution && <div className="mt-2 font-medium">Resolution: {actionResult.resolution.resolution_state.replaceAll("_", " ")} — {actionResult.resolution.resolution_reason}</div>}
+          {impactResolutionFromActionResult(actionResult) && <div className="mt-2 font-medium">Resolution: {impactResolutionFromActionResult(actionResult).resolution_state.replaceAll("_", " ")} — {impactResolutionFromActionResult(actionResult).resolution_reason}</div>}
         </div>}
       </div>
 
